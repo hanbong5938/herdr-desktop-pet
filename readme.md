@@ -38,9 +38,32 @@ Opening the menu-bar control panel requests app activation using the current mac
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
 | App | Prebuilt v0.1.4, or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
-| Prebuilt release download | [GitHub CLI](https://cli.github.com/) (`gh`) |
+| Prebuilt release download script | [GitHub CLI](https://cli.github.com/) (`gh`); not needed for Homebrew |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
+
+## Install with Homebrew
+
+Install the prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap); no GitHub login or source-build toolchain is required:
+
+```sh
+brew install --cask hanbong5938/tap/herdr-desktop-pet
+herdr-desktop-pet start
+herdr-desktop-pet status
+```
+
+Homebrew installs `/Applications/HerdrDesktopPet.app` and links its CLI onto `PATH`. This installs the app only: it does not register the Herdr plugin or install a patched Herdr host. Use the source installation below for plugin startup hooks; client-attach auto-start still requires the supplied host patch. The app is **ad-hoc signed, not notarized**; if macOS blocks opening it, review **System Settings → Privacy & Security** and explicitly allow it.
+
+```sh
+brew upgrade --cask hanbong5938/tap/herdr-desktop-pet
+brew uninstall --cask hanbong5938/tap/herdr-desktop-pet
+```
+
+Uninstalling keeps your character packs, preferences, and lifecycle state.
+
+## Herdr marketplace
+
+The public [plugin repository](https://github.com/hanbong5938/herdr-desktop-pet) is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing. GitHub-managed plugin installs run the manifest's source build and require the source toolchain and compatible host described below; Homebrew does not run that build.
 
 ## Install this feature from source
 

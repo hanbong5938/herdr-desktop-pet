@@ -37,9 +37,32 @@
 | 플랫폼 | Apple Silicon Mac, macOS 13 이상 |
 | 이번 실행 관리 기능의 Herdr | **공식 Herdr 0.9.3 소스에 [제공된 client-attach 패치](integrations/herdr/client-attached.patch)를 적용해 빌드한 호스트** (또는 추후 실제로 이 훅 지원을 명시한 호스트 릴리스) |
 | 앱 | v0.1.4 사전 빌드 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
-| 사전 빌드 릴리스 다운로드 | [GitHub CLI](https://cli.github.com/) (`gh`) |
+| 사전 빌드 릴리스 다운로드 스크립트 | [GitHub CLI](https://cli.github.com/) (`gh`); Homebrew 설치에는 불필요 |
 
 **클라이언트 attach 자동 실행에는 제공된 패치가 필수입니다.** 순정 Herdr 0.9.0과 0.9.3에는 `client.attached`가 없습니다. 매니페스트의 최소 버전만으로 훅 지원이 보장되지 않습니다. 공식 0.9.3 소스에 패치를 적용하고 해당 호스트의 빌드 안내에 따라 빌드·실행한 뒤, 플러그인 연결 경고와 `client.attached` 구독 수락 여부를 확인하세요. 알 수 없는 훅 경고는 성공으로 간주하지 마세요. Intel Mac·Windows·Linux용 네이티브 배포는 지원하지 않습니다.
+
+## Homebrew로 설치
+
+[개인 tap](https://github.com/hanbong5938/homebrew-tap)에서 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. GitHub 로그인이나 소스 빌드 도구는 필요하지 않습니다.
+
+```sh
+brew install --cask hanbong5938/tap/herdr-desktop-pet
+herdr-desktop-pet start
+herdr-desktop-pet status
+```
+
+Homebrew는 `/Applications/HerdrDesktopPet.app`을 설치하고 CLI를 `PATH`에 연결합니다. 앱만 설치하며 Herdr 플러그인을 등록하거나 패치된 Herdr 호스트를 설치하지는 않습니다. 플러그인 시작 훅은 아래 소스 설치 안내를 따르세요. 클라이언트 attach 자동 실행에는 제공된 호스트 패치가 여전히 필요합니다. 앱은 **ad-hoc 서명이며 공증되지 않았습니다**. macOS가 실행을 차단하면 **시스템 설정 → 개인정보 보호 및 보안**에서 확인 후 직접 허용하세요.
+
+```sh
+brew upgrade --cask hanbong5938/tap/herdr-desktop-pet
+brew uninstall --cask hanbong5938/tap/herdr-desktop-pet
+```
+
+제거해도 캐릭터 팩, 환경 설정과 실행 관리 상태는 유지됩니다.
+
+## Herdr 플러그인 마켓
+
+공개 [플러그인 저장소](https://github.com/hanbong5938/herdr-desktop-pet)에 `herdr-plugin` 토픽을 지정해 [Herdr 마켓](https://herdr.dev/plugins/) 자동 수집 대상으로 등록했습니다. 인덱스는 30분마다 갱신되며 Herdr의 심사를 거친 목록은 아닙니다. GitHub에서 플러그인을 설치하면 매니페스트의 소스 빌드를 실행하므로 아래 소스 빌드 도구와 호환 호스트가 필요합니다. Homebrew 설치는 이 빌드를 실행하지 않습니다.
 
 ## 이번 기능 설치: 소스 빌드
 
