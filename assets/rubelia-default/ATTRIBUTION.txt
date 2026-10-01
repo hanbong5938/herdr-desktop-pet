@@ -1,0 +1,5 @@
+Rubelia identity source: the owner's shared-world-canon master at commit 70756fab286e83b01605c5755c2a465e8438d344, asset review.character.rubelia.identity-master-academy-candidate-v2-footwear, SHA256 0b7d6a9c9bd7bef534f2eab5973d56a10793becb3f2f0fa242e41750763e0eae.
+
+Own-pose face and blink/mouth edits were generated locally with Qwen-Image-2.1 BF16 against that master, decomposed with SeeThrough, and assembled with DAEMONLET 0.8.0. Original own-pose non-facial layers, authored native motion, bindings and reaction semantics were retained; geometry and rasters were uniformly converted from 1280 to 1024. This is an AI-origin adaptation, not a byte-identical canonical export or canonical-repository promotion.
+
+Every layered PSD was alpha-cropped at canvas y=540 with byte-exact retained layer RGBA above the cut. The menu thumbnail is cropped from a production native waiting-pose capture. The owner confirmed character ownership and authorized sole-default deployment on 2026-10-01. Complete source approval and model-use provenance remain attached; software and artwork licenses are separate.

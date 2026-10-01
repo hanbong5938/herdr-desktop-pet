@@ -1,0 +1,692 @@
+diff --git a/docs/next/api/herdr-api.schema.json b/docs/next/api/herdr-api.schema.json
+index e2553f7..8040d6a 100644
+--- a/docs/next/api/herdr-api.schema.json
++++ b/docs/next/api/herdr-api.schema.json
+@@ -81,6 +81,28 @@
+         },
+         "EventData": {
+           "oneOf": [
++            {
++              "properties": {
++                "client_id": {
++                  "format": "uint64",
++                  "minimum": 0,
++                  "type": "integer"
++                },
++                "client_kind": {
++                  "type": "string"
++                },
++                "type": {
++                  "const": "client_attached",
++                  "type": "string"
++                }
++              },
++              "required": [
++                "type",
++                "client_id",
++                "client_kind"
++              ],
++              "type": "object"
++            },
+             {
+               "properties": {
+                 "type": {
+@@ -728,6 +750,7 @@
+         },
+         "EventKind": {
+           "enum": [
++            "client_attached",
+             "workspace_created",
+             "workspace_updated",
+             "workspace_metadata_updated",
+@@ -3902,6 +3925,18 @@
+         },
+         "Subscription": {
+           "oneOf": [
++            {
++              "properties": {
++                "type": {
++                  "const": "client.attached",
++                  "type": "string"
++                }
++              },
++              "required": [
++                "type"
++              ],
++              "type": "object"
++            },
+             {
+               "properties": {
+                 "type": {
+@@ -6794,6 +6829,28 @@
+         },
+         "EventData": {
+           "oneOf": [
++            {
++              "properties": {
++                "client_id": {
++                  "format": "uint64",
++                  "minimum": 0,
++                  "type": "integer"
++                },
++                "client_kind": {
++                  "type": "string"
++                },
++                "type": {
++                  "const": "client_attached",
++                  "type": "string"
++                }
++              },
++              "required": [
++                "type",
++                "client_id",
++                "client_kind"
++              ],
++              "type": "object"
++            },
+             {
+               "properties": {
+                 "type": {
+@@ -7456,6 +7513,7 @@
+         },
+         "EventKind": {
+           "enum": [
++            "client_attached",
+             "workspace_created",
+             "workspace_updated",
+             "workspace_metadata_updated",
+diff --git a/docs/next/website/src/content/docs/ja/plugins.mdx b/docs/next/website/src/content/docs/ja/plugins.mdx
+index aae2ad4..c682bdb 100644
+--- a/docs/next/website/src/content/docs/ja/plugins.mdx
++++ b/docs/next/website/src/content/docs/ja/plugins.mdx
+@@ -107,6 +107,12 @@ action = "apply"
+ インストールを拒否します。`description` は任意です。プラグイン id には ASCII の
+ 英字、数字、ドット、コロン、アンダースコア、ハイフンが使えます。
+ 
++バージョン比較だけではイベントフックへの対応を確認できません。未知の `on` 値でも
++警告付きでリンクできます。`client.attached` は標準の Herdr 0.9.0 / 0.9.3 には
++ありません。対応を明示する実際のリリースが出るまでは、利用するプラグインが
++案内する Herdr v0.9.3 向けパッチを適用し、`plugin.link` と `plugin.list` の
++警告およびイベント購読の成功を確認してください。
++
+ アクション id、ペイン id、リンクハンドラー id はプラグイン内部のローカル id です。
+ ASCII の英字、数字、コロン、アンダースコア、ハイフンが使えますが、ドットは
+ 使えません。各 id の種類はプラグイン内で一意でなければなりません。グローバルに
+@@ -251,6 +257,33 @@ enable では実行されません。Herdr はこれらを非同期で開始し
+ `HERDR_PLUGIN_EVENT=startup` を受け取ります。インストールプレビューには、自動実行される
+ コードを確認できるよう、すべてのスタートアップコマンドが表示されます。
+ 
++## クライアント接続イベントフック
++
++`client.attached` に対応するホストでは、プラグインで次のように宣言できます:
++
++```toml
++[[events]]
++on = "client.attached"
++command = ["./bin/my-plugin", "ensure"]
++platforms = ["macos"]
++```
++
++shell または terminal クライアントの登録に成功するたび、サーバーは公開イベントを
++1 件発行し、一致するフックを通常のプラグイン実行系で非同期に起動します。
++プラグインの有効状態とプラットフォームのフィルターが適用されます。
++`HERDR_PLUGIN_EVENT=client.attached` となり、`HERDR_PLUGIN_EVENT_JSON` には
++`event: "client_attached"`、`data.type: "client_attached"`、サーバー内でのみ
++有効な数値 `data.client_id` と `data.client_kind: "shell"` または
++`"terminal"` を含むイベントが渡されます。`events.subscribe` には
++`{"type":"client.attached"}` を指定します。API のみの要求、失敗した
++ハンドシェイク、サーバーのハンドオフでは発火しません。プラグインの API
++照会が自身の自動起動を引き起こすこともありません。クライアントの detach
++はサーバー停止を意味しないため、生存状態は別に確認してください。
++
++デスクトップペットの連携には公式 Herdr v0.9.3 向けの同梱パッチ、またはこの
++機能を明示して提供する将来のリリースが必要です。標準の v0.9.3 は非対応です。
++`min_herdr_version` だけで判断せず、警告と購読の受理を確認してください。
++
+ ## コマンドと環境
+ 
+ ランタイムコマンドは、プラグインディレクトリを作業ディレクトリとして実行されます。
+diff --git a/docs/next/website/src/content/docs/ja/socket-api.mdx b/docs/next/website/src/content/docs/ja/socket-api.mdx
+index a03c52c..3e42b60 100644
+--- a/docs/next/website/src/content/docs/ja/socket-api.mdx
++++ b/docs/next/website/src/content/docs/ja/socket-api.mdx
+@@ -661,6 +661,8 @@ workspace の get/list 応答は結果の `tokens` マップを公開し、ス
+ 
+ worktree のイベント購読には `worktree.created`、`worktree.opened`、`worktree.removed` があります。worktree イベントは Git チェックアウトのライフサイクルを記述します。`worktree.created` は開かれた `workspace` と作成された `worktree` を含みます。`worktree.opened` は対象の `workspace`、開かれた `worktree`、`already_open` を含みます。`worktree.removed` は `workspace_id`、削除された `worktree`、`forced` を含みます。
+ 
++`{"type":"client.attached"}` を購読すると、shell または terminal クライアントの登録成功を受け取れます。送信 JSON は `event: "client_attached"` と `data.type: "client_attached"` を使い、サーバー内の数値 `client_id` と `client_kind: "shell" | "terminal"` を含みます。API のみのリクエスト、失敗したハンドシェイク、サーバーのハンドオフでは発生しません。クライアントの detach はサーバーの終了を意味しません。有効でプラットフォームが一致するプラグインは `on = "client.attached"` で同じ登録成功を処理できます。
++
+ ライフサイクルイベントには `events.subscribe` を使ってください。ワンショットの wait がサポートされる場合、専用の wait ヘルパーが別途ドキュメント化されます。
+ 
+ ## ペインの読み取り
+diff --git a/docs/next/website/src/content/docs/plugins.mdx b/docs/next/website/src/content/docs/plugins.mdx
+index 4085e24..7bc116f 100644
+--- a/docs/next/website/src/content/docs/plugins.mdx
++++ b/docs/next/website/src/content/docs/plugins.mdx
+@@ -105,6 +105,12 @@ or install a plugin when its minimum version is newer than the current binary.
+ `description` is optional. Plugin ids may use ASCII letters, digits, dot,
+ colon, underscore, and hyphen.
+ 
++Version comparison alone does not establish event-hook support: unknown `on`
++values can link with a warning. For `client.attached`, stock Herdr 0.9.0 and
++0.9.3 have no hook. Until a release explicitly ships it, use the supplied
++Herdr v0.9.3 patch described by the consuming plugin, inspect `plugin.link`
++and `plugin.list` warnings, and confirm the event subscription is accepted.
++
+ Action ids, pane ids, and link handler ids are local ids inside the plugin.
+ They may use ASCII letters, digits, colon, underscore, and hyphen, but not
+ dots. Each id type must be unique inside a plugin. Herdr qualifies action ids
+@@ -248,6 +254,34 @@ Startup hooks receive the normal runtime plugin environment and
+ `HERDR_PLUGIN_EVENT=startup`. The install preview lists every startup command so
+ users can review code that will run automatically.
+ 
++## Client attach event hooks
++
++On a host with the `client.attached` capability, a plugin can declare:
++
++```toml
++[[events]]
++on = "client.attached"
++command = ["./bin/my-plugin", "ensure"]
++platforms = ["macos"]
++```
++
++After each successful shell or terminal client registration, the server emits
++one public event and dispatches matching hooks asynchronously through the
++normal plugin runner. Enabled-state and effective-platform filters still apply.
++`HERDR_PLUGIN_EVENT=client.attached`; `HERDR_PLUGIN_EVENT_JSON` contains an
++envelope with `event: "client_attached"` and `data` containing
++`type: "client_attached"`, a server-local numeric `client_id`, and
++`client_kind: "shell"` or `"terminal"`. Subscribe through `events.subscribe`
++using `{"type":"client.attached"}`. API-only requests, failed handshakes, and
++handoff do not trigger this hook; in particular a plugin API probe does not
++launch the plugin itself. Detaching a client does not mean its server died;
++server liveness must be checked separately.
++
++The desktop-pet integration requires the supplied patch against official
++Herdr v0.9.3 (or a future release that explicitly advertises this capability);
++stock v0.9.3 does **not** implement this hook. Check warnings and subscription
++acceptance rather than inferring support from `min_herdr_version`.
++
+ ## Commands and environment
+ 
+ Runtime commands run with the plugin directory as their working directory. Herdr
+diff --git a/docs/next/website/src/content/docs/socket-api.mdx b/docs/next/website/src/content/docs/socket-api.mdx
+index 5becbd8..30028db 100644
+--- a/docs/next/website/src/content/docs/socket-api.mdx
++++ b/docs/next/website/src/content/docs/socket-api.mdx
+@@ -836,6 +836,13 @@ an authoritative read; a delayed payload may predate their latest snapshot.
+ 
+ Worktree event subscriptions include `worktree.created`, `worktree.opened`, and `worktree.removed`. Worktree events describe Git checkout lifecycle. `worktree.created` includes the opened `workspace` and created `worktree`. `worktree.opened` includes the target `workspace`, opened `worktree`, and `already_open`. `worktree.removed` includes the `workspace_id`, removed `worktree`, and `forced`.
+ 
++Subscribe with `{"type":"client.attached"}` for successful shell or terminal client registrations.
++The emitted JSON uses `event: "client_attached"` and `data.type: "client_attached"`,
++with a server-local numeric `client_id` and `client_kind: "shell" | "terminal"`.
++API-only requests, failed handshakes, and server handoff do not emit this event.
++Client detach does not imply server shutdown. Enabled, platform-compatible plugin
++hooks can use `on = "client.attached"` for the same successful registration.
++
+ Use `events.subscribe` for lifecycle events. Dedicated wait helpers are documented separately when a one-shot wait is supported.
+ 
+ ## Reading panes
+diff --git a/docs/next/website/src/content/docs/zh-cn/plugins.mdx b/docs/next/website/src/content/docs/zh-cn/plugins.mdx
+index 67c606f..a72b90f 100644
+--- a/docs/next/website/src/content/docs/zh-cn/plugins.mdx
++++ b/docs/next/website/src/content/docs/zh-cn/plugins.mdx
+@@ -94,6 +94,11 @@ action = "apply"
+ 或安装。`description` 可选。插件 id 可以使用 ASCII 字母、数字、点、
+ 冒号、下划线和连字符。
+ 
++只比较版本号不足以证明支持事件钩子:未知的 `on` 值也可能带警告链接成功。
++原版 Herdr 0.9.0 和 0.9.3 没有 `client.attached` 钩子。在明确包含此能力的
++正式版本发布前,请使用插件说明中提供的 Herdr v0.9.3 补丁,检查
++`plugin.link` 和 `plugin.list` 的警告,并确认事件订阅被接受。
++
+ 动作 id、窗格 id 和链接处理器 id 是插件内部的本地 id。它们可以使用
+ ASCII 字母、数字、冒号、下划线和连字符,但不能用点。每种 id 在插件内
+ 必须唯一。当需要全局唯一名称时,Herdr 会把动作 id 限定为
+@@ -224,6 +229,31 @@ Herdr 恢复会话且 API socket 就绪后,会为每个已启用插件运行一
+ 启动钩子会收到普通运行时插件环境和 `HERDR_PLUGIN_EVENT=startup`。安装预览会
+ 列出所有启动命令,让用户检查将自动运行的代码。
+ 
++## 客户端连接事件钩子
++
++在支持 `client.attached` 的主机上,插件可以声明:
++
++```toml
++[[events]]
++on = "client.attached"
++command = ["./bin/my-plugin", "ensure"]
++platforms = ["macos"]
++```
++
++每当 shell 或 terminal 客户端成功完成注册,服务器发布一次公共事件,
++并通过现有插件运行器异步执行匹配的钩子。插件启用状态及有效平台筛选仍然适用。
++`HERDR_PLUGIN_EVENT=client.attached`;`HERDR_PLUGIN_EVENT_JSON` 包含
++`event: "client_attached"`、`data.type: "client_attached"`、仅在本服务器内
++有效的数字 `data.client_id`,以及 `data.client_kind: "shell"` 或
++`"terminal"`。通过 `events.subscribe` 订阅时使用
++`{"type":"client.attached"}`。仅 API 请求、失败的握手和服务器交接不会触发
++该钩子;插件自身的 API 探测不会导致自行启动。客户端 detach 不等于服务器
++死亡;需要单独检查服务器存活状态。
++
++桌面宠物集成需要针对官方 Herdr v0.9.3 的随附补丁,或者未来明确提供此能力的
++正式主机版本。原版 v0.9.3 **不**支持该钩子。不要只依赖
++`min_herdr_version`;还应检查警告与订阅是否成功。
++
+ ## 命令与环境
+ 
+ 运行时命令以插件目录为工作目录执行。Herdr 注入 `HERDR_SOCKET_PATH`、
+diff --git a/docs/next/website/src/content/docs/zh-cn/socket-api.mdx b/docs/next/website/src/content/docs/zh-cn/socket-api.mdx
+index de5c7e7..bb5cf29 100644
+--- a/docs/next/website/src/content/docs/zh-cn/socket-api.mdx
++++ b/docs/next/website/src/content/docs/zh-cn/socket-api.mdx
+@@ -655,6 +655,8 @@ workspace 的 get/list 响应会公开生成的 `tokens` 映射,空间侧边栏
+ 
+ Worktree 事件订阅包括 `worktree.created`、`worktree.opened` 和 `worktree.removed`。Worktree 事件描述 Git 检出的生命周期。`worktree.created` 包含打开的 `workspace` 和创建的 `worktree`。`worktree.opened` 包含目标 `workspace`、打开的 `worktree` 和 `already_open`。`worktree.removed` 包含 `workspace_id`、被移除的 `worktree` 和 `forced`。
+ 
++订阅 `{"type":"client.attached"}` 可接收 shell 或 terminal 客户端注册成功的通知。发送的 JSON 使用 `event: "client_attached"` 和 `data.type: "client_attached"`，包含服务器内的数字 `client_id` 以及 `client_kind: "shell" | "terminal"`。纯 API 请求、失败的握手和服务器移交不会触发此事件。客户端 detach 不代表服务器关闭。已启用且平台匹配的插件可通过 `on = "client.attached"` 处理同一次注册成功。
++
+ 生命周期事件用 `events.subscribe`。支持一次性等待时,专门的等待辅助命令会单独在文档中说明。
+ 
+ ## 读取窗格
+diff --git a/src/api/schema/events.rs b/src/api/schema/events.rs
+index 52ac6c9..d87b53d 100644
+--- a/src/api/schema/events.rs
++++ b/src/api/schema/events.rs
+@@ -16,6 +16,8 @@ pub struct EventsSubscribeParams {
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+ #[serde(tag = "type")]
+ pub enum Subscription {
++    #[serde(rename = "client.attached")]
++    ClientAttached {},
+     #[serde(rename = "workspace.created")]
+     WorkspaceCreated {},
+     #[serde(rename = "workspace.updated")]
+@@ -192,6 +194,7 @@ pub enum EventMatch {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+ #[serde(rename_all = "snake_case")]
+ pub enum EventKind {
++    ClientAttached,
+     WorkspaceCreated,
+     WorkspaceUpdated,
+     WorkspaceMetadataUpdated,
+@@ -223,6 +226,7 @@ pub enum EventKind {
+ impl EventKind {
+     pub fn dot_name(self) -> &'static str {
+         match self {
++            EventKind::ClientAttached => "client.attached",
+             EventKind::WorkspaceCreated => "workspace.created",
+             EventKind::WorkspaceUpdated => "workspace.updated",
+             EventKind::WorkspaceMetadataUpdated => "workspace.metadata_updated",
+@@ -255,6 +259,7 @@ impl EventKind {
+ 
+ #[cfg(test)]
+ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
++    EventKind::ClientAttached,
+     EventKind::WorkspaceCreated,
+     EventKind::WorkspaceUpdated,
+     EventKind::WorkspaceMetadataUpdated,
+@@ -284,6 +289,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
+ ];
+ 
+ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
++    EventKind::ClientAttached,
+     EventKind::WorkspaceCreated,
+     EventKind::WorkspaceUpdated,
+     EventKind::WorkspaceClosed,
+@@ -420,6 +426,10 @@ pub struct PaneScrollChangedEvent {
+ #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+ pub enum EventData {
++    ClientAttached {
++        client_id: u64,
++        client_kind: String,
++    },
+     WorkspaceCreated {
+         workspace: WorkspaceInfo,
+     },
+diff --git a/src/api/subscriptions.rs b/src/api/subscriptions.rs
+index 2258a3c..517a607 100644
+--- a/src/api/subscriptions.rs
++++ b/src/api/subscriptions.rs
+@@ -121,6 +121,7 @@ impl ActiveSubscription {
+         };
+ 
+         match subscription {
++            Subscription::ClientAttached {} => Ok(event_subscription(EventKind::ClientAttached)),
+             Subscription::WorkspaceCreated {} => {
+                 Ok(event_subscription(EventKind::WorkspaceCreated))
+             }
+@@ -746,6 +747,48 @@ mod tests {
+         assert_eq!(live_event["data"]["workspace_id"], "after_setup");
+     }
+ 
++    #[test]
++    fn client_attached_subscription_delivers_only_new_attaches_in_order() {
++        let event_hub = EventHub::default();
++        let attach = |client_id, client_kind: &str| EventEnvelope {
++            event: EventKind::ClientAttached,
++            data: EventData::ClientAttached {
++                client_id,
++                client_kind: client_kind.into(),
++            },
++        };
++        event_hub.push(attach(1, "shell"));
++        let start = event_hub.current_sequence();
++        let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
++        let requested: Subscription =
++            serde_json::from_str(r#"{"type":"client.attached"}"#).unwrap();
++        let mut subscription =
++            ActiveSubscription::new(requested, "attach", 0, &api_tx, &event_hub, start)
++                .expect("client attached subscription");
++        event_hub.push(workspace_focused_event("unrelated"));
++        event_hub.push(attach(2, "terminal"));
++        event_hub.push(attach(3, "shell"));
++        let received = subscription.poll_batch(&api_tx, &event_hub).unwrap();
++        assert_eq!(
++            received
++                .iter()
++                .map(|event| (
++                    event["event"].as_str().unwrap(),
++                    event["data"]["client_id"].as_u64().unwrap(),
++                    event["data"]["client_kind"].as_str().unwrap()
++                ))
++                .collect::<Vec<_>>(),
++            vec![
++                ("client_attached", 2, "terminal"),
++                ("client_attached", 3, "shell")
++            ]
++        );
++        assert!(subscription
++            .poll_batch(&api_tx, &event_hub)
++            .unwrap()
++            .is_empty());
++    }
++
+     #[test]
+     fn workspace_metadata_subscription_uses_dedicated_event_kind() {
+         let event_hub = EventHub::default();
+diff --git a/src/app/api/plugins/context.rs b/src/app/api/plugins/context.rs
+index 8aee1c3..a6dd8ac 100644
+--- a/src/app/api/plugins/context.rs
++++ b/src/app/api/plugins/context.rs
+@@ -42,6 +42,7 @@ impl App {
+         correlation_id: &str,
+     ) -> PluginInvocationContext {
+         match &event.data {
++            EventData::ClientAttached { .. } => empty_plugin_context(correlation_id),
+             EventData::WorkspaceCreated { workspace }
+             | EventData::WorkspaceUpdated { workspace }
+             | EventData::WorkspaceMetadataUpdated { workspace }
+diff --git a/src/app/api/plugins/runtime.rs b/src/app/api/plugins/runtime.rs
+index 30e2f7a..eafd01c 100644
+--- a/src/app/api/plugins/runtime.rs
++++ b/src/app/api/plugins/runtime.rs
+@@ -215,6 +215,16 @@ impl App {
+         }
+     }
+ 
++    pub(crate) fn emit_client_attached_event(&mut self, client_id: u64, client_kind: &str) {
++        self.emit_event(crate::api::schema::EventEnvelope {
++            event: crate::api::schema::EventKind::ClientAttached,
++            data: crate::api::schema::EventData::ClientAttached {
++                client_id,
++                client_kind: client_kind.to_owned(),
++            },
++        });
++    }
++
+     pub(crate) fn run_plugin_event_hooks(&mut self, event: &crate::api::schema::EventEnvelope) {
+         let event_name = event.event.dot_name();
+         if !crate::api::schema::PLUGIN_HOOK_EVENT_KINDS.contains(&event.event) {
+diff --git a/src/server/headless.rs b/src/server/headless.rs
+index 18869e0..8a7c6bb 100644
+--- a/src/server/headless.rs
++++ b/src/server/headless.rs
+@@ -1275,6 +1275,7 @@ impl HeadlessServer {
+         }
+ 
+         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal observe client connected");
++        self.app.emit_client_attached_event(client_id, "terminal");
+         true
+     }
+ 
+@@ -1788,6 +1789,7 @@ impl HeadlessServer {
+         if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
+             runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
+         }
++        self.app.emit_client_attached_event(client_id, "terminal");
+         true
+     }
+ 
+@@ -1968,10 +1970,15 @@ impl HeadlessServer {
+                     self.popup_owner_tab_id = self.shell_tab_id_for_client(client_id);
+                 }
+                 if let Some(message) = projection_message {
+-                    self.send_to_client(client_id, message);
++                    if !self.send_to_client(client_id, message) {
++                        return false;
++                    }
++                }
++                if !self.send_to_client(client_id, completion_message)
++                    || !self.send_to_client(client_id, snapshot_message)
++                {
++                    return false;
+                 }
+-                self.send_to_client(client_id, completion_message);
+-                self.send_to_client(client_id, snapshot_message);
+                 if surface_active {
+                     self.foreground_client_id = Some(client_id);
+                 }
+@@ -1981,6 +1988,7 @@ impl HeadlessServer {
+                 self.sync_foreground_client_state();
+                 self.claim_unowned_shell_tab_geometry(client_id, true);
+                 self.nudge_handoff_panes_on_first_client_attach();
++                self.app.emit_client_attached_event(client_id, "shell");
+                 true
+             }
+             ServerEvent::GraphicsTransmissionResult {
+@@ -3390,3 +3398,202 @@ fn server_config_diagnostic_summaries(diagnostics: &[String]) -> (Option<String>
+ 
+ #[cfg(test)]
+ mod tests;
++
++#[cfg(test)]
++mod attached_event_tests {
++    use super::*;
++    use crate::api::schema::{EventData, EventKind};
++
++    fn server_with_events() -> (HeadlessServer, api::EventHub) {
++        let hub = api::EventHub::default();
++        let config = config::Config::default();
++        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
++        let mut app = app::App::new(&config, app::AppPolicy::TEST, None, api_rx, hub.clone());
++        app.state.default_shell = app::exiting_test_command().into();
++        let socket_path = std::env::temp_dir().join(format!(
++            "ha-{}-{:x}.sock",
++            std::process::id(),
++            SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .unwrap()
++                .as_nanos()
++        ));
++        let listener = bind_local_listener(&socket_path).expect("bind test socket");
++        let identity = socket_file_identity(&socket_path).expect("test socket identity");
++        #[cfg(unix)]
++        listener
++            .set_nonblocking(ListenerNonblockingMode::Accept)
++            .expect("nonblocking listener");
++        let (server_event_tx, server_event_rx) = mpsc::channel(64);
++        let server_keybindings = app_keybindings(&app);
++        let headless_size = app.state.headless_size;
++        let should_quit = Arc::new(AtomicBool::new(false));
++        #[cfg(windows)]
++        spawn_windows_client_accept_thread(listener, should_quit.clone(), server_event_tx.clone());
++        let server = HeadlessServer {
++            app,
++            #[cfg(unix)]
++            api_tx: None,
++            api_server: None,
++            #[cfg(unix)]
++            client_listener: listener,
++            client_socket_path: socket_path,
++            client_socket_identity: identity,
++            clients: HashMap::new(),
++            native_graphics: Default::default(),
++            #[cfg(unix)]
++            next_client_id: 1,
++            foreground_client_id: None,
++            tab_geometry_controllers: HashMap::new(),
++            popup_owner_tab_id: None,
++            client_shell_boot_id: "attached-test-boot".into(),
++            sent_window_title: None,
++            api_window_title: None,
++            server_keybindings,
++            server_config_diagnostic: None,
++            server_config_diagnostic_without_keybindings: None,
++            terminal_attach_owners: HashMap::new(),
++            pending_alt_screen_reads: Vec::new(),
++            deferred_alt_screen_reads: Vec::new(),
++            next_activity_stamp: 1,
++            headless_size,
++            effective_size: headless_size,
++            shutting_down: false,
++            handoff_in_progress: false,
++            #[cfg(unix)]
++            pending_handoff_repaint_nudge: false,
++            should_quit,
++            host_shutdown_requested: Arc::new(AtomicBool::new(false)),
++            server_event_rx,
++            server_event_tx,
++        };
++        (server, hub)
++    }
++
++    fn client_writer() -> (ClientWriter, std::sync::mpsc::Receiver<Vec<u8>>) {
++        let (control_tx, control_rx) = std::sync::mpsc::channel();
++        let (render_tx, _render_rx) = std::sync::mpsc::sync_channel(1);
++        (
++            ClientWriter::test_channel(control_tx, render_tx),
++            control_rx,
++        )
++    }
++
++    fn attached(hub: &api::EventHub) -> Vec<(u64, String)> {
++        hub.events_after(0)
++            .into_iter()
++            .filter_map(|(_, event)| match event.data {
++                EventData::ClientAttached {
++                    client_id,
++                    client_kind,
++                } => {
++                    assert_eq!(event.event, EventKind::ClientAttached);
++                    Some((client_id, client_kind))
++                }
++                _ => None,
++            })
++            .collect()
++    }
++
++    #[tokio::test]
++    async fn shell_attach_publishes_once_after_projection_and_rejects_handoff() {
++        let (mut server, hub) = server_with_events();
++        let (writer, _control) = client_writer();
++        assert!(hub.events_after(0).is_empty()); // API-only server, no client.
++        assert!(
++            server.handle_server_event(ServerEvent::ClientShellConnected {
++                client_id: 11,
++                surface_cols: 80,
++                surface_rows: 24,
++                cell_width_px: 0,
++                cell_height_px: 0,
++                pixel_mouse: false,
++                direct_graphics: false,
++                endpoint_keybindings: false,
++                mouse_capture: false,
++                surface_active: true,
++                surface_reuse: false,
++                surface_delta: false,
++                surface_scroll: false,
++                writer,
++            })
++        );
++        assert_eq!(attached(&hub), vec![(11, "shell".into())]);
++
++        let (writer, _control) = client_writer();
++        server.handoff_in_progress = true;
++        assert!(
++            !server.handle_server_event(ServerEvent::ClientShellConnected {
++                client_id: 12,
++                surface_cols: 80,
++                surface_rows: 24,
++                cell_width_px: 0,
++                cell_height_px: 0,
++                pixel_mouse: false,
++                direct_graphics: false,
++                endpoint_keybindings: false,
++                mouse_capture: false,
++                surface_active: true,
++                surface_reuse: false,
++                surface_delta: false,
++                surface_scroll: false,
++                writer,
++            })
++        );
++        assert_eq!(attached(&hub), vec![(11, "shell".into())]);
++        for (_, runtime) in server.app.terminal_runtimes.drain() {
++            runtime.shutdown();
++        }
++    }
++
++    #[tokio::test]
++    async fn pending_terminal_and_rejected_target_do_not_publish_attach() {
++        let (mut server, hub) = server_with_events();
++        let workspace = crate::workspace::Workspace::test_new("attach");
++        let terminal_id = workspace
++            .terminal_id(workspace.tabs[0].root_pane)
++            .unwrap()
++            .to_string();
++        server.app.state.workspaces = vec![workspace];
++        server.app.state.ensure_test_terminals();
++
++        for client_id in [20, 21, 22] {
++            let (writer, _control) = client_writer();
++            assert!(!server.handle_server_event(ServerEvent::ClientConnected {
++                client_id,
++                cols: 80,
++                rows: 24,
++                cell_width_px: 0,
++                cell_height_px: 0,
++                pixel_mouse: false,
++                writer,
++            }));
++        }
++        assert!(attached(&hub).is_empty(), "handshake alone is not attach");
++        assert!(
++            !server.handle_server_event(ServerEvent::ClientAttachTerminal {
++                client_id: 20,
++                terminal_id: "missing".into(),
++                takeover: false,
++            })
++        );
++        assert!(attached(&hub).is_empty());
++        assert!(
++            server.handle_server_event(ServerEvent::ClientObserveTerminal {
++                client_id: 21,
++                target: terminal_id.clone(),
++            })
++        );
++        assert!(
++            server.handle_server_event(ServerEvent::ClientAttachTerminal {
++                client_id: 22,
++                terminal_id,
++                takeover: false,
++            })
++        );
++        assert_eq!(
++            attached(&hub),
++            vec![(21, "terminal".into()), (22, "terminal".into())]
++        );
++    }
++}

@@ -1,0 +1,16 @@
+Rubelia artwork — owner-authorized Herdr Desktop Pet distribution
+
+Rubelia is the workspace owner's character from
+https://github.com/hanbong5938/shared-world-canon.
+The pinned source master and its recorded commercial approval are identified
+in owner-approval.json and source-record.json.
+
+On 2026-10-01 the owner confirmed this is their character and authorized this
+cropped ten-pose adaptation as the sole bundled default and its deployment.
+The source is AI-origin; local model edits and native rig adaptation are
+disclosed in the provenance. The original Qwen model-material license is kept
+as an authoring/model-usage record, separate from the owner's artwork approval.
+
+The software's MIT license does not relicense the character artwork.
+This notice grants no unrelated third party an artwork license and makes no
+exclusive-copyright, non-infringement or trademark guarantee.

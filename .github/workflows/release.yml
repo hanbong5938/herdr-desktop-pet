@@ -1,0 +1,142 @@
+name: Release Herdr Desktop Pet
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-pet-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    env:
+      CARGO_TERM_COLOR: always
+      HERDR_PET_CARGO_TARGET: aarch64-apple-darwin
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.13.0"
+          cache: npm
+          cache-dependency-path: web/rig/package-lock.json
+
+      - name: Validate release tag and repository metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: release tags must be v<semver> (got $tag)" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          package_version="$(node -e 'const p=require("./package.json"); process.stdout.write(String(p.version ?? ""))')"
+          if [[ "$package_version" != "$version" ]]; then
+            echo "error: tag $tag does not match package version $package_version" >&2
+            exit 1
+          fi
+          if [[ ! "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+            echo "error: GitHub supplied an invalid repository name: ${GITHUB_REPOSITORY}" >&2
+            exit 1
+          fi
+          {
+            echo "HERDR_PET_REPOSITORY=${GITHUB_REPOSITORY}"
+            echo "HERDR_PET_VERSION=${version}"
+            echo "HERDR_PET_RELEASE_TAG=${tag}"
+            echo "HERDR_PET_ASSET_NAME=HerdrDesktopPet-v${version}-macos-arm64.tar.gz"
+          } >> "$GITHUB_ENV"
+
+      - name: Install native rig JavaScript dependencies
+        working-directory: web/rig
+        run: npm ci
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install Rust stable toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Install JavaScript tooling
+        run: bun install --frozen-lockfile
+
+      - name: Install Rust target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Check TypeScript packaging scripts
+        run: bun run check
+
+      - name: Check native crate
+        run: cargo check --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
+
+      - name: Test native crate
+        run: cargo test --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
+
+      - name: Build native arm64 binary
+        run: cargo build --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
+
+      - name: Build ad-hoc signed application bundle
+        env:
+          HERDR_PET_APP_NAME: HerdrDesktopPet.app
+        run: bun run package:native
+
+      - name: Verify arm64 application binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="dist/HerdrDesktopPet.app"
+          binary="$app/Contents/MacOS/herdr-desktop-pet"
+          manifest="$app/Contents/Resources/default/manifest.json"
+          [[ -x "$binary" ]]
+          archs="$(lipo -archs "$binary")"
+          [[ "$archs" == "arm64" ]] || {
+            echo "error: expected an arm64-only binary, got $archs" >&2
+            exit 1
+          }
+          test -f "$manifest"
+          node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (m.id !== "rubelia-at12-multi-pose" || m.version !== 5 || m.render_mode !== "rig") process.exit(1);' "$manifest"
+
+      - name: Create release archives and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="$HERDR_PET_ASSET_NAME"
+          COPYFILE_DISABLE=1 tar --no-xattrs -czf "$asset" -C dist HerdrDesktopPet.app
+          shasum -a 256 "$asset" > "$asset.sha256"
+          shasum -a 256 "$asset" > SHA256SUMS
+          for output in "$asset" "$asset.sha256" SHA256SUMS; do
+            test -s "$output"
+          done
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          body: |
+            Herdr Desktop Pet ${{ github.ref_name }} for Apple Silicon macOS 13+ (arm64).
+
+            - The only bundled character is Rubelia (`rubelia-at12-multi-pose`), a rig with ten independent upper-thigh poses.
+            - Rubelia originates from shared-world-canon and is deployed with the owner's authorization; AI/model-use provenance and license records are included in the app.
+            - Release bundles are ad-hoc signed, not Developer ID signed or notarized.
+          files: |
+            ${{ env.HERDR_PET_ASSET_NAME }}
+            ${{ env.HERDR_PET_ASSET_NAME }}.sha256
+            SHA256SUMS

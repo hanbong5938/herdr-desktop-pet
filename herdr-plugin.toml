@@ -1,0 +1,167 @@
+id = "desktop-pet"
+name = "Herdr Desktop Pet"
+version = "0.1.4"
+# Herdr v0.9.3 is the base only: client.attached requires integrations/herdr/client-attached.patch (or a future host release that explicitly advertises the hook).
+min_herdr_version = "0.9.3"
+description = "A native macOS desktop companion for Herdr"
+platforms = ["macos"]
+
+[[build]]
+command = ["bash", "scripts/install.sh", "--source"]
+platforms = ["macos"]
+
+[[startup]]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "ensure"]
+platforms = ["macos"]
+
+[[events]]
+on = "client.attached"
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "ensure"]
+platforms = ["macos"]
+
+[[actions]]
+id = "settings"
+title = "Open desktop pet lifecycle settings"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "settings"]
+platforms = ["macos"]
+
+[[actions]]
+id = "start"
+title = "Start desktop pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "start"]
+platforms = ["macos"]
+
+[[actions]]
+id = "ensure"
+title = "Ensure desktop pet is running"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "ensure"]
+platforms = ["macos"]
+
+[[actions]]
+id = "stop"
+title = "Stop desktop pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "stop"]
+platforms = ["macos"]
+
+[[actions]]
+id = "status"
+title = "Show desktop pet status"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "status"]
+platforms = ["macos"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle desktop pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "toggle"]
+platforms = ["macos"]
+
+[[actions]]
+id = "show"
+title = "Show desktop pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "show"]
+platforms = ["macos"]
+
+[[actions]]
+id = "hide"
+title = "Hide desktop pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "hide"]
+platforms = ["macos"]
+
+[[actions]]
+id = "passthrough"
+title = "Toggle click passthrough"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "passthrough"]
+platforms = ["macos"]
+
+[[actions]]
+id = "alpha_passthrough"
+title = "Toggle alpha click passthrough"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "alpha_passthrough"]
+platforms = ["macos"]
+
+[[actions]]
+id = "show_bubble"
+title = "Show status bubble"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "show_bubble"]
+platforms = ["macos"]
+
+[[actions]]
+id = "hide_bubble"
+title = "Hide status bubble"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "hide_bubble"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_above"
+title = "Place bubble above pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_above"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_below"
+title = "Place bubble below pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_below"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_left"
+title = "Place bubble left of pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_left"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_right"
+title = "Place bubble right of pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_right"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_auto"
+title = "Place bubble automatically"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_auto"]
+platforms = ["macos"]
+
+[[actions]]
+id = "reset"
+title = "Reset desktop pet position"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "reset"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bigger"
+title = "Make desktop pet bigger"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bigger"]
+platforms = ["macos"]
+
+[[actions]]
+id = "smaller"
+title = "Make desktop pet smaller"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "smaller"]
+platforms = ["macos"]
+
+[[actions]]
+id = "restart"
+title = "Restart desktop pet"
+contexts = ["global"]
+command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "restart"]
+platforms = ["macos"]

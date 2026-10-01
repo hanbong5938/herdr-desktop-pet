@@ -1,0 +1,114 @@
+Embedded Browserify utility closure in ag-psd/dist/bundle.js
+
+The published ag-psd 29.0.0 browser artifact is a Browserify bundle.  Its
+module table contains the Node/browser utility closure below even though those
+packages are not dependencies in ag-psd's package.json.  Module numbers are the
+numbers in the published bundle; they are evidence of what is shipped.
+
+Embedded package/version status:
+  Browserify embeds source files, not their package.json files.  The package
+  version and exact source commit for every item below are unknown and are not
+  asserted.  The primary repository links are provenance for the source and
+  license, not a claim that the current repository contents equal the embedded
+  revision.
+
+Modules and primary repositories:
+  module 17  array-filter
+    https://github.com/juliangruber/array-filter
+  module 18  available-typed-arrays
+    https://github.com/inspect-js/available-typed-arrays
+  module 21  call-bound
+    https://github.com/ljharb/call-bound
+  module 22  call-bind
+    https://github.com/ljharb/call-bind
+  module 24  for-each
+    https://github.com/ljharb/for-each
+  modules 25,26  function-bind
+    https://github.com/ljharb/function-bind
+  module 27  get-intrinsic
+    https://github.com/ljharb/get-intrinsic
+  modules 28,29  has-symbols
+    https://github.com/inspect-js/has-symbols
+  module 30  has
+    https://github.com/tarruda/has
+  module 32  inherits
+    https://github.com/isaacs/inherits
+  module 33  is-arguments
+    https://github.com/inspect-js/is-arguments
+  module 34  is-generator-function
+    https://github.com/inspect-js/is-generator-function
+  module 35  is-typed-array
+    https://github.com/inspect-js/is-typed-array
+  modules 52, _process  process browser shim
+    https://github.com/shtylman/node-process
+  modules 53,54,55  util browser port and support modules
+    https://github.com/browserify/node-util
+  module 56  which-typed-array
+    https://github.com/inspect-js/which-typed-array
+
+Attribution names recoverable from primary package metadata (copyright years
+are intentionally omitted because the embedded revisions are unknown):
+  array-filter: Julian Gruber
+  available-typed-arrays, call-bind, call-bound, es-abstract,
+    get-intrinsic, has-symbols, is-arguments, is-generator-function,
+    is-typed-array, which-typed-array: Jordan Harband / Inspect JS
+  for-each, function-bind: Raynos
+  has: Thiago de Arruda; Jordan Harband is listed as a contributor
+  inherits: Isaac Z. Schlueter and contributors
+  process: Roman Shtylman and browser-process contributors
+  util: Joyent, Inc. and other Node contributors
+
+The source comments in module 55 preserve the Node/Joyent MIT notice.  The
+package metadata for the source packages identifies every module in this list
+as MIT except inherits, which is ISC.  The complete terms are reproduced
+below; individual package copyright years are not recoverable from the
+published Browserify artifact, so this file does not invent them.  The source
+links above are the exact primary provenance available from the bundle.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+The MIT notice embedded in util (module 55) additionally names:
+
+Copyright Joyent, Inc. and other Node contributors.
+
+The process browser shim is published under the MIT license by its upstream
+maintainers; its embedded version is unknown.  The utility-package copyright
+and author notices remain attributable through the primary repositories listed
+above because Browserify removed their package metadata from the artifact.
+
+ISC License for inherits (module 32):
+
+Copyright (c) Isaac Z. Schlueter and contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
+RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE
+USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Node's source license referenced by the util port:
+  https://github.com/nodejs/node/blob/main/LICENSE

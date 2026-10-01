@@ -1,0 +1,36 @@
+OMPet original character art and generator license
+====================================================
+
+Copyright (c) 2026 OMPet contributors
+
+This retained MIT notice covers the original Coding Cat drawing utility and its
+generated vector/raster contributions, now maintained in the separate character
+repository at https://github.com/hanbong5938/herdr-characters:
+  tools/generate-character.py
+  sources/legacy-png/
+
+The original Coding Cat artwork does not incorporate third-party asset files.
+Its v4 pack has its own notice in that repository's packs/png-example/LICENSE.txt.
+This notice does not grant a license to Rubelia or other character artwork.
+The bundled Rubelia's own license, attribution and provenance are retained in
+assets/rubelia-default/ and in the packaged application's default resources.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

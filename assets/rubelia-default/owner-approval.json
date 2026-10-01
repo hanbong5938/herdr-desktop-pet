@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-01",
+  "owner": "hanbong5938",
+  "ownershipConfirmation": "아니 그거 내가 만든거잖아 https://github.com/hanbong5938/shared-world-canon/ 여기서 따운거아냐?",
+  "deploymentRequest": "1개만 기본으로 해서 배포해줘",
+  "scope": "Cropped ten-pose Rubelia as the only bundled Herdr Desktop Pet default and release deployment",
+  "sourceRegistry": {
+    "repository": "https://github.com/hanbong5938/shared-world-canon",
+    "commit": "70756fab286e83b01605c5755c2a465e8438d344",
+    "assetId": "review.character.rubelia.identity-master-academy-candidate-v2-footwear",
+    "path": "assets/identity/reviews/commercial-rebuild/rubelia-identity-master-academy-candidate-v2-footwear.png",
+    "sha256": "0b7d6a9c9bd7bef534f2eab5973d56a10793becb3f2f0fa242e41750763e0eae",
+    "sourceOfTruth": true,
+    "creatorTool": "OpenAI gpt-image 2.0 (C2PA present)",
+    "commercialImageInputAllowed": true,
+    "rightsStatus": "commercial-approved",
+    "approvalBasis": "solo-developer-owner-risk-accepted-disclosed-ai",
+    "approvalRecord": "assets/provenance/common-seven-solo-owner-commercial-approval-2026-07-16.json",
+    "ownerApprovalDate": "2026-07-16",
+    "ownerApprovalRole": "sole-developer-project-owner-and-release-approver",
+    "approvalScope": "commercial release and approved internal generation input subject to recorded limitations",
+    "aiOriginDisclosureRequired": true,
+    "exclusiveCopyrightClaim": false,
+    "nonInfringementGuarantee": false,
+    "trademarkClearanceGuarantee": false
+  },
+  "adaptation": "Local Qwen own-pose face/expression edits, SeeThrough decomposition, DAEMONLET/native rig assembly and upper-thigh alpha cropping; complete records are in source-record.json",
+  "modelLicenseRecord": "QWEN_RESEARCH_LICENSE.txt describes the Qwen model materials used during authoring; it is retained separately from source-owner artwork approval",
+  "repositoryVisibility": "Existing private release repository visibility is unchanged"
+}

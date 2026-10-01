@@ -1,0 +1,65 @@
+Herdr native rig decoder third-party notices
+
+Native port attribution
+-----------------------
+This native decoder is a Herdr worker-facing port of the browser ag-psd PSD
+loader and the vendored Anime2.5DRig/DAEMONLET loader.  The native TypeScript
+entry point is native/rig/decoder.ts.  It uses ag-psd's published browser
+bundle (29.0.0) through the explicit web/rig dependency alias; it does not use
+ag-psd's Node entry point.  Native validation, bounded packing, and worker
+transport are Herdr additions.  No HTML, WebGL host, browser UI, or browser
+worker host is part of the native decoder output.
+
+The native build retains strict TypeScript checking and emits the trusted
+decoder.js together with this notice and the notice resources under vendor/.
+The build intentionally does not copy web/rig/index.html,
+web/rig/dist/index.js, web/rig/dist/worker.js, or any WebGL host resource.
+
+Upstream application sources
+----------------------------
+DAEMONLET (MIT; pinned source and adaptation details):
+  https://github.com/ddol2ya/DAEMONLET
+  commit e0b555d142fc4c6dc46897d94a4b6e9c5fc5b8ed
+  See vendor/PROVENANCE.txt and vendor/DAEMONLET-LICENSE.txt.
+
+Anime2.5DRig (MIT; imported files and modifications):
+  https://github.com/852wa/Anime2.5DRig
+  commit d48825867acd081de22b0e7b5585bb562288796d
+  See vendor/anime25drig/UPSTREAM.txt and vendor/anime25drig/LICENSE.
+
+PSD decoder and direct dependencies
+-----------------------------------
+ag-psd 29.0.0 (MIT):
+  https://github.com/Agamnentzar/ag-psd
+  See vendor/AG-PSD-NOTICE.txt.
+
+base64-js 1.5.1 (MIT) and pako 2.1.0 (MIT and zlib):
+  See vendor/BASE64-JS-LICENSE.txt, vendor/PAKO-LICENSE.txt, and
+  vendor/licenses/PAKO-ZLIB-LICENSE.txt.
+
+Published-browser-bundle closure
+--------------------------------
+The published ag-psd/dist/bundle.js was audited as an artifact.  It embeds a
+browser Buffer shim, ieee754, a JPEG decoder derived from jpeg-js, and a
+Browserify util/process closure in addition to ag-psd, base64-js, and pako.
+The embedded package versions/source commits for those additional modules are
+not recorded in the published artifact and are intentionally reported as
+unknown.  Their primary source links, module evidence, attributions, and full
+license terms are copied under vendor/licenses/:
+
+  AG-PSD-BROWSER-CLOSURE.txt
+  BUFFER-MIT.txt
+  IEEE754-BSD-3-CLAUSE.txt
+  JPEG-DECODER-APACHE-2.0.txt
+  BROWSERIFY-UTILITY-CLOSURE.txt
+  PAKO-ZLIB-LICENSE.txt
+
+The JPEG decoder source header specifically carries Apache License 2.0 and
+Copyright 2011 notmasteryet; the current jpeg-js repository license is not
+substituted for that embedded notice.
+
+Herdr provenance
+----------------
+See vendor/PROVENANCE.txt for pinned source hashes, browser-path adaptation,
+and the native decoder port boundary.  Pilot PSD/pose assets are application
+inputs with separate pack provenance and are not included by this build.

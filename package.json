@@ -1,0 +1,19 @@
+{
+  "name": "herdr-desktop-pet",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "description": "Native desktop character companion for Herdr",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
+    "test:native": "cargo test --manifest-path native/Cargo.toml",
+    "package:native": "bun scripts/package-native.ts",
+    "install:local": "bash scripts/install.sh --local-build"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.20",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.2"
+  }
+}

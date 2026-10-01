@@ -1,0 +1,44 @@
+ag-psd 29.0.0 published browser-bundle closure
+
+Verified package and artifact:
+  package: ag-psd 29.0.0
+  package source: https://github.com/Agamnentzar/ag-psd
+  npm package: https://www.npmjs.com/package/ag-psd
+  bundled artifact: ag-psd/dist/bundle.js
+  package license: MIT; see ../AG-PSD-NOTICE.txt
+
+The build aliases ag-psd to the published Browserify artifact above.  The
+artifact's module table was audited rather than inferred from package.json.
+In addition to ag-psd's own modules and the verified direct dependencies
+base64-js 1.5.1 and pako 2.1.0 (including pako's embedded zlib port), the
+artifact embeds these browser modules:
+
+  - buffer browser shim (module 20)
+  - ieee754 (module 31)
+  - JPEG decoder derived from jpeg-js (module 11)
+  - Browserify util/process closure (modules 17-18, 21-30, 32-35,
+    52-56, including array-filter, available-typed-arrays, call-bind,
+    call-bound, es-abstract helper, for-each, function-bind, get-intrinsic,
+    has, has-symbols, inherits, is-arguments, is-generator-function,
+    is-typed-array, which-typed-array, util, and process)
+
+The artifact embeds source modules but does not retain each dependency's
+package.json or source commit.  Versions/commits for buffer, ieee754, the
+jpeg-js-derived decoder, and the utility closure are unknown and are not
+claimed as verified.  The primary repositories and full license terms are in:
+
+  BUFFER-MIT.txt
+  IEEE754-BSD-3-CLAUSE.txt
+  JPEG-DECODER-APACHE-2.0.txt
+  PAKO-ZLIB-LICENSE.txt
+  BROWSERIFY-UTILITY-CLOSURE.txt
+
+The JPEG decoder's own source header says it is based on jpeg-js and carries
+Apache-2.0 with Copyright 2011 notmasteryet.  Do not replace that notice with
+the current jpeg-js repository license: the embedded header is the evidence
+for the code actually shipped.
+
+The source bundle also contains `require('util')` diagnostics in ag-psd code;
+Browserify therefore includes the util closure even though normal Herdr
+runtime paths do not intentionally use Node diagnostics.  It remains part of
+the shipped artifact and is covered above.

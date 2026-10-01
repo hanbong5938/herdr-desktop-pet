@@ -1,0 +1,57 @@
+pako 2.1.0 embedded zlib port
+
+Primary source:
+  https://github.com/nodeca/pako
+  https://github.com/nodeca/pako/blob/v2.1.0/lib/zlib/README
+  zlib project: https://zlib.net/
+
+The published pako package metadata states that the root package is MIT AND
+Zlib, and its README states that /lib/zlib is under the zlib license.  The
+pako 2.1.0 README identifies that JavaScript port as based on zlib 1.2.8 and
+attributes the port contributions to Vitaly Puzrin and Andrey Tupitsin.  The
+Herdr bundle embeds pako's zlib modules through ag-psd's published bundle.
+The existing vendor/PAKO-LICENSE.txt preserves pako's MIT notice; this file
+preserves the additional zlib notice required by the actual bundled closure.
+
+The pako zlib README says this port is under the zlib license, with the
+JavaScript-port contributions under the Expat/MIT terms in the package root.
+The root package terms are preserved in vendor/PAKO-LICENSE.txt.
+
+Pako port copyrights:
+(C) 1995-2013 Jean-loup Gailly and Mark Adler
+(C) 2014-2017 Vitaly Puzrin and Andrey Tupitsin
+
+
+From zlib's README
+
+Acknowledgments:
+
+  The deflate format used by zlib was defined by Phil Katz.  The deflate and
+  zlib specifications were written by L. Peter Deutsch.  Thanks to all the
+  people who reported problems and suggested various improvements to zlib;
+  they are too numerous to cite here.
+
+Copyright notice:
+
+ (C) 1995-2013 Jean-loup Gailly and Mark Adler
+
+Copyright (c) <''year''> <''copyright holders''>
+
+This software is provided 'as-is', without any express or implied warranty.
+In no event will the authors be held liable for any damages arising from the
+use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it freely,
+subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+   that you wrote the original software. If you use this software in a product,
+   an acknowledgment in the product documentation would be appreciated but is
+   not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu

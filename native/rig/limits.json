@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "inputFileBytes": 4194304,
+  "packBytes": 16777216,
+  "overrideBytes": 262144,
+  "jsonBytes": 2097152,
+  "canvasDimension": 1024,
+  "canvasPixels": 1048576,
+  "psdLayers": 256,
+  "channelDecodedBytes": 67108864,
+  "decodedBytes": 33554432,
+  "catalogDecodedBytes": 67108864,
+  "outputBytes": 33554432,
+  "imageAllocationBytes": 67108864,
+  "outputLayers": 64,
+  "meshVertices": 32768,
+  "totalMeshVertices": 65536,
+  "strandWeightEntries": 262144,
+  "drawableDimension": 3072,
+  "drawablePixels": 4194304,
+  "decodeSeconds": 30
+}

@@ -1,0 +1,203 @@
+Herdr Desktop Pet 0.1.3; UNRELEASED source lifecycle integration
+===============================================================
+
+Requirements and distribution
+- Apple Silicon macOS 13+. Local observation supports Herdr 0.9.0+;
+  remote observation requires a compatible saved-machine forwarding CLI
+  (documented in 0.9.2) and compatible remote server. Lifecycle client-attach
+  auto-start REQUIRES official Herdr 0.9.3 source with
+  integrations/herdr/client-attached.patch applied and built, or a future
+  actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
+  implement client.attached. A manifest minimum version alone does not prove
+  compatibility: inspect plugin-link warnings and verify subscription.
+- Released 0.1.3 prebuilt does NOT include these unreleased lifecycle settings.
+  Build this checkout from source: bash scripts/install.sh --source
+  Link against the running patched host (PATCHED_HERDR from the integration
+  guide, not an installed herdr on PATH):
+    "$PATCHED_HERDR" plugin link /absolute/path/to/checkout --enabled
+    "$PATCHED_HERDR" plugin action invoke start --plugin desktop-pet
+  Linking/enabling on an already-running server alone does not launch the pet;
+  start once or wait for a subsequent shell/terminal attach with auto_start on.
+  See integrations/herdr/README.md for a separate disposable patched-host
+  XDG profile; do not replace an installed host or assume stable PATH is patched.
+- The published 0.1.3 prebuilt remains available with --prebuilt and
+  authenticated gh; the installer verifies checksum, archive layout/types,
+  arm64, signature and default model. It is NOT an install path for these
+  new settings. An optionless install may select the published prebuilt;
+  use explicit --source. Source builds require Rust, Bun, Node.js/npm and
+  Xcode Command Line Tools. Running prebuilt needs no build toolchain.
+- Rubelia is the only bundled character and default model (default@0).
+  User-imported PNG and rig packs remain supported. Optional Aurora,
+  Coding Cat and Rubelia outfits live in herdr-characters, not this bundle.
+- Releases: https://github.com/hanbong5938/herdr-desktop-pet/releases
+- The repository is private; GitHub downloads require authenticated access.
+- Rubelia uses the owner's shared-world-canon identity, ten independent native
+  rig poses, and upper-thigh framing. Source and AI/model-usage records are
+  included. The software's MIT license does not relicense the artwork.
+- App bundles are ad-hoc signed, not Developer ID signed or notarized.
+  macOS may require explicit approval to open the app.
+- Native hit-overlay blending uses typed subexpressions for compatibility with
+  the release runner's Xcode 16.4 Swift compiler.
+
+Controls
+- Use the menu-bar icon for character selection and dialogue editing, observation
+  sources, bubble and lifecycle settings, and language. Local observation is on
+  by default; Remote is opt-in.
+- Tap the head/body for reactions; move back and forth on the head to pet it.
+- Drag the body/background to move; Option-drag anywhere also moves.
+- Use the bottom-right grip to resize.
+- Full-window click-through ignores both pet and bubble windows, disabling
+  bubble composer interaction too.
+- Alpha click-through lets clicks pass through transparent artwork regions.
+  It uses pointer polling, so leave it off if a click-routing race is unacceptable.
+- The bubble shows observed Herdr session status, not inferred provider results.
+- Expand the bubble, explicitly select a local agent session (not All), and
+  compose text for the shown target. Remote cards are read-only observation,
+  even when selected. Enter inserts a newline; Command+Enter or Send submits.
+  Escape cancels active IME composition first; otherwise it collapses the bubble.
+  IME composition does not submit. Per-session drafts live in memory through
+  collapse, not app restart. Success clears only the matching draft; failure
+  preserves it. Acknowledged submission is not completed agent processing.
+- Submission uses only the selected local source's agent.prompt API, not a
+  global CLI, shell, SSH, or raw pane input. Excluded local sources, offline,
+  stale, unready, and unsupported targets cannot receive prompts; retained
+  remote rows cannot send either. unsupported_method is reported without
+  fallback. Approvals/questions need the real terminal. The API was verified
+  with Herdr 0.9.2; the 0.9.0 local observation baseline does not
+  guarantee agent.prompt support on the running server. Unknown delivery must
+  be checked before resending; there is no automatic retry. The current API
+  addresses the agent currently occupying a pane with no atomic expected-
+  session guard: instantaneous occupant/session replacement cannot be ruled
+  out.
+
+Custom dialogue
+- Open Settings -> Characters -> Dialogue, for the actually active character.
+- Choose Korean/English and idle/running/waiting/unknown/head tap/body tap/pet/
+  observed task completion. Original pack dialogue is shown separately.
+- Save dialogue accepts multiple lines, up to 2048 UTF-8 bytes per entry, and
+  refreshes applicable bubble text immediately after a successful save.
+- Reset this entry or save blank/whitespace-only text to remove that override.
+  Reset all character dialogue requires confirmation and removes both languages
+  for the current character. Missing entries keep existing dialogue fallbacks.
+- Character/language/event drafts survive panel hiding and selection changes
+  during the app session; only saved text survives restart. Save failures retain
+  the draft and previously committed dialogue. Undo history is local to the
+  current editing context and clears on context switch without discarding drafts.
+- preferences.json stores personal dialogue separately from pack files, keyed
+  by character ID across revision changes. External --assets paths use a
+  separate canonical-path namespace, isolated from the bundled character.
+  The active external character remains editable under its activation-time
+  canonical identity if its source folder is renamed while running; restarting
+  with a changed --assets path does not migrate the original persisted path key.
+- Editing language does not change UI language. Custom text does not alter
+  session counts, state transitions, reaction timing or disconnected-host notices.
+
+Observation sources
+- Local is on and Remote is off by default. Opt into Remote under the menu-bar
+  settings, then select enabled saved machine profiles. Each profile observes
+  its saved remote Herdr session, not every session on its host; session cards
+  identify the Local source or the machine name. Remote observation needs a
+  compatible remote Herdr server and local CLI with saved-machine API forwarding
+  (documented in Herdr 0.9.2), not just the 0.9.0 local observation baseline.
+- Set up SSH and add/authenticate saved machines in an interactive Herdr
+  terminal; the remote host does not need the pet app/plugin. Selected profiles
+  are polled about every 5 seconds; short transitions may be missed. Machine
+  selections persist when Remote is off or profiles are renamed. Disabled or
+  removed profiles stop contributing without stopping remote processes; all
+  sources off shows Unknown. Disconnected cards reflect last known data, not
+  live state. After recovery/reselection, the first snapshot is a baseline,
+  not a replay of old completion reactions.
+- For SSH authentication recovery, use herdr machine reconnect '<profile-id>'
+  in a terminal. The pet does not run interactive setup or use Local as a
+  fallback for remote errors. Remote sources are observation-only; prompts
+  are never sent through machine forwarding.
+
+UNRELEASED integration notes (not a 0.1.3 release or host release)
+- Preserve 0.1.3 Rubelia-only bundle and optional separate content repository
+  alongside remote observation, readable session titles, and local-only bubble
+  messaging. Add lifecycle switches and patched-host attach without changing
+  those observation or prompt boundaries.
+- Manifest 0.1.3 is source metadata, not a newly published artifact. Its
+  min_herdr_version 0.9.3 is the patch baseline, not proof of attach support.
+  No Windows native distribution or accessibility-based click routing is
+  claimed; pre-existing native clippy all-target erasing_op is out of scope.
+
+Lifecycle settings and plugin actions
+- Settings tab: independent auto_start (auto-launch on server startup and
+  successful shell/terminal client attach) and exit_with_herdr (quit after
+  last healthy server connection disappears). New profiles default on/on.
+  Existing lifecycle.json profiles migrate boolean enabled to auto_start,
+  retaining false; absent exit_with_herdr defaults off for existing profiles.
+  lifecycle.json exclusively owns both settings; preferences.json does not.
+  Preserve endpoints/startup/other fields. Invalid JSON/types/keys/values
+  report errors instead of silently resetting. Failed saves retain prior
+  switch states and live policy and display an error.
+- With auto_start off, automatic ensure successfully skips absent pets and
+  can register a server for one already running. Manual start works without
+  changing either setting. Stop/Quit terminate only this run or pending
+  startup, not auto_start; restart manually relaunches, preserving settings.
+  When auto_start stays on, later qualifying startup/attach can relaunch.
+  Plugin disable/unlink is a separate host feature; disabled plugins cannot
+  run hooks/actions. Confirmed disable across all registered endpoints ends
+  an already-running pet immediately.
+- With exit_with_herdr on, initial server absence or loss of the last
+  healthy server starts a 30-second grace; healthy reconnection cancels it.
+  One remaining healthy server prevents exit. Client detach is not server
+  loss; stale endpoints and failed retries never extend grace. Switching
+  exit off cancels a live countdown; switching it on while disconnected
+  starts a fresh 30 seconds. Off permits independent manual running.
+  Existing hidden pet stays hidden on ensure. Changing auto_start never
+  forces the current pet to stop/show; show/hide/toggle affect visibility
+  only. Restart preserves position, scale and preferences.
+  herdr plugin action invoke status --plugin desktop-pet
+  herdr plugin action invoke settings --plugin desktop-pet
+  herdr plugin action invoke restart --plugin desktop-pet
+  herdr plugin action invoke stop --plugin desktop-pet
+- Global settings action opens just the lifecycle window with the pet
+  stopped, but requires a live, enabled Herdr host. The direct native CLI
+  works with pet stopped, host absent, or plugin disabled, without launching
+  a pet. Run this source build's executable directly:
+  PET=./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet
+  "$PET" settings
+  "$PET" settings get
+  "$PET" settings set auto_start off
+  "$PET" settings set exit_with_herdr on
+  get/set output structured JSON. set accepts only exact keys
+  auto_start|exit_with_herdr and values on|off; invalid arguments and save
+  failures error. status includes auto_start and exit_with_herdr.
+
+Character packs
+Use the Characters menu, or the native executable:
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack list
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack import --path PATH
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack select ID
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack select default
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack update ID --path PATH
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack restore ID --revision N
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack remove ID
+  dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack status OPID
+
+Import accepts a character directory or .herdrchar archive and does not select it.
+Select uses the newest revision; restore selects an existing historic revision.
+Removing an active pack returns to Rubelia. The built-in default@0 cannot
+be imported, updated or removed. Preserve operation IDs: if an outcome is
+uncertain, query pack status instead of blindly repeating the mutation.
+
+Character authoring
+- CLI: Contents/Resources/creator/character-pack.py in the packaged app,
+  or tools/character-pack.py in a source checkout.
+- Guide: .agents/skills/character-creator/SKILL.md in the checkout,
+  or Contents/Resources/creator/SKILL.md in the app.
+- The bundled rig template is Rubelia; PNG authoring needs an external template.
+  Optional Aurora, Coding Cat, and Rubelia outfits are maintained separately:
+  https://github.com/hanbong5938/herdr-characters
+- Keep artwork license, attribution and source-term files with character packs.
+
+Configuration
+- HERDR_PLUGIN_CONFIG_DIR: lifecycle.json (sole lifecycle settings owner),
+  preferences.json (other preferences), and characters/.
+- HERDR_PLUGIN_STATE_DIR: process lock, control socket and daemon log.
+- Without injected paths, use Herdr's XDG config/state plugin directories.
+- Native commands accept --config-dir and --state-dir for an isolated profile.
+- Use Herdr's upstream provider integrations; restart/reload existing provider
+  sessions after installing their upstream lifecycle hooks.

@@ -1,0 +1,69 @@
+Herdr browser rig runtime provenance
+
+DAEMONLET source pin:
+  repository: https://github.com/ddol2ya/DAEMONLET
+  commit: e0b555d142fc4c6dc46897d94a4b6e9c5fc5b8ed
+  adopted source root: src/engine/anime25d/
+
+Anime2.5DRig source pin:
+  repository: https://github.com/852wa/Anime2.5DRig
+  commit: d48825867acd081de22b0e7b5585bb562288796d
+  imported upstream files: lib/rigger.js, lib/genericparts.js
+  license: MIT; see LICENSE and UPSTREAM.txt
+
+SHA-256 of pinned DAEMONLET source files before browser path adaptation:
+  Anime25DRenderer.ts 3c5aae6aa028f1848f277943e446ac7a8e4304fa07b424d106c4cbf8fafd143d
+  PsdRigLoader.ts 89c2437c2dcc2f8d4afdec88f73afc0b8fc0d078da377838e5d82fe765f3e9f6
+  RigAssetInspector.ts f0d5709f6ad498b8ce1d09933b7846d66ed42e9682832c76af161785105381a8
+  RigOverrides.ts 874d28b52284b1af9870ac13ec5f4a192710815aac32762c1221024572edd805
+  upstream/rigger.js e122d986f306ff7f1c4231be4044e106ca4a7eb8bfd1f17db8cd7f078e0463a9
+  upstream/genericparts.js 8253c401379936bee4c4fcedbdabdfc36d334206c4a2fa996aed41829c1eee90
+
+Browser adaptation:
+  - Extracted Anime25DRenderer, PsdRigLoader, Anime2.5DRig generic parts/rigger, mesh/deformation,
+    stencil/FBO compositor, PSD diagnostics, and PSD worker from the pinned tree.
+  - Rebased only relative imports from DAEMONLET's src/ tree into vendor/anime25drig/.
+  - Kept WebGL1 canvas alpha, per-layer mesh deformation, eye stencil, and ModelCompositor FBO.
+  - Added browser loader/worker/bridge under web/rig/src; no Electron, React, IPC, Node, or
+    upstream application shell is included in the runtime bundle.
+  - ag-psd is consumed as the explicitly pinned npm dependency 29.0.0; see AG-PSD-NOTICE.txt.
+  - Browser bundling uses ag-psd's published dist/bundle.js, not its Node entrypoint.
+  - A local upstream/package.json marks the unmodified UMD JavaScript files as CommonJS.
+  - DAEMONLET-LICENSE.txt preserves the application renderer's separate MIT notice;
+    generated browser and native decoder builds also copy the base64-js and pako
+    dependency notices.
+  - Pilot PSD and alternate pose are Herdr pack inputs. Their provenance and rights are separate
+    from these engine notices; no upstream sample art is vendored.
+
+Embedded ag-psd browser closure:
+  - The pinned npm package is ag-psd 29.0.0 from
+    https://github.com/Agamnentzar/ag-psd; the browser build aliases the
+    published `dist/bundle.js`, not the Node entrypoint.
+  - An artifact audit of `dist/bundle.js` found the embedded Browserify
+    Buffer shim, ieee754, a JPEG decoder derived from jpeg-js, and the
+    Browserify util/process closure in addition to base64-js 1.5.1 and
+    pako 2.1.0.  Pako's embedded `/lib/zlib` code is covered by the
+    supplementary vendor/licenses/PAKO-ZLIB-LICENSE.txt notice.  See
+    vendor/licenses/AG-PSD-BROWSER-CLOSURE.txt and its referenced license
+    files.
+  - The published artifact does not preserve package metadata or commits for
+    those embedded modules.  Their versions/commits are intentionally
+    reported as unknown; no unverified version is asserted.
+  - The JPEG source header says it is based on
+    https://github.com/jpeg-js/jpeg-js, Copyright 2011 notmasteryet, and
+    Apache License 2.0.  The Apache notice in
+    vendor/licenses/JPEG-DECODER-APACHE-2.0.txt preserves that embedded
+    header rather than substituting the current jpeg-js repository license.
+
+Native decoder port:
+  - native/rig/decoder.ts is a Herdr native-worker port with bounded PSD
+    preflight, validation, packing, and transport-facing output around the
+    same trusted ag-psd browser bundle and vendored rigger.  It is not a
+    browser/WebGL host and does not include the browser HTML or UI.
+  - native/rig/build-decoder.mjs retains strict TypeScript checking and emits
+    decoder.js plus NOTICE.txt and copied vendor notice resources only.  The
+    native output deliberately excludes index.html, browser entry/worker
+    bundles, and WebGL host resources.
+  - Native-port code and attribution are separate from the upstream
+    DAEMONLET and Anime2.5DRig notices above; those notices remain preserved
+    unchanged.

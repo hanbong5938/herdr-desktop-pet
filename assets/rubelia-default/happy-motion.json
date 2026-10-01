@@ -1,0 +1,1647 @@
+{
+  "version": 2,
+  "phases": {
+    "idle": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 120,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    },
+    "running": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 120,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    },
+    "waiting": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 120,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    },
+    "unknown": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 120,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    }
+  },
+  "reactions": {
+    "head_tap": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 60,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    },
+    "body_tap": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 60,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    },
+    "pet": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 60,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    },
+    "completion_observed": {
+      "duration_ms": 3600,
+      "pose": "happy",
+      "transition_ms": 60,
+      "playback": "loop",
+      "tracks": {
+        "body": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 350,
+              "value": -0.045
+            },
+            {
+              "at_ms": 1070,
+              "value": 0.23
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.13
+            },
+            {
+              "at_ms": 2340,
+              "value": -0.06
+            },
+            {
+              "at_ms": 3050,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 320,
+              "value": -0.035
+            },
+            {
+              "at_ms": 980,
+              "value": 0.12
+            },
+            {
+              "at_ms": 1570,
+              "value": 0.085
+            },
+            {
+              "at_ms": 2410,
+              "value": -0.04
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "angleZ": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 520,
+              "value": 0.035
+            },
+            {
+              "at_ms": 1270,
+              "value": -0.105
+            },
+            {
+              "at_ms": 1920,
+              "value": 0.055
+            },
+            {
+              "at_ms": 2740,
+              "value": -0.025
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "eyeY": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0
+            },
+            {
+              "at_ms": 600,
+              "value": -0.06
+            },
+            {
+              "at_ms": 1170,
+              "value": -0.095
+            },
+            {
+              "at_ms": 1930,
+              "value": -0.035
+            },
+            {
+              "at_ms": 3600,
+              "value": 0
+            }
+          ]
+        },
+        "mouthForm": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.16
+            },
+            {
+              "at_ms": 410,
+              "value": 0.19
+            },
+            {
+              "at_ms": 1050,
+              "value": 0.31
+            },
+            {
+              "at_ms": 1650,
+              "value": 0.27
+            },
+            {
+              "at_ms": 2350,
+              "value": 0.19
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.16
+            }
+          ]
+        },
+        "mouthOpen": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 0.02
+            },
+            {
+              "at_ms": 700,
+              "value": 0.045
+            },
+            {
+              "at_ms": 1210,
+              "value": 0.11
+            },
+            {
+              "at_ms": 1860,
+              "value": 0.055
+            },
+            {
+              "at_ms": 3600,
+              "value": 0.02
+            }
+          ]
+        },
+        "eyeOpenL": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        },
+        "eyeOpenR": {
+          "interpolation": "smoothstep",
+          "keys": [
+            {
+              "at_ms": 0,
+              "value": 1
+            },
+            {
+              "at_ms": 3600,
+              "value": 1
+            }
+          ]
+        }
+      },
+      "layers": {}
+    }
+  }
+}
