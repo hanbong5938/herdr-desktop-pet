@@ -23,16 +23,23 @@ Requirements and distribution
   XDG profile; do not replace an installed host or assume stable PATH is patched.
 - Release v0.1.6 ships the approved new Rubelia ten-pose default.
   The prebuilt installer verifies checksum, archive layout/types, arm64,
-  signature and default model. An optionless install may select the pinned
-  prebuilt; use explicit --source to build local changes.
+  signature and default model. An optionless install (the manifest [[build]])
+  downloads the pinned prebuilt anonymously with curl and falls back to a
+  source build only if it is unavailable or invalid; --prebuilt never falls
+  back. Use explicit --source to build local changes.
   Source builds require Rust, Bun, Node.js/npm and Xcode Command Line Tools.
   Running prebuilt needs no build toolchain.
 - Rubelia is the only bundled character and default model (default@0).
   User-imported PNG and rig packs remain supported. Optional Aurora,
   Coding Cat and Rubelia outfits live in herdr-characters, not this bundle.
 - Releases: https://github.com/hanbong5938/herdr-desktop-pet/releases
-- The primary repository is public. Homebrew needs no GitHub login; the
-  --prebuilt download script uses authenticated gh.
+- The primary repository is public. Install with
+  herdr plugin install hanbong5938/herdr-desktop-pet; with a pinned release,
+  no GitHub login, gh or build toolchain is needed. The Homebrew formula
+  hanbong5938/tap/herdr-desktop-pet keeps the app in Homebrew's prefix with a
+  herdr-desktop-pet CLI on PATH; it does not register the plugin or install
+  the patched host. Previous cask users: brew uninstall --cask
+  herdr-desktop-pet, then brew install hanbong5938/tap/herdr-desktop-pet.
 - Rubelia retains the owner's shared-world-canon identity and default@0.
   The 2026-10-02 approved drawing now supplies waiting/style authority; nine
   other complete poses are fresh local Qwen drawings, each with own layered
@@ -42,7 +49,9 @@ Requirements and distribution
   records travel with the pack; software MIT does not relicense artwork.
   v0.1.6 includes this redraw; older releases and imported selections remain.
 - App bundles are ad-hoc signed, not Developer ID signed or notarized.
-  macOS may require explicit approval to open the app.
+  curl, git and Homebrew formula installs set no quarantine attribute, so
+  Gatekeeper does not prompt; a browser-downloaded archive may still require
+  explicit approval to open the app.
 - Native hit-overlay blending uses typed subexpressions for compatibility with
   the release runner's Xcode 16.4 Swift compiler.
 

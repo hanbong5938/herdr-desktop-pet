@@ -47,10 +47,22 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | Prebuilt v0.1.7, or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
-| Prebuilt release download script | [GitHub CLI](https://cli.github.com/) (`gh`); not needed for Homebrew |
+| App | Pinned prebuilt v0.1.7 (downloaded by the plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
+
+## Install as a Herdr plugin (recommended)
+
+Install from the public [plugin repository](https://github.com/hanbong5938/herdr-desktop-pet) like any other Herdr plugin:
+
+```sh
+herdr plugin install hanbong5938/herdr-desktop-pet
+herdr plugin action invoke start --plugin desktop-pet
+```
+
+Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to the manifest `version` (v0.1.7) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl` rather than a browser or cask download, it carries no quarantine attribute and macOS shows no Gatekeeper prompt. Client-attach auto-start still requires the supplied host patch: run these commands with the patched Herdr host described above.
+
+The repository is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing.
 
 ## Install with Homebrew
 
@@ -62,28 +74,25 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-If you installed an earlier release from the old Homebrew cask, remove the cask before installing the formula:
+The Homebrew formula installs `HerdrDesktopPet.app` inside Homebrew's prefix, not the system Applications folder, and puts the `herdr-desktop-pet` CLI on `PATH`. This installs the app only: it does not register the Herdr plugin or install a patched Herdr host. Use the plugin installation above (or the source installation below) for plugin startup hooks; client-attach auto-start still requires the supplied host patch. The app is **ad-hoc signed, not notarized**; because the formula is not a cask download, Homebrew does not quarantine it and macOS shows no Gatekeeper prompt.
 
 ```sh
-brew uninstall --cask herdr-desktop-pet
-```
-
-Homebrew installs the app under its own prefix (`$(brew --prefix herdr-desktop-pet)/libexec/HerdrDesktopPet.app`), not in `/Applications`, and puts a `herdr-desktop-pet` CLI wrapper on `PATH`. This installs the app only: it does not register the Herdr plugin or install a patched Herdr host. Install the plugin separately with `herdr plugin install hanbong5938/herdr-desktop-pet`, or use the source installation below for plugin startup hooks; client-attach auto-start still requires the supplied host patch. The app is **ad-hoc signed, not notarized**; if macOS blocks opening it, review **System Settings → Privacy & Security** and explicitly allow it.
-
-```sh
-brew upgrade hanbong5938/tap/herdr-desktop-pet
-brew uninstall hanbong5938/tap/herdr-desktop-pet
+brew upgrade herdr-desktop-pet
+brew uninstall herdr-desktop-pet
 ```
 
 Uninstalling keeps your character packs, preferences, and lifecycle state.
 
-## Herdr marketplace
+Earlier versions shipped a Homebrew cask that copied the app to `/Applications`. To migrate a previous cask install, remove it and install the formula (your data is kept):
 
-The public [plugin repository](https://github.com/hanbong5938/herdr-desktop-pet) is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing. GitHub-managed plugin installs run the manifest's source build and require the source toolchain and compatible host described below; Homebrew does not run that build.
+```sh
+brew uninstall --cask herdr-desktop-pet
+brew install hanbong5938/tap/herdr-desktop-pet
+```
 
 ## Install this feature from source
 
-In this feature's source checkout, with the patched Herdr host running in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
+For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. In this feature's source checkout, with the patched Herdr host running in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
 
 ```sh
 bash scripts/install.sh --source
@@ -93,7 +102,7 @@ bash scripts/install.sh --source
 
 The installer installs pinned JavaScript dependencies, builds the Rust executable, packages the native rig runtime and creator resources, and validates the app. Linking/enabling on an already-running server does not itself launch the pet: invoke `start` once, or wait for a subsequent successful shell/terminal client attach when `auto_start` is on. Server startup also runs automatic `ensure`. Inspect link warnings: an unknown `client.attached` hook means the host lacks the required patch. Herdr plugin actions require a running, enabled host; direct native settings commands below work without one.
 
-The **v0.1.7 prebuilt app includes the newly drawn ten-pose Rubelia default, lifecycle settings, editable dialogue, inline replies, and status indicators**. v0.1.7 fixes the packaged CLI so it finds its bundled default character when launched through a symlink on `PATH`. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` using authenticated `gh` and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` may select a pinned prebuilt for a GitHub checkout; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; macOS may require explicit approval.
+The **v0.1.7 prebuilt app includes the newly drawn ten-pose Rubelia default, lifecycle settings, editable dialogue, inline replies, and status indicators**. v0.1.7 fixes the packaged CLI so it finds its bundled default character when launched through a symlink on `PATH`. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` anonymously over HTTPS with `curl` (no GitHub login) from the checkout's git `origin` repository (falling back to `HERDR_PET_REPOSITORY`, then `hanbong5938/herdr-desktop-pet`) and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character; it never falls back to a source build. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` installs the pinned prebuilt and falls back to a source build only if the prebuilt is unavailable or invalid; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; installer downloads are not quarantined, so macOS shows no Gatekeeper prompt for them.
 
 The older **v0.1.4 prebuilt message composer** differs from v0.1.6 inline replies: **Enter** inserts a newline, **Command+Enter** sends, and **Escape** collapses the bubble (during IME composition, Escape cancels composition first). Upgrade to v0.1.6 or use `--source` for inline-card replies.
 
@@ -217,7 +226,7 @@ For authoring, see the [character creator guide](.agents/skills/character-creato
 - Native commands accept `--config-dir` and `--state-dir` for isolated profiles; injected environment paths take precedence.
 - If the pet does not appear after linking, check for an unknown-hook warning, invoke `start`, then inspect `status` and the daemon log. An off `auto_start` is an intentional automatic skip.
 - For remote observation errors, check **Observation sources** and the saved profile's status; see [Observation sources](#observation-sources) for authentication recovery and CLI compatibility.
-- If a release download fails, check your `gh` authentication. The installer does not fall back to anonymous `curl` after an authenticated `gh` download fails.
+- If a release download fails, check network access to github.com. `--prebuilt` does not fall back; the default mode falls back to a source build, which requires the source toolchain.
 - Use Herdr's upstream provider integrations. Restart/reload existing provider sessions after installing their upstream lifecycle hooks.
 
 ## Development
