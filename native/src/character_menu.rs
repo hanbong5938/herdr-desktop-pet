@@ -62,14 +62,10 @@ const ROW_HOVER_GREEN: f64 = 0.20;
 const ROW_HOVER_BLUE: f64 = 0.22;
 
 fn resolve_builtin_thumbnail_path() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(Path::parent) {
-            if contents.file_name().is_some_and(|name| name == "Contents") {
-                let bundle_path = contents.join("Resources/default-thumbnail.png");
-                if bundle_path.is_file() {
-                    return Some(bundle_path);
-                }
-            }
+    if let Some(contents) = crate::bundle::contents_dir() {
+        let bundle_path = contents.join("Resources/default-thumbnail.png");
+        if bundle_path.is_file() {
+            return Some(bundle_path);
         }
     }
     let dev_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/rubelia-thumbnail.png");

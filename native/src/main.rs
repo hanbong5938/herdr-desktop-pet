@@ -9,6 +9,7 @@ mod animation;
 mod assets;
 mod behavior;
 mod bubble;
+mod bundle;
 mod character_menu;
 mod character_renderer;
 mod character_selection;
@@ -834,7 +835,7 @@ fn status(paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
         send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT)?
     } else {
         let settings = lifecycle::read_settings(&paths.config_dir)?;
-        let executable = env::current_exe()
+        let executable = bundle::executable()
             .map_err(|error| format!("cannot resolve executable path: {error}"))?;
         ControlResponse {
             r#type: "status".to_owned(),
@@ -991,7 +992,7 @@ fn spawn_daemon(
     startup_token: &str,
     automatic_start: bool,
 ) -> Result<u32, String> {
-    let executable = env::current_exe()
+    let executable = bundle::executable()
         .map_err(|error| format!("cannot resolve desktop-pet executable path: {error}"))?;
     let log = OpenOptions::new()
         .create(true)
@@ -1661,18 +1662,9 @@ fn resolve_assets(explicit: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
         return validate_assets_path(path);
     }
-    let executable = env::current_exe()
-        .map_err(|error| format!("cannot resolve executable path for packaged assets: {error}"))?;
-    let contents = executable.parent().and_then(Path::parent);
-    let candidate = if contents
-        .and_then(Path::file_name)
-        .is_some_and(|name| name == "Contents")
-    {
-        contents
-            .expect("checked bundle contents")
-            .join("Resources/default")
-    } else {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/rubelia-default")
+    let candidate = match bundle::contents_dir() {
+        Some(contents) => contents.join("Resources/default"),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/rubelia-default"),
     };
     validate_assets_path(&candidate)
 }
