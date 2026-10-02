@@ -1,5 +1,5 @@
-Herdr Desktop Pet 0.1.7; symlinked CLI resolves bundled default assets
-==========================================================
+Herdr Desktop Pet 0.1.8; character menu, dialogue editor and card fixes
+=======================================================================
 
 Requirements and distribution
 - Apple Silicon macOS 13+. Local observation supports Herdr 0.9.0+;
@@ -157,6 +157,20 @@ Observation sources
   in a terminal. The pet does not run interactive setup or use Local as a
   fallback for remote errors. Remote sources are observation-only; prompts
   are never sent through machine forwarding.
+
+v0.1.8 release notes (no new Herdr host release)
+- A finished pack operation whose status ages out of the bounded service
+  cache keeps its final result, so the character menu no longer stays
+  disabled until restart. The UI is woken after pack-mutation admission is
+  released, so the menu re-enables as soon as an operation finishes.
+- A failed dialogue metadata load (for example a transient store Busy while
+  another process holds the character store lock) stays visible while the
+  user types; reopening the dialogue editor retries the same identity.
+- Session card titles and collision markers are computed against every
+  session during IME composition, matching the normal refresh path.
+- The orphaned reply target label and its unused message were removed.
+- Manifest version 0.1.8 pins this app release. min_herdr_version
+  0.9.3 remains the patch baseline.
 
 v0.1.7 release notes (no new Herdr host release)
 - v0.1.7 resolves the running executable through symlinks before locating
