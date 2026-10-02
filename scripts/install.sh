@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+SCRIPT_PATH="$ROOT_DIR/scripts/$(basename -- "${BASH_SOURCE[0]}")"
 APP_ROOT="$ROOT_DIR/dist/HerdrDesktopPet.app"
 MANIFEST_PATH="$ROOT_DIR/herdr-plugin.toml"
+DEFAULT_REPOSITORY="hanbong5938/herdr-desktop-pet"
 
 fail() {
   printf 'herdr desktop pet install: %s\n' "$*" >&2
@@ -14,10 +16,28 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scripts/install.sh [--prebuilt | --source]
 
-With no option, a GitHub checkout uses its origin and manifest version to fetch
-that exact release asset. A checkout without a GitHub origin is built locally.
-Set HERDR_PET_REPOSITORY, HERDR_PET_VERSION, and/or HERDR_PET_RELEASE_URL to
-select a release explicitly.
+Modes:
+  (default)   Download the release pinned to the manifest version over HTTPS,
+              verify it, and install it to dist/HerdrDesktopPet.app. If the
+              prebuilt release is unavailable or invalid, build from source.
+  --prebuilt  Install the pinned prebuilt release only; any failure is fatal.
+  --source    Build from local sources only (cargo, bun, npm); never download.
+              --local-build is an alias.
+
+Environment:
+  HERDR_PET_INSTALL_MODE      auto (default), prebuilt, or source.
+  HERDR_PET_LOCAL_BUILD=1     Same as --source.
+  HERDR_PET_REPOSITORY        GitHub OWNER/REPO to download from (default: the
+                              checkout's GitHub origin, else
+                              hanbong5938/herdr-desktop-pet).
+  HERDR_PET_VERSION           Release version; must match the manifest version.
+  HERDR_PET_RELEASE_URL       Explicit HTTPS URL of the release archive.
+  HERDR_PET_RELEASE_BASE_URL  HTTPS base URL; the asset name is appended.
+  HERDR_PET_CHECKSUM_URL      HTTPS URL of the SHA-256 checksum file
+                              (default: <release URL>.sha256).
+  HERDR_PET_SHA256            Expected archive SHA-256; skips the checksum download.
+  HERDR_PET_ASSET_NAME        Release archive filename
+                              (default: HerdrDesktopPet-v<version>-macos-arm64.tar.gz).
 EOF
 }
 
@@ -116,16 +136,6 @@ validate_https_url() {
   [[ "$url" != *[[:space:]]* ]] || fail "release URL contains whitespace"
 }
 
-has_release_configuration() {
-  [[ -n "${HERDR_PET_RELEASE_URL:-}" ||
-    -n "${HERDR_PET_RELEASE_BASE_URL:-}" ||
-    -n "${HERDR_PET_CHECKSUM_URL:-}" ||
-    -n "${HERDR_PET_SHA256:-}" ||
-    -n "${HERDR_PET_REPOSITORY:-}" ||
-    -n "${HERDR_PET_VERSION:-}" ||
-    -n "${HERDR_PET_RELEASE_TAG:-}" ]]
-}
-
 validate_native_pack() {
   local binary="$1" path="$2" label="$3" expected_backend="$4" validation_root validation_output
 
@@ -206,19 +216,13 @@ source_build() {
 }
 
 prebuilt_install() {
-  local repository version manifest_version release_tag asset_name release_url checksum_url use_gh=0
-  local temp_dir archive checksum_file expected actual archive_list archive_details extract_dir staging entry has_app
-
+  local repository version manifest_version release_tag asset_name release_url checksum_url
+  local temp_dir archive checksum_file expected expected_candidate name actual
+  local archive_list archive_details extract_dir staging entry has_app
 
   infer_github_repository
-  repository="${HERDR_PET_REPOSITORY:-$INFERRED_REPOSITORY}"
-  if [[ -z "${HERDR_PET_RELEASE_URL:-}" && -z "${HERDR_PET_RELEASE_BASE_URL:-}" ]]; then
-    [[ -n "$repository" ]] ||
-      fail "prebuilt installation needs HERDR_PET_REPOSITORY or a GitHub origin remote"
-    validate_repository "$repository"
-  elif [[ -n "$repository" ]]; then
-    validate_repository "$repository"
-  fi
+  repository="${HERDR_PET_REPOSITORY:-${INFERRED_REPOSITORY:-$DEFAULT_REPOSITORY}}"
+  validate_repository "$repository"
 
   manifest_version="$(read_manifest_version)"
   version="${HERDR_PET_VERSION:-$manifest_version}"
@@ -249,62 +253,30 @@ prebuilt_install() {
   validate_https_url "$release_url"
   validate_https_url "$checksum_url"
 
-  if [[ -z "${HERDR_PET_RELEASE_URL:-}" &&
-    -z "${HERDR_PET_RELEASE_BASE_URL:-}" ]] &&
-    command -v gh >/dev/null 2>&1; then
-    use_gh=1
-  fi
-  if (( use_gh == 0 )) || [[ -n "${HERDR_PET_CHECKSUM_URL:-}" ]]; then
-    command -v curl >/dev/null 2>&1 || fail "prebuilt installation requires curl for HTTPS release downloads"
-  fi
+  command -v curl >/dev/null 2>&1 || fail "prebuilt installation requires curl for HTTPS release downloads"
   command -v shasum >/dev/null 2>&1 || fail "prebuilt installation requires shasum"
   command -v tar >/dev/null 2>&1 || fail "prebuilt installation requires tar"
 
-  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/herdr-desktop-pet.XXXXXX")"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/herdr-desktop-pet.XXXXXX")" ||
+    fail "unable to create a temporary download directory"
   CLEANUP_DIR="$temp_dir"
   archive="$temp_dir/$asset_name"
   checksum_file="$temp_dir/$asset_name.sha256"
 
-  if (( use_gh == 1 )); then
-    printf 'Downloading Herdr Desktop Pet %s from GitHub release %s via authenticated gh...\n' \
-      "$version" "$release_tag"
-    if [[ -n "${HERDR_PET_SHA256:-}" || -n "${HERDR_PET_CHECKSUM_URL:-}" ]]; then
-      if ! gh release download "$release_tag" --repo "$repository" \
-        --pattern "$asset_name" --dir "$temp_dir" \
-        >"$temp_dir/gh-release-download.log" 2>&1; then
-        fail "unable to download pinned release with GitHub CLI; authenticate gh (for example, gh auth login) or use an explicit HTTPS release URL; no curl fallback was attempted"
-      fi
-    else
-      if ! gh release download "$release_tag" --repo "$repository" \
-        --pattern "$asset_name" --pattern "$asset_name.sha256" --dir "$temp_dir" \
-        >"$temp_dir/gh-release-download.log" 2>&1; then
-        fail "unable to download pinned release with GitHub CLI; authenticate gh (for example, gh auth login) or use an explicit HTTPS release URL; no curl fallback was attempted"
-      fi
-    fi
-    [[ -f "$archive" ]] || fail "GitHub release did not provide the pinned asset $asset_name"
-    if [[ -z "${HERDR_PET_SHA256:-}" && -z "${HERDR_PET_CHECKSUM_URL:-}" ]]; then
-      [[ -f "$checksum_file" ]] ||
-        fail "GitHub release did not provide the checksum asset $asset_name.sha256"
-    fi
-  else
-    printf 'Downloading Herdr Desktop Pet %s from %s...\n' "$version" "$release_url"
-    curl --fail --location --proto '=https' --proto-redir '=https' \
-      --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 1 \
-      --silent --show-error "$release_url" --output "$archive" ||
-      if [[ -z "${HERDR_PET_RELEASE_URL:-}" && -z "${HERDR_PET_RELEASE_BASE_URL:-}" ]]; then
-        fail "unable to download pinned GitHub release over HTTPS; install and authenticate gh for private repositories"
-      else
-        fail "unable to download pinned release asset"
-      fi
-  fi
+  printf 'Downloading Herdr Desktop Pet %s from %s...\n' "$version" "$release_url"
+  curl --fail --location --proto '=https' --proto-redir '=https' \
+    --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 1 \
+    --silent --show-error "$release_url" --output "$archive" ||
+    fail "unable to download pinned release asset from $release_url"
 
   if [[ -n "${HERDR_PET_SHA256:-}" ]]; then
-    printf '%s  %s\n' "$HERDR_PET_SHA256" "$asset_name" > "$checksum_file"
-  elif [[ ! -f "$checksum_file" ]]; then
+    printf '%s  %s\n' "$HERDR_PET_SHA256" "$asset_name" > "$checksum_file" ||
+      fail "unable to record the expected checksum"
+  else
     curl --fail --location --proto '=https' --proto-redir '=https' \
       --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 1 \
       --silent --show-error "$checksum_url" --output "$checksum_file" ||
-      fail "unable to download checksum for pinned release asset"
+      fail "unable to download checksum for pinned release asset from $checksum_url"
   fi
 
   expected=""
@@ -321,7 +293,8 @@ prebuilt_install() {
   done < "$checksum_file"
   [[ -n "$expected" ]] || fail "checksum file does not contain a SHA-256 for $asset_name"
 
-  actual="$(shasum -a 256 "$archive" | awk '{ print tolower($1) }')"
+  actual="$(shasum -a 256 "$archive" | awk '{ print tolower($1) }')" ||
+    fail "unable to compute the SHA-256 of $asset_name"
   [[ "$actual" == "$expected" ]] ||
     fail "checksum mismatch for $asset_name (expected $expected, got $actual)"
 
@@ -349,37 +322,35 @@ prebuilt_install() {
   done < "$archive_details"
 
   extract_dir="$temp_dir/extract"
-  mkdir -p "$extract_dir"
+  mkdir -p "$extract_dir" || fail "unable to create the extraction directory"
   tar -xzf "$archive" -C "$extract_dir" || fail "unable to extract verified release asset"
   validate_app "$extract_dir/HerdrDesktopPet.app"
 
-  mkdir -p "$ROOT_DIR/dist"
+  mkdir -p "$ROOT_DIR/dist" || fail "unable to create $ROOT_DIR/dist"
   staging="$ROOT_DIR/dist/.HerdrDesktopPet.install.$$.app"
   STAGING_DIR="$staging"
-  rm -rf "$staging"
-  cp -R "$extract_dir/HerdrDesktopPet.app" "$staging"
+  rm -rf "$staging" || fail "unable to clear the staging directory $staging"
+  cp -R "$extract_dir/HerdrDesktopPet.app" "$staging" ||
+    fail "unable to stage the verified app bundle"
   validate_app "$staging"
-  rm -rf "$APP_ROOT"
-  mv "$staging" "$APP_ROOT"
+  rm -rf "$APP_ROOT" || fail "unable to remove the previous app at $APP_ROOT"
+  mv "$staging" "$APP_ROOT" || fail "unable to move the verified app into $APP_ROOT"
   STAGING_DIR=""
   validate_app "$APP_ROOT"
   printf 'Installed Herdr Desktop Pet at %s\n' "$APP_ROOT"
 }
 
-if [[ "$mode" == "auto" ]]; then
-  if has_release_configuration; then
-    mode=prebuilt
-  else
-    infer_github_repository
-    if [[ -n "$INFERRED_REPOSITORY" ]]; then
-      mode=prebuilt
-    else
-      mode=source
-    fi
-  fi
-fi
-
 case "$mode" in
+  auto)
+    # Run the prebuilt attempt as a child process rather than a subshell: the
+    # child keeps errexit active, runs its own EXIT trap (cleaning its temp and
+    # staging dirs on success and failure), and any `fail` only aborts the
+    # attempt so the source build can take over.
+    if ! bash "$SCRIPT_PATH" --prebuilt; then
+      printf 'herdr desktop pet install: prebuilt release unavailable or invalid; building from source instead.\n' >&2
+      source_build
+    fi
+    ;;
   prebuilt) prebuilt_install ;;
   source) source_build ;;
   *) fail "unsupported installation mode '$mode'" ;;
