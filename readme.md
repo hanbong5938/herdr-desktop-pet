@@ -12,7 +12,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 - Observe local Herdr sessions by default, with optional saved-machine remote observation.
 - Session-aware states: idle, running, waiting, and unknown.
 - Readable session cards with task titles, workspace/tab context, source labels, and a separate status label.
-- Source-build-only (`bash scripts/install.sh --source`) inline replies beneath selected local agent session cards in the expanded status bubble; remote cards remain read-only. The v0.1.4 prebuilt retains its message composer.
+- Inline replies beneath selected local agent session cards in the expanded status bubble, included in v0.1.5; remote cards remain read-only. The older v0.1.4 prebuilt retains its message composer.
 - Head/body tap reactions, head petting, dragging, and resizing.
 - Configurable status bubble placement and visibility.
 - Optional status icons and colors, with a status summary that remains visible alongside dialogue.
@@ -27,9 +27,9 @@ Session cards use the observed terminal title, then a named tab, then workspace/
 
 Opening the menu-bar control panel requests app activation using the current macOS API, with a compatible activation path on macOS 13. macOS decides whether to grant activation; opening the panel does not guarantee a keyboard-focus transfer from another app.
 
-### Inline replies (source build only)
+### Inline replies
 
-The following inline-card behavior requires `bash scripts/install.sh --source`; it is not in the v0.1.4 prebuilt.
+The following inline-card behavior is included in the v0.1.5 prebuilt and source builds.
 
 Expand the bubble to see session cards; the reply field is initially hidden, including in the **All** view. Click a local agent session card to open a one-line reply beneath it; clicking another session folds the previous field and opens the new one. Remote cards show read-only feedback instead of a reply field or Send button. Line breaks in any committed input (typing, paste, or text import) become spaces in the one-line reply; active IME preedit remains untouched until committed. Press **Enter** or **Command+Enter**, or click **Send**, to submit. IME composition does not submit; **Escape** cancels active composition first, otherwise it folds only the reply field. Clicking outside the bubble folds the reply unless IME composition is active; clicking elsewhere inside the bubble does not automatically fold it. Neither action collapses the bubble. Drafts are kept in memory per session through folding and bubble collapse, but not across app restarts. Success clears and folds only the matching current reply; if the text was edited or another session selected during sending, the new draft or open field remains. Failure or uncertain delivery preserves the draft and reply state.
 
@@ -47,7 +47,7 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | Prebuilt v0.1.4, or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
+| App | Prebuilt v0.1.5, or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
 | Prebuilt release download script | [GitHub CLI](https://cli.github.com/) (`gh`); not needed for Homebrew |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
@@ -87,9 +87,9 @@ bash scripts/install.sh --source
 
 The installer installs pinned JavaScript dependencies, builds the Rust executable, packages the native rig runtime and creator resources, and validates the app. Linking/enabling on an already-running server does not itself launch the pet: invoke `start` once, or wait for a subsequent successful shell/terminal client attach when `auto_start` is on. Server startup also runs automatic `ensure`. Inspect link warnings: an unknown `client.attached` hook means the host lacks the required patch. Herdr plugin actions require a running, enabled host; direct native settings commands below work without one.
 
-The **v0.1.4 prebuilt app includes lifecycle settings, editable dialogue, the message composer, and status indicators**. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` using authenticated `gh` and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` may select a pinned prebuilt for a GitHub checkout; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; macOS may require explicit approval.
+The **v0.1.5 prebuilt app includes the newly drawn ten-pose Rubelia default, lifecycle settings, editable dialogue, the message composer, and status indicators**. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` using authenticated `gh` and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` may select a pinned prebuilt for a GitHub checkout; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; macOS may require explicit approval.
 
-The **v0.1.4 prebuilt message composer** is not the source-only inline reply UI: **Enter** inserts a newline, **Command+Enter** sends, and **Escape** collapses the bubble (during IME composition, Escape cancels composition first). Use `--source` for the inline-card behavior below.
+The older **v0.1.4 prebuilt message composer** differs from v0.1.5 inline replies: **Enter** inserts a newline, **Command+Enter** sends, and **Escape** collapses the bubble (during IME composition, Escape cancels composition first). Upgrade to v0.1.5 or use `--source` for inline-card replies.
 
 ## Controls
 
@@ -238,4 +238,6 @@ Repository layout:
 ## Artwork and licensing
 
 The bundled Rubelia's [license](assets/rubelia-default/LICENSE.txt), [attribution](assets/rubelia-default/ATTRIBUTION.txt), and [source records](assets/rubelia-default/source-record.json) travel with the pack. [LICENSE.txt](LICENSE.txt) retains the original Coding Cat notice; Coding Cat and its drawing source now live in the separate character repository. These notices do not establish a blanket license for every repository component. Keep licenses, attribution, and source-term files with imported packs.
+
+This checkout's default uses the owner-approved 2026-10-02 illustration as its drawing authority: `waiting` retains that drawing, and the other nine complete poses were newly generated locally with Qwen-Image-2.1. Every pose has its own source-derived layered PSD, eye/mouth shapes, rig and complete phase/reaction motion. The existing `default@0` and Rubelia manifest identity are unchanged. The thumbnail comes from an actual native waiting-pose capture. Source records disclose two pre-export source-framing adjustments with raw/master images preserved; this is not the previous y=540-cropped artwork or a flattened PNG replacement. This redraw ships in v0.1.5; earlier releases and existing imported pack selections remain unchanged.
 

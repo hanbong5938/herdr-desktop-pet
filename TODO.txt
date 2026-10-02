@@ -1,4 +1,4 @@
-Herdr Desktop Pet 0.1.4; UNRELEASED source inline replies
+Herdr Desktop Pet 0.1.5; approved Rubelia redraw and inline replies
 ==========================================================
 
 Requirements and distribution
@@ -10,9 +10,9 @@ Requirements and distribution
   actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
   implement client.attached. A manifest minimum version alone does not prove
   compatibility: inspect plugin-link warnings and verify subscription.
-- Published 0.1.4 prebuilt includes lifecycle settings, editable dialogue,
-  status indicators, and the legacy message composer. Only this checkout's
-  inline-card replies are unreleased: bash scripts/install.sh --source.
+- Release 0.1.5 includes lifecycle settings, editable dialogue, status
+  indicators, inline-card replies, and the approved new Rubelia default.
+  Use bash scripts/install.sh --source to build local changes.
   Link against the running patched host (PATCHED_HERDR from the integration
   guide, not an installed herdr on PATH):
     "$PATCHED_HERDR" plugin link /absolute/path/to/checkout --enabled
@@ -21,12 +21,10 @@ Requirements and distribution
   start once or wait for a subsequent shell/terminal attach with auto_start on.
   See integrations/herdr/README.md for a separate disposable patched-host
   XDG profile; do not replace an installed host or assume stable PATH is patched.
-- The published 0.1.4 prebuilt is available with --prebuilt and authenticated
-  gh; the installer verifies checksum, archive layout/types, arm64, signature
-  and default model. It does NOT contain inline-card replies: its composer
-  inserts a newline on Enter, sends on Command+Enter, and collapses the bubble
-  on Escape (after canceling active IME composition). An optionless install
-  may select the published prebuilt; use explicit --source for local changes.
+- Release v0.1.5 ships the approved new Rubelia ten-pose default.
+  The prebuilt installer verifies checksum, archive layout/types, arm64,
+  signature and default model. An optionless install may select the pinned
+  prebuilt; use explicit --source to build local changes.
   Source builds require Rust, Bun, Node.js/npm and Xcode Command Line Tools.
   Running prebuilt needs no build toolchain.
 - Rubelia is the only bundled character and default model (default@0).
@@ -35,15 +33,20 @@ Requirements and distribution
 - Releases: https://github.com/hanbong5938/herdr-desktop-pet/releases
 - The primary repository is public. Homebrew needs no GitHub login; the
   --prebuilt download script uses authenticated gh.
-- Rubelia uses the owner's shared-world-canon identity, ten independent native
-  rig poses, and upper-thigh framing. Source and AI/model-usage records are
-  included. The software's MIT license does not relicense the artwork.
+- Rubelia retains the owner's shared-world-canon identity and default@0.
+  The 2026-10-02 approved drawing now supplies waiting/style authority; nine
+  other complete poses are fresh local Qwen drawings, each with own layered
+  PSD, eye/mouth shapes and complete native phase/reaction motion. Two poses
+  use disclosed pre-export upper-thigh source framing; raw/master art remains.
+  The thumbnail is a genuine native waiting capture. Source/owner/model
+  records travel with the pack; software MIT does not relicense artwork.
+  v0.1.5 includes this redraw; older releases and imported selections remain.
 - App bundles are ad-hoc signed, not Developer ID signed or notarized.
   macOS may require explicit approval to open the app.
 - Native hit-overlay blending uses typed subexpressions for compatibility with
   the release runner's Xcode 16.4 Swift compiler.
 
-Unreleased source-only inline interaction changes
+Inline interaction changes included in v0.1.5
 - Replace the always-visible multiline composer with on-demand, single-line
   replies under the selected session card; keep session drafts and send safety.
 - Preserve composing text while deferring card selection, filter changes, and
@@ -146,12 +149,11 @@ Observation sources
   fallback for remote errors. Remote sources are observation-only; prompts
   are never sent through machine forwarding.
 
-UNRELEASED source integration notes (not a new app or host release)
-- The published 0.1.4 prebuilt already includes lifecycle settings, editable
-  dialogue, status indicators, remote observation and the legacy composer;
-  this checkout's inline-card reply replacement is source-only. Preserve the
-  Rubelia-only bundle and optional separate content repository.
-- Source-built inline replies open below selected local session cards; remote
+v0.1.5 integration notes (no new Herdr host release)
+- This app release includes the inline-card reply replacement, lifecycle
+  settings, editable dialogue, status indicators and remote observation.
+  The Rubelia-only bundle and optional separate content repository remain.
+- Inline replies open below selected local session cards; remote
   cards remain read-only, and submission uses local agent.prompt. All committed
   line breaks become spaces, while active Cocoa marked text is preserved.
 - Inline navigation preserves active marked text and revalidates deferred
@@ -175,8 +177,7 @@ UNRELEASED source integration notes (not a new app or host release)
   offline/ambiguous identity, hidden rows, remote read-only and generation.
   This is not proof of physical keyboard IME behavior, OS-granted focus
   transfer, or publication of a new binary.
-- Manifest version 0.1.4 matches the published prebuilt version; these
-  source changes are not a newly published artifact. min_herdr_version
+- Manifest version 0.1.5 pins this app release. min_herdr_version
   0.9.3 is the patch baseline, not proof of client.attached support. No
   Windows native distribution or accessibility-based click routing is
   claimed; pre-existing native clippy all-target erasing_op is out of scope.

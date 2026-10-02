@@ -37,23 +37,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -62,23 +62,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -87,23 +87,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -199,23 +199,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -224,23 +224,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -249,23 +249,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -361,23 +361,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -386,23 +386,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -411,23 +411,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -523,23 +523,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -548,23 +548,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -573,23 +573,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -687,23 +687,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -712,23 +712,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -737,23 +737,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -811,7 +811,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.3765625,
+            "y": 0.556640625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 3200,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 6400,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "body_tap": {
       "duration_ms": 6400,
@@ -849,23 +879,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -874,23 +904,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -899,23 +929,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -973,7 +1003,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.3765625,
+            "y": 0.556640625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 3200,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 6400,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "pet": {
       "duration_ms": 6400,
@@ -1011,23 +1071,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1036,23 +1096,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1061,23 +1121,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1135,7 +1195,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.3765625,
+            "y": 0.556640625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 3200,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 6400,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "completion_observed": {
       "duration_ms": 6400,
@@ -1173,23 +1263,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1100,
-              "value": 0.06
+              "value": 0.039
             },
             {
               "at_ms": 2700,
-              "value": 0.2
+              "value": 0.13
             },
             {
               "at_ms": 4900,
-              "value": 0.05
+              "value": 0.0325
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1198,23 +1288,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1400,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3100,
-              "value": -0.18
+              "value": -0.117
             },
             {
               "at_ms": 5200,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1223,23 +1313,23 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 1300,
-              "value": 0.03
+              "value": 0.0195
             },
             {
               "at_ms": 3400,
-              "value": 0.1
+              "value": 0.065
             },
             {
               "at_ms": 5200,
-              "value": 0.025
+              "value": 0.01625
             },
             {
               "at_ms": 6400,
-              "value": 0
+              "value": 0.0
             }
           ]
         },

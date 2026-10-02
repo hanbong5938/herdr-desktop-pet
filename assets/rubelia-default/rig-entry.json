@@ -3,18 +3,6 @@
   "initial": "waiting",
   "models": [
     {
-      "id": "head-tap",
-      "file": "head-tap.psd",
-      "overrides": "head-tap-overrides.json",
-      "motion": "head-tap-motion.json"
-    },
-    {
-      "id": "bored",
-      "file": "bored.psd",
-      "overrides": "bored-overrides.json",
-      "motion": "bored-motion.json"
-    },
-    {
       "id": "waiting",
       "file": "waiting.psd",
       "overrides": "waiting-overrides.json",
@@ -27,6 +15,42 @@
       "motion": "writing-motion.json"
     },
     {
+      "id": "failed",
+      "file": "failed.psd",
+      "overrides": "failed-overrides.json",
+      "motion": "failed-motion.json"
+    },
+    {
+      "id": "cancelled",
+      "file": "cancelled.psd",
+      "overrides": "cancelled-overrides.json",
+      "motion": "cancelled-motion.json"
+    },
+    {
+      "id": "disconnected",
+      "file": "disconnected.psd",
+      "overrides": "disconnected-overrides.json",
+      "motion": "disconnected-motion.json"
+    },
+    {
+      "id": "bored",
+      "file": "bored.psd",
+      "overrides": "bored-overrides.json",
+      "motion": "bored-motion.json"
+    },
+    {
+      "id": "happy",
+      "file": "happy.psd",
+      "overrides": "happy-overrides.json",
+      "motion": "happy-motion.json"
+    },
+    {
+      "id": "head-tap",
+      "file": "head-tap.psd",
+      "overrides": "head-tap-overrides.json",
+      "motion": "head-tap-motion.json"
+    },
+    {
       "id": "torso-tap",
       "file": "torso-tap.psd",
       "overrides": "torso-tap-overrides.json",
@@ -37,42 +61,18 @@
       "file": "head-pet.psd",
       "overrides": "head-pet-overrides.json",
       "motion": "head-pet-motion.json"
-    },
-    {
-      "id": "cancelled",
-      "file": "cancelled.psd",
-      "overrides": "cancelled-overrides.json",
-      "motion": "cancelled-motion.json"
-    },
-    {
-      "id": "failed",
-      "file": "failed.psd",
-      "overrides": "failed-overrides.json",
-      "motion": "failed-motion.json"
-    },
-    {
-      "id": "disconnected",
-      "file": "disconnected.psd",
-      "overrides": "disconnected-overrides.json",
-      "motion": "disconnected-motion.json"
-    },
-    {
-      "id": "happy",
-      "file": "happy.psd",
-      "overrides": "happy-overrides.json",
-      "motion": "happy-motion.json"
     }
   ],
   "bindings": {
-    "head-tap": "head-tap",
-    "bored": "bored",
     "waiting": "waiting",
     "writing": "writing",
-    "torso-tap": "torso-tap",
-    "head-pet": "head-pet",
-    "cancelled": "cancelled",
     "failed": "failed",
+    "cancelled": "cancelled",
     "disconnected": "disconnected",
-    "happy": "happy"
+    "bored": "bored",
+    "happy": "happy",
+    "head-tap": "head-tap",
+    "torso-tap": "torso-tap",
+    "head-pet": "head-pet"
   }
 }
