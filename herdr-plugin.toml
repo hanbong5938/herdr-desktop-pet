@@ -7,7 +7,7 @@ description = "A native macOS desktop companion for Herdr"
 platforms = ["macos"]
 
 [[build]]
-command = ["bash", "scripts/install.sh", "--source"]
+command = ["bash", "scripts/install.sh"]
 platforms = ["macos"]
 
 [[startup]]
