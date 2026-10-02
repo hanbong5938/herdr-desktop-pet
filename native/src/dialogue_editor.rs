@@ -107,7 +107,11 @@ struct Model {
     overrides: DialogueOverrides,
     metadata: Option<CharacterMetadata>,
     ready: bool,
+    // Save/reset/action failure reported via set_error; cleared by edits.
     error: Option<String>,
+    // Metadata/target load failure from Ui::sync_dialogue_editor_content; only
+    // sync_content records it, so it survives edits made while loading.
+    load_error: Option<String>,
     reload: bool,
     locale: Option<UiLocale>,
     slot: Option<DialogueSlot>,
@@ -187,6 +191,27 @@ impl Model {
             }
         }
     }
+
+    fn record_edit(&mut self, value: String) {
+        self.capture(value);
+        // Edits clear action errors only; load_error persists until sync_content.
+        self.error = None;
+    }
+
+    fn feedback_error(&self, locale: UiLocale, bytes: usize) -> &str {
+        if !self.valid() {
+            text(locale, Message::DialogueTargetUnavailable)
+        } else if !self.ready {
+            self.load_error
+                .as_deref()
+                .or(self.error.as_deref())
+                .unwrap_or(text(locale, Message::DialogueLoading))
+        } else if bytes > MAX_BYTES {
+            text(locale, Message::DialogueTooLong)
+        } else {
+            self.error.as_deref().unwrap_or("")
+        }
+    }
 }
 
 fn normalized(value: &str) -> &str {
@@ -236,9 +261,10 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), didChangeText] };
             if let Some(feedback) = self.ivars().borrow().as_ref() {
                 if !feedback.replacing {
-                    let mut model = feedback.model.borrow_mut();
-                    model.capture(self.string().to_string());
-                    model.error = None;
+                    feedback
+                        .model
+                        .borrow_mut()
+                        .record_edit(self.string().to_string());
                 }
             }
             self.refresh_feedback();
@@ -394,18 +420,7 @@ impl EditorTextView {
             "{}: {bytes}/{MAX_BYTES} · {status}",
             text(locale, Message::DialogueBytes)
         )));
-        let error = if !model.valid() {
-            text(locale, Message::DialogueTargetUnavailable)
-        } else if !model.ready {
-            model
-                .error
-                .as_deref()
-                .unwrap_or(text(locale, Message::DialogueLoading))
-        } else if bytes > MAX_BYTES {
-            text(locale, Message::DialogueTooLong)
-        } else {
-            model.error.as_deref().unwrap_or("")
-        };
+        let error = model.feedback_error(locale, bytes);
         let error_text = NSString::from_str(error);
         feedback.error.setStringValue(&error_text);
         feedback
@@ -1215,6 +1230,7 @@ impl DialogueEditor {
         model.metadata = None;
         model.ready = false;
         model.error = None;
+        model.load_error = None;
         drop(model);
         self.load_context();
     }
@@ -1280,7 +1296,8 @@ impl DialogueEditor {
         model.overrides = overrides.clone();
         model.metadata = metadata.cloned();
         model.ready = ready;
-        model.error = error.map(str::to_owned);
+        model.load_error = error.map(str::to_owned);
+        model.error = None;
         let value = model.key().map(|key| model.value(&key)).unwrap_or_default();
         let should_replace = model.reload
             || (previous.as_ref().is_some_and(|old| old != &value)
@@ -1463,5 +1480,75 @@ mod tests {
         model.ready = false;
         assert_eq!(model.baseline(&key), "Saved");
         assert_eq!(model.value(&key), "Unsaved");
+    }
+
+    fn selectable_model() -> Model {
+        let choice = DialogueChoice {
+            target: DialogueTarget::Character("default".to_owned()),
+            name: "Default".to_owned(),
+            reference: None,
+            generation: 1,
+        };
+        Model {
+            choices: vec![choice.clone()],
+            selected: Some(choice),
+            locale: Some(UiLocale::En),
+            slot: Some(DialogueSlot::Idle),
+            ..Model::default()
+        }
+    }
+
+    #[test]
+    fn load_error_survives_edits_until_content_sync() {
+        let locale = UiLocale::En;
+        let mut model = Model {
+            load_error: Some("load failed".to_owned()),
+            ..selectable_model()
+        };
+        let key = model.key().unwrap();
+        model.record_edit("Draft while loading".to_owned());
+        assert_eq!(model.feedback_error(locale, 0), "load failed");
+        assert!(model.dirty(&key));
+
+        // A successful sync_content replaces the load failure and clears action errors.
+        model.load_error = None;
+        model.error = None;
+        assert_eq!(
+            model.feedback_error(locale, 0),
+            text(locale, Message::DialogueLoading)
+        );
+        model.ready = true;
+        assert_eq!(model.feedback_error(locale, 0), "");
+        assert!(model.dirty(&key));
+    }
+
+    #[test]
+    fn edits_clear_action_error_but_not_load_error() {
+        let locale = UiLocale::En;
+        let mut model = Model {
+            ready: true,
+            error: Some("save failed".to_owned()),
+            ..selectable_model()
+        };
+        assert_eq!(model.feedback_error(locale, 0), "save failed");
+        assert_eq!(
+            model.feedback_error(locale, MAX_BYTES + 1),
+            text(locale, Message::DialogueTooLong)
+        );
+        model.record_edit("Edited".to_owned());
+        assert_eq!(model.feedback_error(locale, 0), "");
+
+        model.ready = false;
+        model.load_error = Some("load failed".to_owned());
+        model.error = Some("save failed".to_owned());
+        assert_eq!(model.feedback_error(locale, 0), "load failed");
+        model.record_edit("Edited again".to_owned());
+        assert_eq!(model.error, None);
+        assert_eq!(model.feedback_error(locale, 0), "load failed");
+        model.load_error = None;
+        assert_eq!(
+            model.feedback_error(locale, 0),
+            text(locale, Message::DialogueLoading)
+        );
     }
 }
