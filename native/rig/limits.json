@@ -10,6 +10,7 @@
   "channelDecodedBytes": 67108864,
   "decodedBytes": 33554432,
   "catalogDecodedBytes": 67108864,
+  "catalogDecodeWorkers": 4,
   "outputBytes": 33554432,
   "imageAllocationBytes": 67108864,
   "outputLayers": 64,

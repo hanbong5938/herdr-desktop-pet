@@ -64,7 +64,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(
+    character_renderer::MAX_PREPARATION_TIMEOUT.as_secs()
+        + 2 * character_renderer::SURFACE_PREPARATION_TIMEOUT.as_secs(),
+);
+const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOG_MODE: u32 = 0o600;
@@ -783,7 +787,7 @@ fn restart(
 }
 
 fn stop(paths: Paths) -> Result<(), String> {
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         if Instant::now() >= deadline {
             return Err("timed out stopping desktop-pet".to_owned());

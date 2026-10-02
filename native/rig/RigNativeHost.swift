@@ -277,7 +277,7 @@ final class RigNativeHost {
         let queue = OperationQueue()
         queue.name = "herdr.rig.catalog-decode"
         queue.qualityOfService = .utility
-        queue.maxConcurrentOperationCount = 4
+        queue.maxConcurrentOperationCount = RigLimits.catalogDecodeWorkers
         return queue
     }()
     let view: RigSurfaceView
@@ -1161,7 +1161,8 @@ final class RigNativeHost {
             return
         }
         let group = DispatchGroup()
-        let deadline = DispatchTime.now() + TimeInterval(RigLimits.decodeSeconds)
+        let batches = (indices.count + RigLimits.catalogDecodeWorkers - 1) / RigLimits.catalogDecodeWorkers
+        let deadline = DispatchTime.now() + TimeInterval(RigLimits.decodeSeconds * batches)
         for (index, job) in zip(indices, jobs) {
             group.enter()
             Self.catalogDecodeQueue.addOperation { [self] in

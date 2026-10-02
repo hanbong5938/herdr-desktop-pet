@@ -214,8 +214,8 @@
     },
     {
       "path": "owner-approval.json",
-      "size": 3156,
-      "sha256": "cd2d9e59ef3104873f8b3eb8b9868831191d33cd35b528cf7ece583ebcee0c97",
+      "size": 3307,
+      "sha256": "be6bd67e1fc510fc7dd2ed0f5eed6e1eb297d075ad3f5023a0c209daf191c721",
       "kind": "source"
     },
     {
@@ -226,8 +226,8 @@
     },
     {
       "path": "source-record.json",
-      "size": 1067822,
-      "sha256": "0d4e55afdac7a2670417e9c7733ed4bc5af879d93142fb09a8e2d0feba6392af",
+      "size": 1067873,
+      "sha256": "6a7d515b9ca6097eda92adf4229508f2485f4631c5bdcb16b28878199fe5348f",
       "kind": "source"
     },
     {

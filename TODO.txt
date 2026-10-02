@@ -1,4 +1,4 @@
-Herdr Desktop Pet 0.1.5; approved Rubelia redraw and inline replies
+Herdr Desktop Pet 0.1.6; approved Rubelia redraw and inline replies
 ==========================================================
 
 Requirements and distribution
@@ -10,7 +10,7 @@ Requirements and distribution
   actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
   implement client.attached. A manifest minimum version alone does not prove
   compatibility: inspect plugin-link warnings and verify subscription.
-- Release 0.1.5 includes lifecycle settings, editable dialogue, status
+- Release 0.1.6 includes lifecycle settings, editable dialogue, status
   indicators, inline-card replies, and the approved new Rubelia default.
   Use bash scripts/install.sh --source to build local changes.
   Link against the running patched host (PATCHED_HERDR from the integration
@@ -21,7 +21,7 @@ Requirements and distribution
   start once or wait for a subsequent shell/terminal attach with auto_start on.
   See integrations/herdr/README.md for a separate disposable patched-host
   XDG profile; do not replace an installed host or assume stable PATH is patched.
-- Release v0.1.5 ships the approved new Rubelia ten-pose default.
+- Release v0.1.6 ships the approved new Rubelia ten-pose default.
   The prebuilt installer verifies checksum, archive layout/types, arm64,
   signature and default model. An optionless install may select the pinned
   prebuilt; use explicit --source to build local changes.
@@ -40,13 +40,13 @@ Requirements and distribution
   use disclosed pre-export upper-thigh source framing; raw/master art remains.
   The thumbnail is a genuine native waiting capture. Source/owner/model
   records travel with the pack; software MIT does not relicense artwork.
-  v0.1.5 includes this redraw; older releases and imported selections remain.
+  v0.1.6 includes this redraw; older releases and imported selections remain.
 - App bundles are ad-hoc signed, not Developer ID signed or notarized.
   macOS may require explicit approval to open the app.
 - Native hit-overlay blending uses typed subexpressions for compatibility with
   the release runner's Xcode 16.4 Swift compiler.
 
-Inline interaction changes included in v0.1.5
+Inline interaction changes included in v0.1.6
 - Replace the always-visible multiline composer with on-demand, single-line
   replies under the selected session card; keep session drafts and send safety.
 - Preserve composing text while deferring card selection, filter changes, and
@@ -149,7 +149,7 @@ Observation sources
   fallback for remote errors. Remote sources are observation-only; prompts
   are never sent through machine forwarding.
 
-v0.1.5 integration notes (no new Herdr host release)
+v0.1.6 integration notes (no new Herdr host release)
 - This app release includes the inline-card reply replacement, lifecycle
   settings, editable dialogue, status indicators and remote observation.
   The Rubelia-only bundle and optional separate content repository remain.
@@ -177,10 +177,18 @@ v0.1.5 integration notes (no new Herdr host release)
   offline/ambiguous identity, hidden rows, remote read-only and generation.
   This is not proof of physical keyboard IME behavior, OS-granted focus
   transfer, or publication of a new binary.
-- Manifest version 0.1.5 pins this app release. min_herdr_version
+- Manifest version 0.1.6 pins this app release. min_herdr_version
   0.9.3 is the patch baseline, not proof of client.attached support. No
   Windows native distribution or accessibility-based click routing is
   claimed; pre-existing native clippy all-target erasing_op is out of scope.
+- Catalog preparation budgets account for all bounded decoder worker batches
+  plus renderer setup. Per-decoder timeout, worker count and RGBA quotas remain
+  enforced; v0.1.5 packaging failed before publishing assets because it applied
+  one decoder's deadline to the whole ten-pose catalog.
+  Verified with 12 seconds of injected delay per real decoder: full native
+  validation completed in 52.17 seconds; isolated AppKit/CLI startup reached
+  ui_ready and control_ready in 51.71 seconds with default@0 active.
+  Native regression suite: 275 passed.
 
 Lifecycle settings and plugin actions
 - Settings tab: independent auto_start (auto-launch on server startup and

@@ -1839,8 +1839,9 @@ pub fn wake() {
 fn wait_for_main_result(
     receiver: mpsc::Receiver<Result<RendererToken, String>>,
     cancel: &AtomicBool,
+    timeout: Duration,
 ) -> Result<RendererToken, String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + timeout;
     loop {
         if cancel.load(Ordering::Acquire) {
             return Err("character operation canceled".to_owned());
@@ -1942,6 +1943,8 @@ pub fn prepare_character(
     assets: ValidatedCharacter,
     cancel: Arc<AtomicBool>,
 ) -> Result<RendererToken, String> {
+    let timeout = character_renderer::preparation_timeout(&assets)
+        + character_renderer::SURFACE_PREPARATION_TIMEOUT;
     let (sender, receiver) = mpsc::sync_channel(1);
     enqueue_bridge(DeferredBridge::Prepare {
         token,
@@ -1949,7 +1952,7 @@ pub fn prepare_character(
         cancel: Arc::clone(&cancel),
         sender,
     });
-    wait_for_main_result(receiver, &cancel)
+    wait_for_main_result(receiver, &cancel, timeout)
 }
 
 pub fn apply_character(
@@ -1962,7 +1965,11 @@ pub fn apply_character(
         cancel: Arc::clone(&cancel),
         sender,
     });
-    wait_for_main_result(receiver, &cancel)
+    wait_for_main_result(
+        receiver,
+        &cancel,
+        character_renderer::SURFACE_PREPARATION_TIMEOUT,
+    )
 }
 
 pub fn discard_character(token: RendererToken) {
@@ -3189,6 +3196,7 @@ impl Ui {
             let _ = sender.send(Err("native character candidate is unavailable".to_owned()));
             return;
         }
+        let timeout = character_renderer::preparation_timeout(&assets);
         let builder = match PrepareBuilder::new(assets, token.clone(), self.mtm) {
             Ok(builder) => builder,
             Err(error) => {
@@ -3202,7 +3210,7 @@ impl Ui {
             builder,
             cancel,
             sender,
-            deadline: Instant::now() + Duration::from_secs(30),
+            deadline: Instant::now() + timeout,
         });
         self.start_prepare_timer(&timer_operation);
     }
@@ -3381,7 +3389,7 @@ impl Ui {
             prepared,
             cancel,
             sender,
-            deadline: Instant::now() + Duration::from_secs(30),
+            deadline: Instant::now() + character_renderer::SURFACE_PREPARATION_TIMEOUT,
         });
         self.start_prepare_timer(&operation_id);
     }
@@ -3503,7 +3511,7 @@ impl Ui {
         if !matches!(&self.active, PreparedCharacter::Rig(_)) {
             return Ok(());
         }
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + character_renderer::SURFACE_PREPARATION_TIMEOUT;
         let scene = self.last_scene.clone();
         self.behavior
             .update(self.launch_time.elapsed(), &scene, false, None, false);
@@ -7531,7 +7539,15 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(1);
         drop(sender);
         let cancel = AtomicBool::new(false);
-        assert!(wait_for_main_result(receiver, &cancel).is_err());
+        assert!(wait_for_main_result(receiver, &cancel, Duration::from_secs(30)).is_err());
+        assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn bridge_deadline_cancels_a_still_connected_deferred_request() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let cancel = AtomicBool::new(false);
+        assert!(wait_for_main_result(receiver, &cancel, Duration::ZERO).is_err());
         assert!(cancel.load(Ordering::Acquire));
     }
 }
