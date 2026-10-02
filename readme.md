@@ -12,7 +12,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 - Observe local Herdr sessions by default, with optional saved-machine remote observation.
 - Session-aware states: idle, running, waiting, and unknown.
 - Readable session cards with task titles, workspace/tab context, source labels, and a separate status label.
-- Expandable status bubble with session selection and a multiline message composer for selected local agent sessions; remote sessions remain observation-only.
+- Source-build-only (`bash scripts/install.sh --source`) inline replies beneath selected local agent session cards in the expanded status bubble; remote cards remain read-only. The v0.1.4 prebuilt retains its message composer.
 - Head/body tap reactions, head petting, dragging, and resizing.
 - Configurable status bubble placement and visibility.
 - Optional status icons and colors, with a status summary that remains visible alongside dialogue.
@@ -21,15 +21,25 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 - Importable PNG and rig character packs with revision history.
 - Edit per-character Korean and English dialogue without modifying character packs.
 
-Rubelia is the only bundled character and the default model (`default@0`). Optional characters and wardrobe packs are maintained in the separate [character repository](https://github.com/hanbong5938/herdr-characters) and must be imported. The bubble reports observed Herdr session status; it does not infer provider results. A successful composer submission means Herdr acknowledged the prompt, not that the agent finished processing it.
+Rubelia is the only bundled character and the default model (`default@0`). Optional characters and wardrobe packs are maintained in the separate [character repository](https://github.com/hanbong5938/herdr-characters) and must be imported. The bubble reports observed Herdr session status; it does not infer provider results. A successful message submission means Herdr acknowledged the prompt, not that the agent finished processing it.
 
 Session cards use the observed terminal title, then a named tab, then workspace/directory context. Missing names receive an explicit fallback; duplicate names gain a visible discriminator. Hover a card for the full title, working directory, and internal IDs. Renaming a title preserves selection and scroll position; disconnected sessions retain their last observed title with an offline status.
 
-Expand the bubble and explicitly choose a local agent session before sending; the selected destination is shown by the composer. The **All** view is not a message target. Remote session cards are for read-only observation and cannot receive prompts, even if selected. Type multiple lines with **Enter**, and submit with **Command+Enter** or **Send**. Text entered through an IME is not submitted while composition is active; **Escape** cancels active composition first, otherwise it collapses the bubble. Drafts are kept in memory per session, including when the bubble is collapsed; a successful submission clears only its matching draft, while failures leave drafts intact. Drafts are not persisted across app restarts.
+Opening the menu-bar control panel requests app activation using the current macOS API, with a compatible activation path on macOS 13. macOS decides whether to grant activation; opening the panel does not guarantee a keyboard-focus transfer from another app.
+
+### Inline replies (source build only)
+
+The following inline-card behavior requires `bash scripts/install.sh --source`; it is not in the v0.1.4 prebuilt.
+
+Expand the bubble to see session cards; the reply field is initially hidden, including in the **All** view. Click a local agent session card to open a one-line reply beneath it; clicking another session folds the previous field and opens the new one. Remote cards show read-only feedback instead of a reply field or Send button. Line breaks in any committed input (typing, paste, or text import) become spaces in the one-line reply; active IME preedit remains untouched until committed. Press **Enter** or **Command+Enter**, or click **Send**, to submit. IME composition does not submit; **Escape** cancels active composition first, otherwise it folds only the reply field. Clicking outside the bubble folds the reply unless IME composition is active; clicking elsewhere inside the bubble does not automatically fold it. Neither action collapses the bubble. Drafts are kept in memory per session through folding and bubble collapse, but not across app restarts. Success clears and folds only the matching current reply; if the text was edited or another session selected during sending, the new draft or open field remains. Failure or uncertain delivery preserves the draft and reply state.
+
+During IME composition, card selection, filter changes, and structural row replacement wait without discarding the composing text. When composition ends, the latest filter and still-visible, valid session selection are applied; the completed text stays with its original session and connection generation. Live status and send eligibility continue to update while navigation is deferred.
+
+The reply field keeps a visible border and an opaque, palette-derived background. Its compact native Send button follows the existing send eligibility; live theme changes retain the draft and IME preedit.
+
+### Message delivery (prebuilt and source builds)
 
 Messages go only through the selected local Herdr source's `agent.prompt` API, never through a global CLI, shell, SSH, or raw pane input. Sending is unavailable if Local is excluded from observation, the source is offline, the selected session is stale or not ready, or the server does not support the method (`unsupported_method` is reported rather than falling back). Remote sources are observation-only, including retained remote cards: they cannot send prompts. Approval/question UI must be handled in the actual terminal. This API was verified with Herdr 0.9.2; the 0.9.0 baseline for local observation does not guarantee `agent.prompt` support on the running server. An uncertain delivery result must be checked before manually sending again; there is no automatic retry. The current API addresses the agent occupying a pane without an atomic expected-session guard, so an instantaneous occupant/session replacement cannot be ruled out.
-
-Opening the menu-bar control panel requests app activation using the current macOS API, with a compatible activation path on macOS 13. macOS decides whether to grant activation; opening the panel does not guarantee a keyboard-focus transfer from another app.
 
 ## Requirements
 
@@ -79,6 +89,8 @@ The installer installs pinned JavaScript dependencies, builds the Rust executabl
 
 The **v0.1.4 prebuilt app includes lifecycle settings, editable dialogue, the message composer, and status indicators**. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` using authenticated `gh` and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` may select a pinned prebuilt for a GitHub checkout; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; macOS may require explicit approval.
 
+The **v0.1.4 prebuilt message composer** is not the source-only inline reply UI: **Enter** inserts a newline, **Command+Enter** sends, and **Escape** collapses the bubble (during IME composition, Escape cancels composition first). Use `--source` for the inline-card behavior below.
+
 ## Controls
 
 | Interaction | Effect |
@@ -89,9 +101,9 @@ The **v0.1.4 prebuilt app includes lifecycle settings, editable dialogue, the me
 | Drag the body or background | Move the character |
 | Option-drag anywhere | Move the character |
 | Bottom-right grip | Resize the character |
-| Expanded bubble session card | Select a local agent session to message; remote cards are observation-only |
-| Bubble composer | Enter for a new line; Command+Enter or Send to submit to the selected local session |
-| Escape in the composer | Cancel active IME composition first; otherwise collapse the bubble |
+| Expanded bubble session card (`--source` only) | Open a one-line reply beneath the selected local agent session; switching cards waits for active IME composition to end, while remote cards show read-only feedback |
+| Inline reply (`--source` only) | Enter, Command+Enter, or Send submits to the selected local session; IME composition does not submit |
+| Escape in the reply / click outside the bubble (`--source` only) | Escape cancels active IME composition first; otherwise either folds only the reply field. Inside-bubble clicks do not automatically fold it; outside clicks do not fold during composition |
 | Full-window click-through | Pass clicks through both the pet and bubble windows, disabling their interaction |
 | Alpha click-through | Pass clicks through transparent artwork regions |
 
