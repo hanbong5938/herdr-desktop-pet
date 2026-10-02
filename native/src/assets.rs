@@ -465,6 +465,63 @@ fn unique_png_payloads(filenames: &[String], assets: &AssetPack) -> Vec<PackPayl
         .collect()
 }
 
+/// Read only the bounded manifest. Payloads are deliberately not opened or
+/// decoded; the same strict descriptor parser as managed import is used.
+pub(crate) fn managed_dialogue_metadata(
+    directory: &File,
+    expected_id: &str,
+) -> Result<(String, Option<CharacterMetadata>), String> {
+    let source = AssetRoot::from_directory(directory)?;
+    let bytes = source.read("manifest.json", MAX_MANIFEST_BYTES, "asset manifest")?;
+    let (id, name, metadata) = match parse_managed_descriptor(&bytes, false)? {
+        ManagedDescriptor::V2 { id, name, .. } => (id, name, None),
+        ManagedDescriptor::V3(descriptor) => (descriptor.id, descriptor.name, None),
+        ManagedDescriptor::V4(manifest) => {
+            let metadata = CharacterMetadata::from(&manifest);
+            (manifest.id, manifest.name, Some(metadata))
+        }
+        ManagedDescriptor::V5(manifest) => {
+            let metadata = CharacterMetadata::from(&manifest);
+            (manifest.id, manifest.name, Some(metadata))
+        }
+    };
+    if id != expected_id {
+        return Err(format!(
+            "managed pack id {id} does not match referenced pack {expected_id}"
+        ));
+    }
+    Ok((name, metadata))
+}
+
+pub(crate) fn builtin_dialogue_metadata(
+    root: &Path,
+) -> Result<(String, Option<CharacterMetadata>), String> {
+    let source = AssetRoot::open(root)?;
+    let bytes = source.read("manifest.json", MAX_MANIFEST_BYTES, "asset manifest")?;
+    let version = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|error| format!("asset manifest is invalid: {error}"))?
+        .get("version")
+        .and_then(serde_json::Value::as_u64);
+    if version == Some(1) {
+        let manifest: Manifest = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("asset manifest is invalid: {error}"))?;
+        validate_manifest(&manifest)?;
+        return Ok((manifest.name, None));
+    }
+    let (name, metadata) = match parse_managed_descriptor(&bytes, true)? {
+        ManagedDescriptor::V4(manifest) => {
+            let metadata = CharacterMetadata::from(&manifest);
+            (manifest.name, Some(metadata))
+        }
+        ManagedDescriptor::V5(manifest) => {
+            let metadata = CharacterMetadata::from(&manifest);
+            (manifest.name, Some(metadata))
+        }
+        _ => return Err("unsupported builtin character manifest".to_string()),
+    };
+    Ok((name, metadata))
+}
+
 /// Parse and strictly validate a managed manifest without opening or decoding
 /// any PNG. v4/v5 return their complete payload inventory, which is reused by
 /// store GC to classify a tree without inventing a second schema.
@@ -3320,6 +3377,31 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_dialogue_reads_non_default_v5_manifest_without_payloads() {
+        let fixture = std::env::temp_dir().join(format!(
+            "herdr-builtin-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&fixture).unwrap();
+        std::fs::write(
+            fixture.join("manifest.json"),
+            include_bytes!("../../assets/rubelia-default/manifest.json"),
+        )
+        .unwrap();
+        let (name, metadata) = builtin_dialogue_metadata(&fixture).unwrap();
+        assert_eq!(name, "Rubelia");
+        assert_eq!(
+            metadata.unwrap().dialogue_text("idle", None, "ko"),
+            Some("루벨리아가 차분히 다음 일을 살피고 있어요.")
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
 
     #[test]
     fn rig_canvas_limit_does_not_inherit_png_pixel_limit() {

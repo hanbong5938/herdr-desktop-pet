@@ -742,6 +742,16 @@ mod tests {
             let script = script.clone();
             thread::spawn(move || poll_machine(shared, global, stop, Some(script), "m".to_owned()))
         };
+        // Await rejection before observing the retry interval; process startup
+        // can exceed one second when the full suite runs concurrently.
+        let deadline = Instant::now() + DEADLINE + Duration::from_secs(2);
+        while Instant::now() < deadline
+            && shared.lock().is_ok_and(|state| {
+                state.observation_catalog().machines[0].status != MachineStatus::Offline
+            })
+        {
+            thread::sleep(TICK);
+        }
         thread::sleep(Duration::from_secs(1));
         stop.store(true, Ordering::Release);
         handle.join().unwrap();

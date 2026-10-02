@@ -1,3 +1,4 @@
+use crate::assets::CharacterMetadata;
 use crate::character_renderer;
 use crate::character_store::PackStore;
 use crate::character_types::{
@@ -52,6 +53,26 @@ struct QueuedRequest {
     cancel: Arc<AtomicBool>,
 }
 
+/// Presentation data from the requested character's validated manifest.
+/// `None` metadata means the legacy manifest has no authored dialogue.
+#[derive(Clone, Debug)]
+pub(crate) struct DialogueMetadata {
+    pub metadata: Option<CharacterMetadata>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MetadataKey {
+    reference: CharacterRef,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct MetadataState {
+    pending: Option<MetadataKey>,
+    loading: Option<MetadataKey>,
+    result: Option<(MetadataKey, Result<DialogueMetadata, String>)>,
+}
+
 /// The serial coordinator for managed character-pack operations.
 ///
 /// Filesystem work is deliberately kept on the worker.  Submission only
@@ -70,6 +91,7 @@ pub struct PackService {
     /// busy response instead of waiting behind native preflight.
     io_gate: Mutex<()>,
     queue: Mutex<VecDeque<QueuedRequest>>,
+    metadata: Mutex<MetadataState>,
     wake: Condvar,
     worker: Mutex<Option<JoinHandle<()>>>,
     /// Set by the shutdown owner after the JoinHandle has been joined; this
@@ -93,6 +115,7 @@ impl PackService {
             cache: Mutex::new(None),
             io_gate: Mutex::new(()),
             queue: Mutex::new(VecDeque::new()),
+            metadata: Mutex::new(MetadataState::default()),
             wake: Condvar::new(),
             worker: Mutex::new(None),
             worker_done: (Mutex::new(true), Condvar::new()),
@@ -179,6 +202,85 @@ impl PackService {
         }
         bound_listing(listing)
     }
+    /// Check identity against the current in-memory listing without filesystem
+    /// work. Call before writing an override, as well as while displaying it.
+    pub(crate) fn dialogue_reference_valid(
+        &self,
+        reference: &CharacterRef,
+        generation: u64,
+    ) -> bool {
+        let listing = lock_unpoisoned(&self.cache);
+        let Some(listing) = listing.as_ref() else {
+            return false;
+        };
+        listing.generation == generation
+            && (reference.is_builtin()
+                || listing.packs.iter().any(|record| {
+                    record.id == reference.id && record.revisions.contains(&reference.revision)
+                }))
+    }
+
+    /// Replace any pending lookup with this identity (one bounded slot).
+    /// Repeated requests for a pending or cached identity are coalesced.
+    pub(crate) fn request_dialogue_metadata(
+        &self,
+        reference: CharacterRef,
+        generation: u64,
+    ) -> Result<(), String> {
+        if self.stopping.load(Ordering::Acquire) || !self.started.load(Ordering::Acquire) {
+            return Err("pack service is not running".to_string());
+        }
+        if !self.dialogue_reference_valid(&reference, generation) {
+            return Err("character reference is stale or unavailable".to_string());
+        }
+        let key = MetadataKey {
+            reference,
+            generation,
+        };
+        // Share the condvar mutex with the worker's wait predicate so a
+        // request cannot slip between checking pending and entering wait.
+        let queue = lock_unpoisoned(&self.queue);
+        let mut state = lock_unpoisoned(&self.metadata);
+        if state.pending.as_ref() == Some(&key)
+            || (state.loading.as_ref() == Some(&key) && state.pending.is_none())
+            || state
+                .result
+                .as_ref()
+                .is_some_and(|(cached, _)| cached == &key)
+        {
+            return Ok(());
+        }
+        state.pending = Some(key);
+        state.result = None;
+        drop(state);
+        drop(queue);
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    /// None means pending or not requested; Some(Err) means this exact
+    /// identity failed. Never return data from a different revision/target.
+    pub(crate) fn cached_dialogue_metadata(
+        &self,
+        reference: &CharacterRef,
+        generation: u64,
+    ) -> Option<Result<DialogueMetadata, String>> {
+        if !self.dialogue_reference_valid(reference, generation) {
+            return Some(Err(
+                "character reference is stale or unavailable".to_string()
+            ));
+        }
+        let key = MetadataKey {
+            reference: reference.clone(),
+            generation,
+        };
+        let state = lock_unpoisoned(&self.metadata);
+        state
+            .result
+            .as_ref()
+            .and_then(|(cached, result)| (cached == &key).then(|| result.clone()))
+    }
+
     /// Look up a retained operation without touching the registry.  Expired
     /// entries intentionally return `None`; UI refresh must not fall through
     /// to the filesystem-backed `status` method.
@@ -232,8 +334,25 @@ impl PackService {
             .map_err(bound_diagnostic)
     }
 
+    /// Whether a pack mutation is pending or executing (not metadata lookup).
+    /// This is an observation only; UI submissions use atomic admission below.
+    pub fn ui_mutation_busy(&self) -> bool {
+        let state = lock_unpoisoned(&self.state);
+        let queue = lock_unpoisoned(&self.queue);
+        mutation_busy(&state, &queue)
+    }
+
+    /// Enqueue a UI request only when no other pack mutation owns admission.
+    pub fn submit_ui_if_idle(&self, request: PackRequest) -> Result<PackOperation, String> {
+        self.submit_inner(request, true)
+    }
+
     /// Enqueue one request without touching the filesystem.
     pub fn submit(&self, request: PackRequest) -> Result<PackOperation, String> {
+        self.submit_inner(request, false)
+    }
+
+    fn submit_inner(&self, request: PackRequest, ui_only: bool) -> Result<PackOperation, String> {
         validate_operation_id(&request.operation_id)?;
         let fingerprint = serde_json::to_vec(&request)
             .map_err(|error| format!("cannot fingerprint pack operation: {error}"))?;
@@ -244,39 +363,10 @@ impl PackService {
         if !self.started.load(Ordering::Acquire) {
             return Err("pack service is not running".to_owned());
         }
-        if !lock_unpoisoned(&self.state).ui_ready {
+        let mut state = lock_unpoisoned(&self.state);
+        if !state.ui_ready {
             return Err("pack service is waiting for native UI readiness".to_owned());
         }
-
-        {
-            let state = lock_unpoisoned(&self.state);
-            if let Some(existing) = state.operations.get(&request.operation_id) {
-                if existing.fingerprint.is_empty() {
-                    return Err(format!(
-                        "operation id {} already exists; {EXISTING_OPERATION_NOT_EXECUTED}",
-                        request.operation_id
-                    ));
-                }
-                if existing.fingerprint != fingerprint {
-                    return Err(format!(
-                        "operation id {} was already used for a different request",
-                        request.operation_id
-                    ));
-                }
-                return Ok(bound_operation(existing.operation.clone()));
-            }
-        }
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        let operation = PackOperation {
-            operation_id: request.operation_id.clone(),
-            state: ACCEPTED.to_owned(),
-            committed: false,
-            ui_applied: false,
-            generation: None,
-            error: None,
-        };
-        let mut state = lock_unpoisoned(&self.state);
         if self.stopping.load(Ordering::Acquire) {
             return Err("pack service is shutting down".to_owned());
         }
@@ -296,6 +386,9 @@ impl PackService {
             return Ok(bound_operation(existing.operation.clone()));
         }
         let mut queue = lock_unpoisoned(&self.queue);
+        if ui_only && mutation_busy(&state, &queue) {
+            return Err("another pack operation is in progress".to_owned());
+        }
         if queue.len() >= MAX_PENDING_OPERATIONS {
             return Err("too many queued pack operations".to_owned());
         }
@@ -303,11 +396,20 @@ impl PackService {
         if state.operations.len() >= MAX_RETAINED_OPERATIONS {
             return Err("too many retained pack operation results".to_owned());
         }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let operation = PackOperation {
+            operation_id: request.operation_id.clone(),
+            state: ACCEPTED.to_owned(),
+            committed: false,
+            ui_applied: false,
+            generation: None,
+            error: None,
+        };
         state.order.push_back(request.operation_id.clone());
         state.operations.insert(
             request.operation_id.clone(),
             OperationEntry {
-                fingerprint: fingerprint.clone(),
+                fingerprint,
                 operation: operation.clone(),
             },
         );
@@ -440,6 +542,11 @@ impl PackService {
     }
 }
 
+enum WorkerItem {
+    Operation(QueuedRequest),
+    Metadata(MetadataKey),
+}
+
 fn worker_loop(weak: Weak<PackService>) {
     loop {
         let Some(service) = weak.upgrade() else {
@@ -448,11 +555,20 @@ fn worker_loop(weak: Weak<PackService>) {
         let item = {
             let mut queue = lock_unpoisoned(&service.queue);
             loop {
-                if let Some(item) = queue.pop_front() {
-                    break Some(item);
-                }
                 if service.stopping.load(Ordering::Acquire) {
                     break None;
+                }
+                if let Some(item) = queue.pop_front() {
+                    break Some(WorkerItem::Operation(item));
+                }
+                let pending = {
+                    let mut metadata = lock_unpoisoned(&service.metadata);
+                    let pending = metadata.pending.take();
+                    metadata.loading = pending.clone();
+                    pending
+                };
+                if let Some(key) = pending {
+                    break Some(WorkerItem::Metadata(key));
                 }
                 queue = match service.wake.wait(queue) {
                     Ok(guard) => guard,
@@ -462,6 +578,30 @@ fn worker_loop(weak: Weak<PackService>) {
         };
         let Some(item) = item else {
             break;
+        };
+        let item = match item {
+            WorkerItem::Metadata(key) => {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    let _io = lock_unpoisoned(&service.io_gate);
+                    PackStore::new(
+                        service.config_dir.clone(),
+                        Some(service.builtin_assets.clone()),
+                    )
+                    .dialogue_metadata(&key.reference, key.generation)
+                    .map(|(_, metadata)| DialogueMetadata { metadata })
+                    .map_err(bound_diagnostic)
+                }))
+                .unwrap_or_else(|_| Err("character metadata lookup aborted".to_string()));
+                let mut metadata = lock_unpoisoned(&service.metadata);
+                metadata.loading = None;
+                if metadata.pending.is_none() && !service.stopping.load(Ordering::Acquire) {
+                    metadata.result = Some((key, result));
+                    drop(metadata);
+                    ui::wake();
+                }
+                continue;
+            }
+            WorkerItem::Operation(item) => item,
         };
         if service.stopping.load(Ordering::Acquire) {
             item.cancel.store(true, Ordering::Release);
@@ -473,10 +613,6 @@ fn worker_loop(weak: Weak<PackService>) {
         }
         let operation_id = item.request.operation_id.clone();
         if catch_unwind(AssertUnwindSafe(|| service.execute(item))).is_err() {
-            {
-                let mut state = lock_unpoisoned(&service.state);
-                state.active_cancel = None;
-            }
             let durable = service.durable_operation_status(&operation_id);
             service.refresh_cache();
             service.update_operation(&operation_id, |operation| {
@@ -500,6 +636,7 @@ fn worker_loop(weak: Weak<PackService>) {
                 operation.error =
                     Some("pack worker aborted; registry commit outcome unknown".to_owned());
             });
+            lock_unpoisoned(&service.state).active_cancel = None;
         }
     }
 }
@@ -529,13 +666,11 @@ impl PackService {
             item.cancel.store(true, Ordering::Release);
         }
         if item.cancel.load(Ordering::Acquire) {
-            let mut state = lock_unpoisoned(&self.state);
-            state.active_cancel = None;
-            drop(state);
             self.update_operation(&operation_id, |operation| {
                 operation.state = CANCELED.to_owned();
                 operation.error = Some("pack service shut down before execution".to_owned());
             });
+            lock_unpoisoned(&self.state).active_cancel = None;
             return;
         }
 
@@ -543,10 +678,6 @@ impl PackService {
             let _io = lock_unpoisoned(&self.io_gate);
             self.execute_transaction(&item, managed_active.as_ref())
         };
-        {
-            let mut state = lock_unpoisoned(&self.state);
-            state.active_cancel = None;
-        }
         self.refresh_cache();
         if let Err(error) = result {
             self.update_operation(&operation_id, |operation| {
@@ -565,6 +696,7 @@ impl PackService {
                 }
             });
         }
+        lock_unpoisoned(&self.state).active_cancel = None;
     }
 
     fn execute_transaction(
@@ -977,9 +1109,161 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn mutation_busy(state: &ServiceState, queue: &VecDeque<QueuedRequest>) -> bool {
+    state.active_cancel.is_some()
+        || !queue.is_empty()
+        || state
+            .operations
+            .values()
+            .any(|entry| !is_terminal(&entry.operation.state))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ready_service() -> Arc<PackService> {
+        let service = PackService::new(PathBuf::new(), PathBuf::new(), None);
+        service.started.store(true, Ordering::Release);
+        lock_unpoisoned(&service.state).ui_ready = true;
+        service
+    }
+
+    fn request(id: &str) -> PackRequest {
+        PackRequest {
+            operation_id: id.to_owned(),
+            expected_generation: None,
+            action: PackAction::Select {
+                id: "character".to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn ui_admission_rejects_accepted_cli_work_but_cli_can_queue_after_ui() {
+        let service = ready_service();
+        service.submit(request("cli-first")).unwrap();
+        assert!(service.ui_mutation_busy());
+        assert!(service.submit_ui_if_idle(request("ui-rejected")).is_err());
+        assert!(service.cached_status("ui-rejected").is_none());
+        assert_eq!(lock_unpoisoned(&service.queue).len(), 1);
+
+        let service = ready_service();
+        service.submit_ui_if_idle(request("ui-first")).unwrap();
+        assert!(service.submit_ui_if_idle(request("ui-second")).is_err());
+        assert!(service.cached_status("ui-second").is_none());
+        assert_eq!(
+            service.submit(request("cli-second")).unwrap().state,
+            ACCEPTED
+        );
+        assert_eq!(lock_unpoisoned(&service.queue).len(), 2);
+    }
+
+    #[test]
+    fn ui_admission_covers_worker_pop_and_terminal_publication() {
+        let service = ready_service();
+        service.submit(request("active")).unwrap();
+        let item = lock_unpoisoned(&service.queue).pop_front().unwrap();
+        assert!(service.ui_mutation_busy());
+        assert!(service.submit_ui_if_idle(request("just-popped")).is_err());
+        service.update_operation("active", |operation| {
+            operation.state = PREPARING.to_owned();
+        });
+        assert!(service.ui_mutation_busy());
+        assert!(service.submit_ui_if_idle(request("while-active")).is_err());
+        lock_unpoisoned(&service.state).active_cancel = Some(item.cancel);
+        service.update_operation("active", |operation| {
+            operation.state = COMPLETED.to_owned();
+        });
+        assert!(service.ui_mutation_busy());
+        assert!(service
+            .submit_ui_if_idle(request("while-finalizing"))
+            .is_err());
+        lock_unpoisoned(&service.state).active_cancel = None;
+        assert!(!service.ui_mutation_busy());
+        assert_eq!(
+            service
+                .submit_ui_if_idle(request("after-finalization"))
+                .unwrap()
+                .state,
+            ACCEPTED
+        );
+    }
+
+    #[test]
+    fn ui_admission_preserves_exact_id_idempotency_and_collision() {
+        let service = ready_service();
+        let first = request("same");
+        assert_eq!(
+            service.submit_ui_if_idle(first.clone()).unwrap().state,
+            ACCEPTED
+        );
+        assert_eq!(
+            service.submit_ui_if_idle(first.clone()).unwrap().state,
+            ACCEPTED
+        );
+        let mut changed = first;
+        changed.expected_generation = Some(1);
+        assert!(service.submit_ui_if_idle(changed.clone()).is_err());
+        assert!(service.submit(changed.clone()).is_err());
+        {
+            let queue = lock_unpoisoned(&service.queue);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue.front().unwrap().request.operation_id, "same");
+            assert_eq!(queue.front().unwrap().request.expected_generation, None);
+        }
+        assert_eq!(service.cached_status("same").unwrap().state, ACCEPTED);
+        lock_unpoisoned(&service.queue).pop_front();
+        service.update_operation("same", |operation| {
+            operation.state = COMPLETED.to_owned();
+        });
+        assert!(!service.ui_mutation_busy());
+        assert!(service.submit_ui_if_idle(changed).is_err());
+        assert!(lock_unpoisoned(&service.queue).is_empty());
+        assert_eq!(service.cached_status("same").unwrap().state, COMPLETED);
+    }
+
+    #[test]
+    fn concurrent_ui_admission_allows_exactly_one_new_request() {
+        let service = ready_service();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|id| {
+                let service = Arc::clone(&service);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    service.submit_ui_if_idle(request(id)).is_ok()
+                })
+            })
+            .collect();
+        barrier.wait();
+        assert_eq!(
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .filter(|accepted| *accepted)
+                .count(),
+            1
+        );
+        assert_eq!(lock_unpoisoned(&service.queue).len(), 1);
+    }
+
+    #[test]
+    fn terminal_cli_uncertainty_does_not_block_unrelated_ui_admission() {
+        let service = ready_service();
+        service.submit(request("old-cli")).unwrap();
+        lock_unpoisoned(&service.queue).pop_front();
+        service.update_operation("old-cli", |operation| {
+            operation.state = DURABILITY_UNKNOWN.to_owned();
+        });
+        assert!(!service.ui_mutation_busy());
+        assert_eq!(
+            service.submit_ui_if_idle(request("new-ui")).unwrap().state,
+            ACCEPTED
+        );
+    }
 
     #[test]
     fn operation_ids_reject_controls_and_empty_values() {
