@@ -46,7 +46,7 @@
 | --- | --- |
 | 플랫폼 | Apple Silicon Mac, macOS 13 이상 |
 | 이번 실행 관리 기능의 Herdr | **공식 Herdr 0.9.3 소스에 [제공된 client-attach 패치](integrations/herdr/client-attached.patch)를 적용해 빌드한 호스트** (또는 추후 실제로 이 훅 지원을 명시한 호스트 릴리스) |
-| 앱 | 고정된 v0.1.6 사전 빌드(플러그인 설치 프로그램 또는 Homebrew가 내려받음, 빌드 도구 불필요) 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
+| 앱 | 고정된 v0.1.7 사전 빌드(플러그인 설치 프로그램 또는 Homebrew가 내려받음, 빌드 도구 불필요) 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
 
 **클라이언트 attach 자동 실행에는 제공된 패치가 필수입니다.** 순정 Herdr 0.9.0과 0.9.3에는 `client.attached`가 없습니다. 매니페스트의 최소 버전만으로 훅 지원이 보장되지 않습니다. 공식 0.9.3 소스에 패치를 적용하고 해당 호스트의 빌드 안내에 따라 빌드·실행한 뒤, 플러그인 연결 경고와 `client.attached` 구독 수락 여부를 확인하세요. 알 수 없는 훅 경고는 성공으로 간주하지 마세요. Intel Mac·Windows·Linux용 네이티브 배포는 지원하지 않습니다.
 
@@ -59,13 +59,13 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr는 저장소를 플러그인 디렉터리에 클론하고 매니페스트의 `[[build]]` 단계인 `bash scripts/install.sh`를 실행합니다. 설치 프로그램은 매니페스트 `version`에 고정된 릴리스(v0.1.6)를 `curl`로 HTTPS를 통해 익명으로 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증한 뒤 플러그인 디렉터리의 `dist/`에 설치합니다. 일반적인 경우 GitHub 로그인이나 빌드 도구가 필요하지 않으며 플러그인 디렉터리 밖에는 아무것도 설치하지 않습니다. 고정된 사전 빌드를 사용할 수 없거나 검증에 실패하면 안내를 출력하고 소스 빌드로 전환하며, 이때는 위의 소스 빌드 도구가 필요합니다. 앱은 **ad-hoc 서명이며 공증되지 않았습니다**. 브라우저나 cask 다운로드가 아닌 `curl`로 받으므로 격리(quarantine) 속성이 붙지 않아 macOS Gatekeeper 확인 창이 뜨지 않습니다. 클라이언트 attach 자동 실행에는 제공된 호스트 패치가 여전히 필요하므로 위에서 설명한 패치된 Herdr 호스트로 이 명령을 실행하세요.
+Herdr는 저장소를 플러그인 디렉터리에 클론하고 매니페스트의 `[[build]]` 단계인 `bash scripts/install.sh`를 실행합니다. 설치 프로그램은 매니페스트 `version`에 고정된 릴리스(v0.1.7)를 `curl`로 HTTPS를 통해 익명으로 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증한 뒤 플러그인 디렉터리의 `dist/`에 설치합니다. 일반적인 경우 GitHub 로그인이나 빌드 도구가 필요하지 않으며 플러그인 디렉터리 밖에는 아무것도 설치하지 않습니다. 고정된 사전 빌드를 사용할 수 없거나 검증에 실패하면 안내를 출력하고 소스 빌드로 전환하며, 이때는 위의 소스 빌드 도구가 필요합니다. 앱은 **ad-hoc 서명이며 공증되지 않았습니다**. 브라우저나 cask 다운로드가 아닌 `curl`로 받으므로 격리(quarantine) 속성이 붙지 않아 macOS Gatekeeper 확인 창이 뜨지 않습니다. 클라이언트 attach 자동 실행에는 제공된 호스트 패치가 여전히 필요하므로 위에서 설명한 패치된 Herdr 호스트로 이 명령을 실행하세요.
 
 저장소에 `herdr-plugin` 토픽을 지정해 [Herdr 마켓](https://herdr.dev/plugins/) 자동 수집 대상으로 등록했습니다. 인덱스는 30분마다 갱신되며 Herdr의 심사를 거친 목록은 아닙니다.
 
 ## Homebrew로 설치
 
-[개인 tap](https://github.com/hanbong5938/homebrew-tap)에서 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. GitHub 로그인이나 소스 빌드 도구는 필요하지 않습니다.
+[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 formula로 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. GitHub 로그인이나 소스 빌드 도구는 필요하지 않습니다.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -101,7 +101,7 @@ bash scripts/install.sh --source
 
 소스 설치 프로그램은 고정된 JavaScript 의존성을 설치하고 Rust 실행 파일을 빌드하며 네이티브 rig 런타임·캐릭터 제작 리소스를 패키징한 뒤 앱을 검증합니다. 이미 실행 중인 서버에서 플러그인을 연결·활성화하는 것만으로는 캐릭터가 바로 실행되지 않습니다. `start`를 한 번 실행하거나 `auto_start`가 켜졌다면 이후 정상적인 shell/terminal 클라이언트 attach를 기다리세요. 서버 시작 시에도 자동 `ensure`가 실행됩니다. 연결 중 알 수 없는 `client.attached` 훅 경고가 뜨면 호스트에 필수 패치가 없는 것입니다. 플러그인 액션은 실행 중인 활성화된 Herdr 호스트가 필요하며 아래 네이티브 설정 명령은 호스트 없이도 동작합니다.
 
-**v0.1.6 사전 빌드 앱에는 새로 그린 루벨리아 10포즈 기본팩, 실행 관리 설정, 대사 편집, 카드별 인라인 답장과 상태 표시가 포함됩니다**. `bash scripts/install.sh --prebuilt`는 이 체크아웃의 `herdr-plugin.toml`에 고정된 버전을 체크아웃의 git `origin` 저장소(없으면 `HERDR_PET_REPOSITORY`, 그다음 `hanbong5938/herdr-desktop-pet`)에서 `curl`로 HTTPS를 통해 익명으로(GitHub 로그인 불필요) 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증하며, 소스 빌드로 전환하지 않습니다. 사전 빌드 앱 실행에는 소스 빌드 도구가 필요하지 않지만, 클라이언트 attach 자동 실행에는 위에서 설명한 패치된 Herdr 호스트가 여전히 필요합니다. 옵션을 생략하면 `scripts/install.sh`는 고정된 사전 빌드를 설치하고, 사전 빌드를 사용할 수 없거나 유효하지 않을 때만 소스 빌드로 전환합니다. 로컬 변경을 빌드하려면 `--source`를 명시하세요. 앱은 **ad-hoc 서명**만 되어 있고 Developer ID 서명이나 공증은 없습니다. 설치 프로그램이 내려받은 파일에는 격리 속성이 붙지 않으므로 macOS Gatekeeper 확인 창이 뜨지 않습니다.
+**v0.1.7 사전 빌드 앱에는 새로 그린 루벨리아 10포즈 기본팩, 실행 관리 설정, 대사 편집, 카드별 인라인 답장과 상태 표시가 포함됩니다**. v0.1.7에서는 패키징된 CLI를 `PATH`의 심볼릭 링크로 실행해도 번들에 포함된 기본 캐릭터를 찾도록 수정했습니다. `bash scripts/install.sh --prebuilt`는 이 체크아웃의 `herdr-plugin.toml`에 고정된 버전을 체크아웃의 git `origin` 저장소(없으면 `HERDR_PET_REPOSITORY`, 그다음 `hanbong5938/herdr-desktop-pet`)에서 `curl`로 HTTPS를 통해 익명으로(GitHub 로그인 불필요) 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증하며, 소스 빌드로 전환하지 않습니다. 사전 빌드 앱 실행에는 소스 빌드 도구가 필요하지 않지만, 클라이언트 attach 자동 실행에는 위에서 설명한 패치된 Herdr 호스트가 여전히 필요합니다. 옵션을 생략하면 `scripts/install.sh`는 고정된 사전 빌드를 설치하고, 사전 빌드를 사용할 수 없거나 유효하지 않을 때만 소스 빌드로 전환합니다. 로컬 변경을 빌드하려면 `--source`를 명시하세요. 앱은 **ad-hoc 서명**만 되어 있고 Developer ID 서명이나 공증은 없습니다. 설치 프로그램이 내려받은 파일에는 격리 속성이 붙지 않으므로 macOS Gatekeeper 확인 창이 뜨지 않습니다.
 
 이전 **v0.1.4 사전 빌드 메시지 입력창**은 v0.1.6 카드별 답장칸과 다릅니다. **Enter**는 줄바꿈을 넣고, **Command+Enter**는 전송하며, **Escape**는 말풍선을 접습니다(입력기 조합 중에는 먼저 조합을 취소). 인라인 답장을 사용하려면 v0.1.6으로 업그레이드하거나 `--source`로 빌드하세요.
 

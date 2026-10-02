@@ -1,4 +1,4 @@
-Herdr Desktop Pet 0.1.6; approved Rubelia redraw and inline replies
+Herdr Desktop Pet 0.1.7; symlinked CLI resolves bundled default assets
 ==========================================================
 
 Requirements and distribution
@@ -158,6 +158,16 @@ Observation sources
   fallback for remote errors. Remote sources are observation-only; prompts
   are never sent through machine forwarding.
 
+v0.1.7 release notes (no new Herdr host release)
+- v0.1.7 resolves the running executable through symlinks before locating
+  Contents/Resources, so a CLI linked onto PATH uses the bundled Rubelia
+  default instead of failing on a build-machine assets path. The release
+  workflow smoke-tests the packaged CLI through a symlink.
+- Manifest version 0.1.7 pins this app release. min_herdr_version
+  0.9.3 is the patch baseline, not proof of client.attached support. No
+  Windows native distribution or accessibility-based click routing is
+  claimed; pre-existing native clippy all-target erasing_op is out of scope.
+
 v0.1.6 integration notes (no new Herdr host release)
 - This app release includes the inline-card reply replacement, lifecycle
   settings, editable dialogue, status indicators and remote observation.
@@ -186,10 +196,6 @@ v0.1.6 integration notes (no new Herdr host release)
   offline/ambiguous identity, hidden rows, remote read-only and generation.
   This is not proof of physical keyboard IME behavior, OS-granted focus
   transfer, or publication of a new binary.
-- Manifest version 0.1.6 pins this app release. min_herdr_version
-  0.9.3 is the patch baseline, not proof of client.attached support. No
-  Windows native distribution or accessibility-based click routing is
-  claimed; pre-existing native clippy all-target erasing_op is out of scope.
 - Catalog preparation budgets account for all bounded decoder worker batches
   plus renderer setup. Per-decoder timeout, worker count and RGBA quotas remain
   enforced; v0.1.5 packaging failed before publishing assets because it applied
