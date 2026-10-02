@@ -10,12 +10,14 @@ use crate::bubble::{
 };
 use crate::character_menu::{self, CharacterMenu, MenuCommand};
 use crate::character_renderer::{self, CharacterHit, PrepareBuilder, PreparedCharacter};
+use crate::character_selection::{CharacterSelection, SelectionError};
 use crate::character_service::PackService;
 use crate::character_types::{
     CharacterRef, PackAction, PackListing, PackOperation, PackRequest, RendererToken,
 };
 use crate::control;
 use crate::dialogue::{effective_metadata, DialogueSlot, DialogueTarget};
+use crate::dialogue_editor::{DialogueChoice, DialogueEditor};
 use crate::display_geometry::{DisplayGeometry, BASE_HEIGHT, BASE_WIDTH};
 use crate::herdr::{PromptError, PromptSender};
 use crate::i18n::{
@@ -613,12 +615,19 @@ struct Ui {
     composer_results: VecDeque<(SessionKey, String)>,
     cards: SessionCards,
     menu_panel: MenuPanel,
+    dialogue_editor: DialogueEditor,
+    dialogue_choices: Vec<DialogueChoice>,
+    editor_cached_choice: Option<DialogueChoice>,
+    editor_metadata: Option<CharacterMetadata>,
+    editor_ready: bool,
+    editor_error: Option<String>,
+    editor_content_dirty: bool,
+    external_dialogue_target: Option<DialogueTarget>,
+    external_dialogue_metadata: Option<CharacterMetadata>,
     locale: UiLocale,
     pending_language: Option<(LanguagePreference, UiLocale)>,
     effective_dialogue: CharacterMetadata,
     dialogue_target: Option<DialogueTarget>,
-    dialogue_name: String,
-    dialogue_pack_generation: u64,
     dialogue_override_active: bool,
     dialogue_prepared_epoch: u64,
     active: PreparedCharacter,
@@ -630,7 +639,7 @@ struct Ui {
     playback: Playback,
     pending_native: Option<PendingNative>,
     character_menu: CharacterMenu,
-    pack_operation: Option<PackOperation>,
+    character_selection: CharacterSelection,
     pack_error: Option<String>,
     behavior: Behavior,
     interaction: Interaction,
@@ -1285,22 +1294,43 @@ define_class!(
                 Some(1) => UiLocale::En,
                 _ => return,
             };
-            with_ui_mut(|ui| ui.menu_panel.select_dialogue_locale(locale));
+            with_ui_mut(|ui| ui.dialogue_editor.select_locale(locale));
         }
 
         #[unsafe(method(setDialogueSlot:))]
         fn set_dialogue_slot(&self, sender: Option<&AnyObject>) {
-            let Some(popup) = sender.and_then(|sender| sender.downcast_ref::<NSPopUpButton>()) else {
+            let Some(button) = sender.and_then(|sender| sender.downcast_ref::<NSButton>()) else {
                 return;
             };
-            let Some(slot) = popup
-                .selectedItem()
-                .and_then(|item| usize::try_from(item.tag()).ok())
-                .and_then(|index| DialogueSlot::ALL.get(index))
-            else {
-                return;
-            };
-            with_ui_mut(|ui| ui.menu_panel.select_dialogue_slot(*slot));
+            let Ok(index) = usize::try_from(button.tag()) else { return };
+            let Some(&slot) = DialogueSlot::ALL.get(index) else { return };
+            with_ui_mut(|ui| ui.dialogue_editor.select_slot(slot));
+        }
+
+        #[unsafe(method(openDialogueEditor:))]
+        fn open_dialogue_editor(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| {
+                let listing = ui.packs.cached_list();
+                ui.update_dialogue_choices(&listing);
+                ui.menu_panel.hide();
+                ui.dialogue_editor.show();
+                ui.sync_dialogue_editor_content();
+            });
+        }
+
+        #[unsafe(method(setDialogueTarget:))]
+        fn set_dialogue_target(&self, sender: Option<&AnyObject>) {
+            let Some(popup) = sender.and_then(|sender| sender.downcast_ref::<NSPopUpButton>()) else { return };
+            let Ok(index) = usize::try_from(popup.indexOfSelectedItem()) else { return };
+            with_ui_mut(|ui| {
+                ui.dialogue_editor.select_target(index);
+                ui.sync_dialogue_editor_content();
+            });
+        }
+
+        #[unsafe(method(toggleDialogueOriginal:))]
+        fn toggle_dialogue_original(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| ui.dialogue_editor.toggle_original());
         }
 
         #[unsafe(method(saveDialogue:))]
@@ -1322,11 +1352,6 @@ define_class!(
         fn status(&self, _sender: Option<&AnyObject>) {
             with_ui_action("status");
         }
-        #[unsafe(method(focusCharacterManager:))]
-        fn focus_character_manager(&self, _sender: Option<&AnyObject>) {
-            with_ui_mut(|ui| ui.focus_character_manager());
-        }
-
         #[unsafe(method(packImport:))]
         fn pack_import(&self, _sender: Option<&AnyObject>) {
             begin_pack_import();
@@ -1339,6 +1364,15 @@ define_class!(
             }
         }
 
+        #[unsafe(method(packApply:))]
+        fn pack_apply(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| ui.apply_candidate());
+        }
+
+        #[unsafe(method(packCancelSelection:))]
+        fn pack_cancel_selection(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| ui.cancel_candidate());
+        }
         #[unsafe(method(packUpdate:))]
         fn pack_update(&self, sender: Option<&AnyObject>) {
             if let Some(command) = character_menu::command_from_sender(sender) {
@@ -1955,6 +1989,19 @@ fn current_ui_locale(preference: LanguagePreference) -> UiLocale {
     resolve_language(preference, &tags)
 }
 
+fn selection_error_message(error: SelectionError) -> Message {
+    match error {
+        SelectionError::NoListing | SelectionError::Unavailable => {
+            Message::CharacterOperationUnavailable
+        }
+        SelectionError::Busy => Message::CharacterOperationQueued,
+        SelectionError::NoCandidate => Message::CharacterSelectionPrompt,
+        SelectionError::Stale => Message::CharacterSelectionStale,
+        SelectionError::AlreadyApplied => Message::CharacterOperationCompleted,
+        SelectionError::InvalidOperationId => Message::CharacterOperationUnknown,
+    }
+}
+
 fn active_dialogue_target(
     prepared: &PreparedCharacter,
     packs: &PackService,
@@ -1967,41 +2014,6 @@ fn active_dialogue_target(
         Some(DialogueTarget::Character(
             prepared.token().reference.id.clone(),
         ))
-    }
-}
-
-fn dialogue_display_name(
-    target: Option<&DialogueTarget>,
-    listing: &PackListing,
-    prepared: &PreparedCharacter,
-    locale: UiLocale,
-    previous: Option<&str>,
-) -> String {
-    match target {
-        Some(DialogueTarget::Character(id)) if id == "default" => {
-            text(locale, Message::RubeliaBuiltIn).to_owned()
-        }
-        Some(DialogueTarget::Character(id)) => listing
-            .packs
-            .iter()
-            .find(|pack| {
-                pack.id == *id
-                    && pack.head == prepared.token().reference.revision
-                    && listing
-                        .active
-                        .as_ref()
-                        .is_none_or(|active| active == &prepared.token().reference)
-                    && !listing.override_active
-            })
-            .map(|pack| pack.name.clone())
-            .or_else(|| previous.map(str::to_owned))
-            .unwrap_or_else(|| id.clone()),
-        Some(DialogueTarget::ExternalAssets(path)) => Path::new(path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(path)
-            .to_owned(),
-        None => String::new(),
     }
 }
 
@@ -2119,6 +2131,9 @@ fn pack_menu_context() -> Option<(MainThreadMarker, Arc<PackService>, UiLocale)>
 }
 
 fn begin_pack_import() {
+    if with_ui_read(|ui| ui.ui_mutation_busy()).unwrap_or(true) {
+        return;
+    }
     with_ui_mut(|ui| ui.menu_panel.hide());
 
     let Some((mtm, packs, locale)) = pack_menu_context() else {
@@ -2135,6 +2150,16 @@ fn begin_pack_update(command: MenuCommand) {
     let MenuCommand::Update { id, generation } = command else {
         return;
     };
+    if with_ui_read(|ui| {
+        let listing = ui.packs.cached_list();
+        ui.ui_mutation_busy()
+            || listing.generation != generation
+            || !listing.packs.iter().any(|pack| pack.id == id)
+    })
+    .unwrap_or(true)
+    {
+        return;
+    }
     with_ui_mut(|ui| ui.menu_panel.hide());
 
     let Some((mtm, packs, locale)) = pack_menu_context() else {
@@ -2150,6 +2175,16 @@ fn begin_pack_remove(command: MenuCommand) {
     let MenuCommand::Remove { id, generation } = command else {
         return;
     };
+    if with_ui_read(|ui| {
+        let listing = ui.packs.cached_list();
+        ui.ui_mutation_busy()
+            || listing.generation != generation
+            || !listing.packs.iter().any(|pack| pack.id == id)
+    })
+    .unwrap_or(true)
+    {
+        return;
+    }
     with_ui_mut(|ui| ui.menu_panel.hide());
     let Some((mtm, packs, locale)) = pack_menu_context() else {
         return;
@@ -2192,17 +2227,36 @@ fn show_character_diagnostics() {
         .as_ref()
         .map(|a| format!("{}@{}", a.id, a.revision));
     let op_str = with_ui_read(|ui| {
-        ui.pack_operation.as_ref().map(|op| {
-            let base = crate::i18n::pack_operation(
-                locale,
-                &op.operation_id,
-                &op.state,
-                op.error.as_deref(),
-            );
-            format!(
-                "{base} (committed: {}, ui_applied: {})",
-                op.committed, op.ui_applied
-            )
+        let selection = &ui.character_selection;
+        selection.operation_id().map(|id| {
+            if let Some(error) = selection.operation_error() {
+                format!(
+                    "{id}: {} ({error}; {})",
+                    text(locale, Message::CharacterOperationFailed),
+                    text(locale, Message::CharacterOperationNotSubmitted)
+                )
+            } else if let Some(op) = selection.operation() {
+                let base = crate::i18n::pack_operation(locale, id, &op.state, op.error.as_deref());
+                format!(
+                    "{base} (committed: {}, ui_applied: {})",
+                    op.committed, op.ui_applied
+                )
+            } else {
+                let last = selection
+                    .last_observation()
+                    .map(|op| {
+                        format!(
+                            " · {} ({})",
+                            op.state,
+                            text(locale, Message::CharacterOperationUnknown)
+                        )
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "{id}: {}{last}",
+                    text(locale, Message::CharacterOperationUnknown)
+                )
+            }
         })
     })
     .flatten();
@@ -2234,16 +2288,36 @@ fn next_pack_operation_id() -> String {
 }
 
 fn submit_pack_from_menu(packs: Arc<PackService>, generation: u64, action: PackAction) {
-    let request = PackRequest {
-        operation_id: next_pack_operation_id(),
-        expected_generation: Some(generation),
-        action,
-    };
-    let result = packs.submit(request);
     with_ui_mut(|ui| {
-        if Arc::ptr_eq(&ui.packs, &packs) {
-            ui.record_pack_submission(result);
+        if !Arc::ptr_eq(&ui.packs, &packs) {
+            return;
         }
+        ui.refresh_character_menu();
+        if ui.ui_mutation_busy() {
+            return;
+        }
+        let listing = ui.packs.cached_list();
+        let valid = listing.generation == generation
+            && match &action {
+                PackAction::Update { id, .. } | PackAction::Remove { id } => {
+                    listing.packs.iter().any(|pack| &pack.id == id)
+                }
+                _ => true,
+            };
+        if !valid {
+            ui.pack_error = Some(text(ui.locale, Message::CharacterSelectionStale).to_owned());
+            ui.refresh_character_menu();
+            return;
+        }
+        let operation_id = next_pack_operation_id();
+        let request = PackRequest {
+            operation_id: operation_id.clone(),
+            expected_generation: Some(generation),
+            action,
+        };
+        ui.character_selection.reserve_other(operation_id.clone());
+        let result = packs.submit_ui_if_idle(request);
+        ui.record_pack_submission(result, &operation_id);
     });
 }
 
@@ -2270,15 +2344,7 @@ impl Ui {
             }
             PreparedCharacter::Rig(_) => None,
         };
-        let dialogue_listing = packs.cached_list();
         let dialogue_target = active_dialogue_target(&prepared, &packs, dialogue_override_active);
-        let dialogue_name = dialogue_display_name(
-            dialogue_target.as_ref(),
-            &dialogue_listing,
-            &prepared,
-            locale,
-            None,
-        );
         let effective_dialogue = effective_metadata(
             prepared.metadata(),
             dialogue_target
@@ -2599,6 +2665,7 @@ impl Ui {
         bubble_root.addSubview(&composer_send);
         bubble_panel.setContentView(Some(&bubble_root));
 
+        let dialogue_editor = DialogueEditor::new(&menu_target, locale, mtm);
         let mut menu_panel = MenuPanel::new(&menu_target, character_menu.view(), locale, mtm);
         menu_panel.set_bubble_appearance(bubble_appearance);
         menu_panel.set_show_status_indicators(prefs.show_status_indicators());
@@ -2655,12 +2722,25 @@ impl Ui {
             composer_results: VecDeque::new(),
             cards,
             menu_panel,
+            dialogue_editor,
+            dialogue_choices: Vec::new(),
+            editor_cached_choice: None,
+            editor_metadata: None,
+            editor_ready: false,
+            editor_error: None,
+            editor_content_dirty: true,
             locale,
             pending_language: None,
             effective_dialogue,
+            external_dialogue_metadata: dialogue_target
+                .as_ref()
+                .filter(|target| matches!(target, DialogueTarget::ExternalAssets(_)))
+                .and_then(|_| prepared.metadata().cloned()),
+            external_dialogue_target: dialogue_target
+                .as_ref()
+                .filter(|target| matches!(target, DialogueTarget::ExternalAssets(_)))
+                .cloned(),
             dialogue_target,
-            dialogue_name,
-            dialogue_pack_generation: dialogue_listing.generation,
             dialogue_override_active,
             dialogue_prepared_epoch: prepared.token().backend_epoch,
             active: prepared,
@@ -2677,7 +2757,7 @@ impl Ui {
             playback,
             pending_native: None,
             character_menu,
-            pack_operation: None,
+            character_selection: CharacterSelection::new(),
             pack_error: None,
             behavior: Behavior::new(),
             interaction: Interaction::new(),
@@ -2730,7 +2810,6 @@ impl Ui {
             );
         }
         ui.install_menu_event_monitors();
-        ui.sync_dialogue_panel();
 
         ui.clamp_panel();
         ui.update_bubble_frame();
@@ -2945,10 +3024,8 @@ impl Ui {
         self.menu_panel.set_locale(locale);
         self.cards.set_locale(locale);
         self.character_menu.set_locale(locale);
-        if matches!(&self.dialogue_target, Some(DialogueTarget::Character(id)) if id == "default") {
-            self.dialogue_name = text(locale, Message::RubeliaBuiltIn).to_owned();
-        }
-        self.sync_dialogue_panel();
+        self.dialogue_editor.set_locale(locale);
+        self.editor_content_dirty = true;
         self.bubble_content_dirty = true;
         self.refresh_character_menu();
         self.refresh();
@@ -3275,21 +3352,8 @@ impl Ui {
                 self.packs.set_active(token.reference.clone(), false, None);
                 self.dialogue_override_active = false;
                 self.dialogue_prepared_epoch = token.backend_epoch;
-                let previous_name = (self.dialogue_target
-                    == Some(DialogueTarget::Character(token.reference.id.clone())))
-                .then_some(self.dialogue_name.as_str());
                 self.dialogue_target = Some(DialogueTarget::Character(token.reference.id.clone()));
-                let listing = self.packs.cached_list();
-                self.dialogue_name = dialogue_display_name(
-                    self.dialogue_target.as_ref(),
-                    &listing,
-                    &self.active,
-                    self.locale,
-                    previous_name,
-                );
-                self.dialogue_pack_generation = listing.generation;
                 self.rebuild_effective_dialogue();
-                self.sync_dialogue_panel();
                 self.refresh();
                 let _ = sender.send(Ok(token));
             }
@@ -3478,101 +3542,136 @@ impl Ui {
     }
 
     fn refresh_character_menu(&mut self) {
-        if let Some(operation_id) = self
-            .pack_operation
-            .as_ref()
-            .map(|operation| operation.operation_id.clone())
-        {
-            if let Some(operation) = self.packs.cached_status(&operation_id) {
-                self.pack_operation = Some(operation);
-            }
+        if let Some(operation_id) = self.character_selection.operation_id() {
+            let operation = self.packs.cached_status(operation_id);
+            self.character_selection
+                .reconcile_operation(operation.as_ref());
         }
         let mut listing = self.packs.cached_list();
-        if listing.generation != self.dialogue_pack_generation {
-            self.dialogue_pack_generation = listing.generation;
-            let name = dialogue_display_name(
-                self.dialogue_target.as_ref(),
-                &listing,
-                &self.active,
-                self.locale,
-                Some(&self.dialogue_name),
-            );
-            if name != self.dialogue_name {
-                self.dialogue_name = name;
-                self.sync_dialogue_panel();
-            }
-        }
+        self.character_selection.reconcile(&listing);
+        self.update_dialogue_choices(&listing);
+        self.sync_dialogue_editor_content();
         if let Some(error) = self.pack_error.as_ref() {
             listing.error = Some(error.clone());
         }
-        if !self.last_scene.shutdown {
+        if self.menu_panel.is_visible() && !self.last_scene.shutdown {
             let scene = self.last_scene.clone();
             let status = status_text(&scene, self.locale);
-            let snapshot = self.shared.lock().ok().map(|state| {
-                (
-                    state.lifecycle_settings(),
-                    state.observation_preferences().clone(),
-                    state.observation_catalog().clone(),
-                )
-            });
-            if let Some((lifecycle, observation, catalog)) = snapshot {
+            if let Ok(state) = self.shared.lock() {
                 self.menu_panel.sync(
                     &scene,
                     self.prefs.language(),
                     &status,
-                    lifecycle,
-                    &observation,
-                    &catalog,
+                    state.lifecycle_settings(),
+                    state.observation_preferences(),
+                    state.observation_catalog(),
                 );
             }
         }
         self.character_menu.refresh(
             &listing,
-            self.pack_operation.as_ref(),
+            &self.character_selection,
+            self.packs.ui_mutation_busy() || self.character_selection.is_busy(),
             self._menu_target.as_ref(),
             self.mtm,
         );
     }
 
     fn handle_pack_command(&mut self, command: MenuCommand) {
-        match command {
+        self.refresh_character_menu();
+        if self.ui_mutation_busy() {
+            return;
+        }
+        let listing = self.packs.cached_list();
+        self.character_selection.reconcile(&listing);
+        let generation = listing.generation;
+        let result = match command {
             MenuCommand::Select {
                 id,
-                generation: command_generation,
-            } => {
-                self.submit_pack(command_generation, PackAction::Select { id });
-            }
+                generation: sent,
+            } if sent == generation => self.character_selection.stage_head(&id),
             MenuCommand::Restore {
                 id,
                 revision,
-                generation: command_generation,
-            } => {
-                self.submit_pack(command_generation, PackAction::Restore { id, revision });
-            }
-            // Dialog-backed commands are started by MenuTarget after releasing
-            // the UI borrow, so nested AppKit event loops cannot re-enter it.
+                generation: sent,
+            } if sent == generation => self
+                .character_selection
+                .stage_revision(CharacterRef { id, revision }),
+            MenuCommand::Select { .. } | MenuCommand::Restore { .. } => Err(SelectionError::Stale),
             MenuCommand::Update { .. }
             | MenuCommand::Remove { .. }
-            | MenuCommand::Inspect { .. } => {}
-        }
-    }
-
-    fn submit_pack(&mut self, generation: u64, action: PackAction) {
-        let request = PackRequest {
-            operation_id: next_pack_operation_id(),
-            expected_generation: Some(generation),
-            action,
+            | MenuCommand::Inspect { .. } => return,
         };
-        self.record_pack_submission(self.packs.submit(request));
+        self.pack_error = result
+            .err()
+            .map(|error| text(self.locale, selection_error_message(error)).to_owned());
+        self.refresh_character_menu();
     }
 
-    fn record_pack_submission(&mut self, result: Result<PackOperation, String>) {
-        match result {
+    fn apply_candidate(&mut self) {
+        self.refresh_character_menu();
+        if self.ui_mutation_busy() {
+            return;
+        }
+        let request = match self
+            .character_selection
+            .request_apply(next_pack_operation_id())
+        {
+            Ok(request) => request,
+            Err(error) => {
+                self.pack_error =
+                    Some(text(self.locale, selection_error_message(error)).to_owned());
+                self.refresh_character_menu();
+                return;
+            }
+        };
+        let operation_id = request.operation_id.clone();
+        match self.packs.submit_ui_if_idle(request) {
             Ok(operation) => {
-                self.pack_operation = Some(operation);
+                self.character_selection.record_operation(&operation);
                 self.pack_error = None;
             }
-            Err(error) => self.pack_error = Some(error),
+            Err(error) => {
+                self.character_selection
+                    .submission_failed(&operation_id, error);
+                self.pack_error = None;
+            }
+        }
+        self.refresh_character_menu();
+    }
+
+    fn cancel_candidate(&mut self) {
+        self.refresh_character_menu();
+        if self.ui_mutation_busy() {
+            return;
+        }
+        self.pack_error = self
+            .character_selection
+            .cancel()
+            .err()
+            .map(|error| text(self.locale, selection_error_message(error)).to_owned());
+        self.refresh_character_menu();
+    }
+
+    fn ui_mutation_busy(&self) -> bool {
+        self.character_selection.is_busy() || self.packs.ui_mutation_busy()
+    }
+
+    fn record_pack_submission(
+        &mut self,
+        result: Result<PackOperation, String>,
+        operation_id: &str,
+    ) {
+        match result {
+            Ok(operation) => {
+                self.character_selection.record_operation(&operation);
+                self.pack_error = None;
+            }
+            Err(error) => {
+                self.character_selection
+                    .submission_failed(operation_id, error);
+                self.pack_error = None;
+            }
         }
         self.refresh_character_menu();
     }
@@ -4456,6 +4555,7 @@ impl Ui {
         self.set_hover(false, false);
         self.panel.setIgnoresMouseEvents(true);
         self.bubble_panel.setIgnoresMouseEvents(true);
+        self.dialogue_editor.shutdown();
         self.menu_panel.shutdown();
     }
 
@@ -5801,7 +5901,6 @@ impl Ui {
         self.bubble_root.contains_local_point(local)
     }
     fn toggle_menu_panel(&mut self) {
-        self.sync_dialogue_panel();
         if let Some(button) = self._status_item.button(self.mtm) {
             if !self.menu_panel.is_visible() {
                 let app = NSApplication::sharedApplication(self.mtm);
@@ -5816,20 +5915,168 @@ impl Ui {
                 }
             }
             self.menu_panel.toggle(&button);
+            if self.menu_panel.is_visible() {
+                self.refresh_character_menu();
+            }
         }
     }
 
-    fn sync_dialogue_panel(&mut self) {
-        let Some(target) = self.dialogue_target.as_ref() else {
+    fn update_dialogue_choices(&mut self, listing: &PackListing) {
+        let default_name = text(self.locale, Message::RubeliaBuiltIn);
+        if !self.dialogue_choices.is_empty()
+            && self.dialogue_choices[0].generation == listing.generation
+            && self.dialogue_choices[0].name == default_name
+        {
             return;
-        };
-        self.menu_panel.sync_dialogue(
-            target.clone(),
-            &self.dialogue_name,
-            self.prefs.dialogue_overrides(),
-            self.active.metadata(),
-            self.locale,
+        }
+        let mut choices = Vec::with_capacity(
+            1 + listing
+                .packs
+                .iter()
+                .map(|pack| pack.revisions.len())
+                .sum::<usize>()
+                + usize::from(self.external_dialogue_target.is_some()),
         );
+        choices.push(DialogueChoice {
+            target: DialogueTarget::Character("default".to_owned()),
+            name: default_name.to_owned(),
+            reference: Some(CharacterRef::builtin()),
+            generation: listing.generation,
+        });
+        for pack in &listing.packs {
+            for revision in &pack.revisions {
+                choices.push(DialogueChoice {
+                    target: DialogueTarget::Character(pack.id.clone()),
+                    name: format!("{} #{}", pack.name, revision),
+                    reference: Some(CharacterRef {
+                        id: pack.id.clone(),
+                        revision: *revision,
+                    }),
+                    generation: listing.generation,
+                });
+            }
+        }
+        if let Some(DialogueTarget::ExternalAssets(path)) = &self.external_dialogue_target {
+            choices.push(DialogueChoice {
+                target: DialogueTarget::ExternalAssets(path.clone()),
+                name: Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path)
+                    .to_owned(),
+                reference: None,
+                generation: listing.generation,
+            });
+        }
+        self.dialogue_choices = choices;
+        self.dialogue_editor.sync_choices(
+            &self.dialogue_choices,
+            self.dialogue_target.as_ref(),
+            Some(&self.active.token().reference),
+        );
+    }
+
+    fn sync_dialogue_editor_content(&mut self) {
+        if !self.dialogue_editor.is_visible() {
+            return;
+        }
+        let choice = self.dialogue_editor.choice();
+        if choice.as_ref().is_some_and(|selected| {
+            !self
+                .dialogue_choices
+                .iter()
+                .any(|available| available == selected)
+        }) {
+            if self.editor_ready || self.editor_error.is_none() {
+                self.editor_ready = false;
+                self.editor_error =
+                    Some(text(self.locale, Message::DialogueTargetUnavailable).to_owned());
+                self.editor_content_dirty = true;
+            }
+        }
+        let identity_changed = match (choice.as_ref(), self.editor_cached_choice.as_ref()) {
+            (Some(current), Some(previous)) => {
+                current.target != previous.target
+                    || current.reference != previous.reference
+                    || current.generation != previous.generation
+            }
+            (None, None) => false,
+            _ => true,
+        };
+        if choice != self.editor_cached_choice {
+            self.editor_cached_choice = choice.clone();
+        }
+        if identity_changed {
+            self.editor_metadata = None;
+            self.editor_ready = false;
+            self.editor_error = None;
+            self.editor_content_dirty = true;
+            if let Some(choice) = &choice {
+                if !self
+                    .dialogue_choices
+                    .iter()
+                    .any(|available| available == choice)
+                {
+                    self.editor_error =
+                        Some(text(self.locale, Message::DialogueTargetUnavailable).to_owned());
+                } else if self.active_dialogue_matches(&choice.target)
+                    && (choice.reference.is_none()
+                        || choice.reference.as_ref() == Some(&self.active.token().reference))
+                {
+                    self.editor_metadata = self.active.metadata().cloned();
+                    self.editor_ready = true;
+                } else if self.external_dialogue_target.as_ref() == Some(&choice.target) {
+                    self.editor_metadata = self.external_dialogue_metadata.clone();
+                    self.editor_ready = true;
+                } else if let Some(reference) = choice.reference.as_ref() {
+                    if let Err(error) = self
+                        .packs
+                        .request_dialogue_metadata(reference.clone(), choice.generation)
+                    {
+                        self.editor_error = Some(format!(
+                            "{}: {error}",
+                            text(self.locale, Message::DialogueTargetUnavailable)
+                        ));
+                    }
+                } else {
+                    self.editor_error =
+                        Some(text(self.locale, Message::DialogueTargetUnavailable).to_owned());
+                }
+            }
+        }
+        if !self.editor_ready && self.editor_error.is_none() {
+            if let Some(choice) = choice.as_ref() {
+                if let Some(reference) = choice.reference.as_ref() {
+                    if let Some(result) = self
+                        .packs
+                        .cached_dialogue_metadata(reference, choice.generation)
+                    {
+                        match result {
+                            Ok(metadata) => {
+                                self.editor_metadata = metadata.metadata;
+                                self.editor_ready = true;
+                            }
+                            Err(error) => {
+                                self.editor_error = Some(format!(
+                                    "{}: {error}",
+                                    text(self.locale, Message::DialogueTargetUnavailable)
+                                ))
+                            }
+                        }
+                        self.editor_content_dirty = true;
+                    }
+                }
+            }
+        }
+        if self.editor_content_dirty {
+            self.dialogue_editor.sync_content(
+                self.prefs.dialogue_overrides(),
+                self.editor_metadata.as_ref(),
+                self.editor_ready,
+                self.editor_error.as_deref(),
+            );
+            self.editor_content_dirty = false;
+        }
     }
 
     fn rebuild_effective_dialogue(&mut self) {
@@ -5853,82 +6100,167 @@ impl Ui {
             }
     }
 
-    fn save_dialogue_entry(&mut self, reset: bool) {
-        let Some((target, locale, slot, value)) = self.menu_panel.dialogue_edit() else {
-            return;
-        };
-        if !self.active_dialogue_matches(&target) {
-            self.menu_panel
-                .set_dialogue_error(Some(text(self.locale, Message::DialogueSaveFailed)));
+    fn dialogue_choice_valid(&self, choice: &DialogueChoice) -> bool {
+        let listing = self.packs.cached_list();
+        choice.generation == listing.generation
+            && self
+                .dialogue_choices
+                .iter()
+                .any(|available| available == choice)
+            && match &choice.reference {
+                Some(reference) => self
+                    .packs
+                    .dialogue_reference_valid(reference, choice.generation),
+                None => self.external_dialogue_target.as_ref() == Some(&choice.target),
+            }
+    }
+
+    fn persist_dialogue_entry(
+        &mut self,
+        choice: &DialogueChoice,
+        locale: UiLocale,
+        slot: DialogueSlot,
+        value: Option<String>,
+    ) {
+        if !self.dialogue_choice_valid(choice) {
+            self.dialogue_editor
+                .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
             return;
         }
-        let value = (!reset).then_some(value);
         match self
             .prefs
-            .save_dialogue_entry(&target, locale.tag(), slot, value)
+            .save_dialogue_entry(&choice.target, locale.tag(), slot, value)
         {
             Ok(()) => {
-                self.menu_panel.dialogue_saved(&target, locale, slot);
-                self.menu_panel.set_dialogue_error(None);
-                self.rebuild_effective_dialogue();
-                self.sync_dialogue_panel();
-                let scene = self.last_scene.clone();
-                self.refresh_bubble_content(&scene);
+                self.dialogue_editor.saved(&choice.target, locale, slot);
+                self.editor_content_dirty = true;
+                self.dialogue_editor.set_error(None);
+                self.sync_dialogue_editor_content();
+                if self.active_dialogue_matches(&choice.target) {
+                    self.rebuild_effective_dialogue();
+                    let scene = self.last_scene.clone();
+                    self.refresh_bubble_content(&scene);
+                }
             }
-            Err(error) => self.menu_panel.set_dialogue_error(Some(&error)),
+            Err(error) => self.dialogue_editor.set_error(Some(&format!(
+                "{}: {error}",
+                text(self.locale, Message::DialogueSaveFailed)
+            ))),
+        }
+    }
+
+    fn save_dialogue_entry(&mut self, reset: bool) {
+        if reset {
+            let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() else {
+                return;
+            };
+            if !self.dialogue_choice_valid(&choice) {
+                self.dialogue_editor
+                    .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
+                return;
+            }
+            if self.dialogue_editor.is_dirty() {
+                self.confirm_dialogue_reset(choice, locale, slot, value, false);
+            } else {
+                self.persist_dialogue_entry(&choice, locale, slot, None);
+            }
+        } else if let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() {
+            if self.dialogue_editor.is_dirty() && value.len() <= 2048 {
+                self.persist_dialogue_entry(&choice, locale, slot, Some(value));
+            }
         }
     }
 
     fn confirm_reset_character_dialogue(&mut self) {
-        let Some(target) = self.menu_panel.dialogue_target() else {
+        let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() else {
             return;
         };
-        if !self.active_dialogue_matches(&target) {
-            self.menu_panel
-                .set_dialogue_error(Some(text(self.locale, Message::DialogueSaveFailed)));
+        if !self.dialogue_choice_valid(&choice) {
+            self.dialogue_editor
+                .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
             return;
         }
+        self.confirm_dialogue_reset(choice, locale, slot, value, true);
+    }
+
+    fn confirm_dialogue_reset(
+        &self,
+        choice: DialogueChoice,
+        edit_locale: UiLocale,
+        slot: DialogueSlot,
+        value: String,
+        whole: bool,
+    ) {
+        let locale = self.locale;
         DispatchQueue::main().exec_async(move || {
-            let Some((mtm, locale)) = with_ui_read(|ui| {
-                ui.active_dialogue_matches(&target)
-                    .then_some((ui.mtm, ui.locale))
-            })
-            .flatten() else {
+            let Some(mtm) = with_ui_read(|ui| ui.mtm) else {
                 return;
             };
             let alert = NSAlert::new(mtm);
             alert.setMessageText(&NSString::from_str(text(
                 locale,
-                Message::DialogueResetConfirm,
+                if whole {
+                    Message::DialogueResetConfirm
+                } else {
+                    Message::DialogueResetDraftConfirm
+                },
             )));
             alert.setInformativeText(&NSString::from_str(text(
                 locale,
-                Message::DialogueResetConfirmHelp,
+                if whole {
+                    Message::DialogueResetConfirmHelp
+                } else {
+                    Message::DialogueResetDraftConfirmHelp
+                },
             )));
             alert.addButtonWithTitle(&NSString::from_str(text(
                 locale,
-                Message::DialogueResetCharacter,
+                if whole {
+                    Message::DialogueResetCharacter
+                } else {
+                    Message::DialogueResetEntry
+                },
             )));
             alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::Cancel)));
             if alert.runModal() != NSAlertFirstButtonReturn {
                 return;
             }
             with_ui_mut(|ui| {
-                if !ui.active_dialogue_matches(&target) {
-                    ui.menu_panel
-                        .set_dialogue_error(Some(text(ui.locale, Message::DialogueSaveFailed)));
+                let current = ui.dialogue_editor.edit();
+                if !ui.dialogue_choice_valid(&choice)
+                    || current
+                        .as_ref()
+                        .is_none_or(|(target, language, event, text)| {
+                            target != &choice
+                                || *language != edit_locale
+                                || *event != slot
+                                || text != &value
+                        })
+                {
+                    ui.dialogue_editor
+                        .set_error(Some(text(ui.locale, Message::DialogueTargetUnavailable)));
                     return;
                 }
-                match ui.prefs.reset_character_dialogue(&target) {
-                    Ok(()) => {
-                        ui.menu_panel.dialogue_reset(&target);
-                        ui.menu_panel.set_dialogue_error(None);
-                        ui.rebuild_effective_dialogue();
-                        ui.sync_dialogue_panel();
-                        let scene = ui.last_scene.clone();
-                        ui.refresh_bubble_content(&scene);
+                if whole {
+                    match ui.prefs.reset_character_dialogue(&choice.target) {
+                        Ok(()) => {
+                            ui.dialogue_editor.reset(&choice.target);
+                            ui.dialogue_editor.set_error(None);
+                            ui.editor_content_dirty = true;
+                            ui.sync_dialogue_editor_content();
+                            if ui.active_dialogue_matches(&choice.target) {
+                                ui.rebuild_effective_dialogue();
+                                let scene = ui.last_scene.clone();
+                                ui.refresh_bubble_content(&scene);
+                            }
+                        }
+                        Err(error) => ui.dialogue_editor.set_error(Some(&format!(
+                            "{}: {error}",
+                            text(ui.locale, Message::DialogueSaveFailed)
+                        ))),
                     }
-                    Err(error) => ui.menu_panel.set_dialogue_error(Some(&error)),
+                } else {
+                    ui.persist_dialogue_entry(&choice, edit_locale, slot, None);
                 }
             });
         });
@@ -5988,9 +6320,6 @@ impl Ui {
         self.menu_panel.select_tab(index);
     }
 
-    fn focus_character_manager(&mut self) {
-        self.menu_panel.focus_character_manager();
-    }
     fn save_lifecycle_setting(&mut self, key: LifecycleSetting) {
         let value = self.menu_panel.lifecycle_value(key);
         let result = control::set_lifecycle_setting(&self.lifecycle_paths, key, value);
@@ -6107,6 +6436,7 @@ impl Drop for Ui {
         self.bubble_panel.setIgnoresMouseEvents(true);
         self.panel.orderOut(None);
         self.bubble_panel.orderOut(None);
+        self.dialogue_editor.shutdown();
         self.menu_panel.shutdown();
     }
 }

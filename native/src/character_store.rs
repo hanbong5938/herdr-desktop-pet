@@ -1,4 +1,7 @@
-use crate::assets::{managed_manifest_files, ManagedPack, ValidatedCharacter, MAX_FILE_BYTES};
+use crate::assets::{
+    builtin_dialogue_metadata, managed_dialogue_metadata, managed_manifest_files,
+    CharacterMetadata, ManagedPack, ValidatedCharacter, MAX_FILE_BYTES,
+};
 use crate::character_types::{
     validate_pack_id, validate_pack_name, CharacterRef, PackAction, PackListing, PackOperation,
     PackRecord, PackRequest,
@@ -540,6 +543,70 @@ impl PackStore {
         };
         transaction.selected = transaction.proposed.selected.clone();
         Ok(transaction)
+    }
+
+    /// A read-only, generation-pinned lookup. The revision directory and
+    /// manifest are opened with the same descriptor-relative security checks
+    /// as load_revision, but image and rig payloads are never opened.
+    pub(crate) fn dialogue_metadata(
+        &self,
+        reference: &CharacterRef,
+        generation: u64,
+    ) -> Result<(String, Option<CharacterMetadata>), String> {
+        validate_character_ref(reference)?;
+        let (layout, _lock) = self.open_locked()?;
+        let loaded = load_registry(&layout.root_file)?;
+        if loaded.index.generation != generation {
+            return Err(format!(
+                "character store generation mismatch (expected {generation}, current {})",
+                loaded.index.generation
+            ));
+        }
+        if reference.is_builtin() {
+            let path = self
+                .builtin_assets
+                .as_deref()
+                .ok_or_else(|| "builtin character assets are not configured".to_string())?;
+            return builtin_dialogue_metadata(path);
+        }
+        if loaded.readonly {
+            return Err(loaded.warning.unwrap_or_else(|| {
+                "character store metadata is corrupt; store is read-only".to_string()
+            }));
+        }
+        let record = loaded
+            .index
+            .packs
+            .iter()
+            .find(|record| record.id == reference.id)
+            .ok_or_else(|| format!("character pack {} is not registered", reference.id))?;
+        if !record.revisions.contains(&reference.revision) {
+            return Err(format!(
+                "character pack {} has no retained revision {}",
+                reference.id, reference.revision
+            ));
+        }
+        let packs = open_directory_at(
+            &layout.root_file,
+            std::ffi::OsStr::new(PACKS_DIR),
+            "character packs directory",
+        )?;
+        let pack_directory = open_directory_at(
+            &packs,
+            std::ffi::OsStr::new(&reference.id),
+            "managed character directory",
+        )?;
+        verify_private_directory(&pack_directory, Path::new("<managed character directory>"))?;
+        let revision_directory = open_directory_at(
+            &pack_directory,
+            std::ffi::OsStr::new(&reference.revision.to_string()),
+            "managed character revision",
+        )?;
+        verify_private_directory(
+            &revision_directory,
+            Path::new("<managed character revision>"),
+        )?;
+        managed_dialogue_metadata(&revision_directory, &reference.id)
     }
 
     pub fn load_revision(&self, reference: &CharacterRef) -> Result<ValidatedCharacter, String> {
@@ -2601,6 +2668,82 @@ mod tests {
     }
 
     #[test]
+    fn builtin_dialogue_survives_readonly_registry_without_bypassing_reference_or_manifest_checks()
+    {
+        let root = std::env::temp_dir().join(format!("herdr-store-dialogue-{}", unique_nonce()));
+        let store_root = root.join(STORE_DIR);
+        ensure_layout(&root, &store_root).unwrap();
+        let builtin_root = root.join("builtin");
+        fs::create_dir(&builtin_root).unwrap();
+        let manifest = builtin_root.join("manifest.json");
+        write_fixture_file(
+            &manifest,
+            include_bytes!("../../assets/rubelia-default/manifest.json"),
+        );
+
+        let primary = b"invalid-primary-registry";
+        let previous = b"different-invalid-previous-registry";
+        let primary_path = store_root.join(REGISTRY_FILE);
+        let previous_path = store_root.join(PREVIOUS_REGISTRY_FILE);
+        fs::write(&primary_path, primary).unwrap();
+        fs::write(&previous_path, previous).unwrap();
+        let store = PackStore::new(root.clone(), Some(builtin_root.clone()));
+        let listing = store.list().unwrap();
+        assert_eq!(listing.generation, 0);
+        assert_eq!(listing.selected, CharacterRef::builtin());
+        assert!(listing.packs.is_empty());
+        assert!(listing.error.is_some());
+
+        let (name, metadata) = store
+            .dialogue_metadata(&CharacterRef::builtin(), 0)
+            .unwrap();
+        assert_eq!(name, "Rubelia");
+        assert_eq!(
+            metadata.unwrap().dialogue_text("idle", None, "ko"),
+            Some("루벨리아가 차분히 다음 일을 살피고 있어요.")
+        );
+        let stale_error = store
+            .dialogue_metadata(&CharacterRef::builtin(), 1)
+            .unwrap_err();
+        let managed_error = store
+            .dialogue_metadata(
+                &CharacterRef {
+                    id: "sample".to_string(),
+                    revision: 1,
+                },
+                0,
+            )
+            .unwrap_err();
+        assert_ne!(stale_error, managed_error);
+        let invalid_ref_error = store
+            .dialogue_metadata(
+                &CharacterRef {
+                    id: CharacterRef::builtin().id,
+                    revision: 1,
+                },
+                0,
+            )
+            .unwrap_err();
+        assert_ne!(invalid_ref_error, managed_error);
+        assert_ne!(invalid_ref_error, stale_error);
+
+        fs::remove_file(&manifest).unwrap();
+        let missing_manifest_error = store
+            .dialogue_metadata(&CharacterRef::builtin(), 0)
+            .unwrap_err();
+        assert_ne!(missing_manifest_error, managed_error);
+        write_fixture_file(&manifest, b"{not valid json");
+        let invalid_manifest_error = store
+            .dialogue_metadata(&CharacterRef::builtin(), 0)
+            .unwrap_err();
+        assert_ne!(invalid_manifest_error, managed_error);
+        assert_ne!(invalid_manifest_error, missing_manifest_error);
+        assert_eq!(fs::read(&primary_path).unwrap(), primary);
+        assert_eq!(fs::read(&previous_path).unwrap(), previous);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn registry_operation_history_stays_bounded_before_atomic_replace() {
         let mut index = RegistryDisk::empty();
         let mut operation = PackOperation {
@@ -3619,6 +3762,65 @@ mod tests {
         let mut budget = ScanBudget::default();
         assert!(!known_revision_tree(&revision_directory, &mut budget));
         assert!(revision.join("manifest.json").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn dialogue_lookup_reads_only_registered_manifest_and_rejects_stale_or_bad_sources() {
+        let root = std::env::temp_dir().join(format!("herdr-dialogue-{}", unique_nonce()));
+        let store_root = root.join(STORE_DIR);
+        let layout = ensure_layout(&root, &store_root).unwrap();
+        let reference = CharacterRef {
+            id: "sample".to_string(),
+            revision: 7,
+        };
+        let revision = revision_path(&store_root, &reference.id, reference.revision);
+        fs::create_dir_all(&revision).unwrap();
+        for path in [&store_root.join(PACKS_DIR).join(&reference.id), &revision] {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+        let manifest = br#"{
+            "version": 3, "format": "herdr.character", "id": "sample",
+            "name": "Own Original", "width": 384, "height": 512,
+            "phases": {
+                "idle": {"fps": 8, "frames": ["missing.png"]},
+                "running": {"fps": 8, "frames": ["missing.png"]},
+                "waiting": {"fps": 8, "frames": ["missing.png"]},
+                "unknown": {"fps": 8, "frames": ["missing.png"]}
+            }
+        }"#;
+        write_fixture_file(&revision.join("manifest.json"), manifest);
+        let mut index = RegistryDisk::empty();
+        index.generation = 3;
+        index.packs.push(PackRecord {
+            id: reference.id.clone(),
+            name: "Registry Label".to_string(),
+            head: reference.revision,
+            revisions: vec![reference.revision],
+        });
+        write_registry_pinned(&layout.root_file, &store_root, None, &index).unwrap();
+        let store = PackStore::new(root.clone(), None);
+        let (name, metadata) = store.dialogue_metadata(&reference, 3).unwrap();
+        assert_eq!(name, "Own Original");
+        assert!(metadata.is_none());
+        assert!(store
+            .dialogue_metadata(&reference, 2)
+            .unwrap_err()
+            .contains("generation mismatch"));
+        let missing = CharacterRef {
+            id: reference.id.clone(),
+            revision: 8,
+        };
+        assert!(store
+            .dialogue_metadata(&missing, 3)
+            .unwrap_err()
+            .contains("no retained revision"));
+        write_fixture_file(&revision.join("manifest.json"), b"{bad json");
+        assert!(store
+            .dialogue_metadata(&reference, 3)
+            .unwrap_err()
+            .contains("manifest is invalid"));
         let _ = fs::remove_dir_all(root);
     }
 }
