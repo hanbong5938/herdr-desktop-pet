@@ -46,26 +46,32 @@
 | --- | --- |
 | 플랫폼 | Apple Silicon Mac, macOS 13 이상 |
 | 이번 실행 관리 기능의 Herdr | **공식 Herdr 0.9.3 소스에 [제공된 client-attach 패치](integrations/herdr/client-attached.patch)를 적용해 빌드한 호스트** (또는 추후 실제로 이 훅 지원을 명시한 호스트 릴리스) |
-| 앱 | v0.1.6 사전 빌드 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
+| 앱 | v0.1.7 사전 빌드 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
 | 사전 빌드 릴리스 다운로드 스크립트 | [GitHub CLI](https://cli.github.com/) (`gh`); Homebrew 설치에는 불필요 |
 
 **클라이언트 attach 자동 실행에는 제공된 패치가 필수입니다.** 순정 Herdr 0.9.0과 0.9.3에는 `client.attached`가 없습니다. 매니페스트의 최소 버전만으로 훅 지원이 보장되지 않습니다. 공식 0.9.3 소스에 패치를 적용하고 해당 호스트의 빌드 안내에 따라 빌드·실행한 뒤, 플러그인 연결 경고와 `client.attached` 구독 수락 여부를 확인하세요. 알 수 없는 훅 경고는 성공으로 간주하지 마세요. Intel Mac·Windows·Linux용 네이티브 배포는 지원하지 않습니다.
 
 ## Homebrew로 설치
 
-[개인 tap](https://github.com/hanbong5938/homebrew-tap)에서 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. GitHub 로그인이나 소스 빌드 도구는 필요하지 않습니다.
+[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 formula로 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. GitHub 로그인이나 소스 빌드 도구는 필요하지 않습니다.
 
 ```sh
-brew install --cask hanbong5938/tap/herdr-desktop-pet
+brew install hanbong5938/tap/herdr-desktop-pet
 herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-Homebrew는 `/Applications/HerdrDesktopPet.app`을 설치하고 CLI를 `PATH`에 연결합니다. 앱만 설치하며 Herdr 플러그인을 등록하거나 패치된 Herdr 호스트를 설치하지는 않습니다. 플러그인 시작 훅은 아래 소스 설치 안내를 따르세요. 클라이언트 attach 자동 실행에는 제공된 호스트 패치가 여전히 필요합니다. 앱은 **ad-hoc 서명이며 공증되지 않았습니다**. macOS가 실행을 차단하면 **시스템 설정 → 개인정보 보호 및 보안**에서 확인 후 직접 허용하세요.
+이전 릴리스를 기존 Homebrew cask로 설치했다면 formula를 설치하기 전에 cask를 먼저 제거하세요.
 
 ```sh
-brew upgrade --cask hanbong5938/tap/herdr-desktop-pet
-brew uninstall --cask hanbong5938/tap/herdr-desktop-pet
+brew uninstall --cask herdr-desktop-pet
+```
+
+Homebrew는 앱을 `/Applications`가 아닌 Homebrew 자체 경로(`$(brew --prefix herdr-desktop-pet)/libexec/HerdrDesktopPet.app`)에 설치하고 `herdr-desktop-pet` CLI 래퍼를 `PATH`에 추가합니다. 앱만 설치하며 Herdr 플러그인을 등록하거나 패치된 Herdr 호스트를 설치하지는 않습니다. 플러그인은 `herdr plugin install hanbong5938/herdr-desktop-pet`으로 따로 설치하거나, 플러그인 시작 훅이 필요하면 아래 소스 설치 안내를 따르세요. 클라이언트 attach 자동 실행에는 제공된 호스트 패치가 여전히 필요합니다. 앱은 **ad-hoc 서명이며 공증되지 않았습니다**. macOS가 실행을 차단하면 **시스템 설정 → 개인정보 보호 및 보안**에서 확인 후 직접 허용하세요.
+
+```sh
+brew upgrade hanbong5938/tap/herdr-desktop-pet
+brew uninstall hanbong5938/tap/herdr-desktop-pet
 ```
 
 제거해도 캐릭터 팩, 환경 설정과 실행 관리 상태는 유지됩니다.
@@ -86,7 +92,7 @@ bash scripts/install.sh --source
 
 소스 설치 프로그램은 고정된 JavaScript 의존성을 설치하고 Rust 실행 파일을 빌드하며 네이티브 rig 런타임·캐릭터 제작 리소스를 패키징한 뒤 앱을 검증합니다. 이미 실행 중인 서버에서 플러그인을 연결·활성화하는 것만으로는 캐릭터가 바로 실행되지 않습니다. `start`를 한 번 실행하거나 `auto_start`가 켜졌다면 이후 정상적인 shell/terminal 클라이언트 attach를 기다리세요. 서버 시작 시에도 자동 `ensure`가 실행됩니다. 연결 중 알 수 없는 `client.attached` 훅 경고가 뜨면 호스트에 필수 패치가 없는 것입니다. 플러그인 액션은 실행 중인 활성화된 Herdr 호스트가 필요하며 아래 네이티브 설정 명령은 호스트 없이도 동작합니다.
 
-**v0.1.6 사전 빌드 앱에는 새로 그린 루벨리아 10포즈 기본팩, 실행 관리 설정, 대사 편집, 카드별 인라인 답장과 상태 표시가 포함됩니다**. `bash scripts/install.sh --prebuilt`는 인증된 `gh`로 이 체크아웃의 `herdr-plugin.toml`에 고정된 버전을 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증합니다. 사전 빌드 앱 실행에는 소스 빌드 도구가 필요하지 않지만, 클라이언트 attach 자동 실행에는 위에서 설명한 패치된 Herdr 호스트가 여전히 필요합니다. 옵션을 생략하면 GitHub 원격 저장소가 있는 체크아웃은 고정된 사전 빌드를 선택할 수 있으므로 로컬 변경을 빌드하려면 `--source`를 명시하세요. 앱은 **ad-hoc 서명**만 되어 있고 Developer ID 서명이나 공증은 없습니다. macOS에서 실행을 직접 승인해야 할 수 있습니다.
+**v0.1.7 사전 빌드 앱에는 새로 그린 루벨리아 10포즈 기본팩, 실행 관리 설정, 대사 편집, 카드별 인라인 답장과 상태 표시가 포함됩니다**. v0.1.7에서는 패키징된 CLI를 `PATH`의 심볼릭 링크로 실행해도 번들에 포함된 기본 캐릭터를 찾도록 수정했습니다. `bash scripts/install.sh --prebuilt`는 인증된 `gh`로 이 체크아웃의 `herdr-plugin.toml`에 고정된 버전을 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증합니다. 사전 빌드 앱 실행에는 소스 빌드 도구가 필요하지 않지만, 클라이언트 attach 자동 실행에는 위에서 설명한 패치된 Herdr 호스트가 여전히 필요합니다. 옵션을 생략하면 GitHub 원격 저장소가 있는 체크아웃은 고정된 사전 빌드를 선택할 수 있으므로 로컬 변경을 빌드하려면 `--source`를 명시하세요. 앱은 **ad-hoc 서명**만 되어 있고 Developer ID 서명이나 공증은 없습니다. macOS에서 실행을 직접 승인해야 할 수 있습니다.
 
 이전 **v0.1.4 사전 빌드 메시지 입력창**은 v0.1.6 카드별 답장칸과 다릅니다. **Enter**는 줄바꿈을 넣고, **Command+Enter**는 전송하며, **Escape**는 말풍선을 접습니다(입력기 조합 중에는 먼저 조합을 취소). 인라인 답장을 사용하려면 v0.1.6으로 업그레이드하거나 `--source`로 빌드하세요.
 
