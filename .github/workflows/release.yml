@@ -113,6 +113,20 @@ jobs:
           test -f "$manifest"
           node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (m.id !== "rubelia-at12-multi-pose" || m.version !== 5 || m.render_mode !== "rig") process.exit(1);' "$manifest"
 
+      - name: Verify Homebrew-style symlinked CLI resolves bundled assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Homebrew cask links Contents/MacOS/herdr-desktop-pet onto PATH.
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir -p "$scratch/bin" "$scratch/config" "$scratch/state"
+          ln -s "$PWD/dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet" "$scratch/bin/herdr-desktop-pet"
+          "$scratch/bin/herdr-desktop-pet" pack export default \
+            --config-dir "$scratch/config" --state-dir "$scratch/state" \
+            --output "$scratch/default.herdrchar"
+          test -s "$scratch/default.herdrchar"
+
       - name: Create release archives and checksums
         shell: bash
         run: |

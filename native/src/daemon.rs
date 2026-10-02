@@ -7,7 +7,7 @@ use crate::remote::RemoteWatchers;
 use crate::socket;
 use crate::state::AppState;
 use crate::ui;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -40,17 +40,6 @@ impl DaemonConfig {
         }
     }
 }
-fn bundled_builtin_assets() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|executable| {
-            executable
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf)
-        })
-        .map(|contents| contents.join("Resources").join("default"))
-}
 
 struct PackWorkerGuard(Arc<PackService>);
 
@@ -80,7 +69,7 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
     lifecycle::write_settings(&config.paths.config_dir, settings)?;
 
     let builtin_assets = if config.assets_override {
-        bundled_builtin_assets().unwrap_or_else(|| config.assets.clone())
+        crate::resolve_assets(None).unwrap_or_else(|_| config.assets.clone())
     } else {
         config.assets.clone()
     };
@@ -127,7 +116,7 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
         }
     }
 
-    let executable = std::env::current_exe()
+    let executable = crate::bundle::executable()
         .map_err(|error| format!("cannot resolve desktop-pet executable path: {error}"))?;
     let mut control = match ControlServer::bind(
         Arc::clone(&shared),
