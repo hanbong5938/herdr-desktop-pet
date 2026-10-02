@@ -813,7 +813,7 @@ impl SessionCardsInner {
                 } else {
                     Vec::new()
                 };
-                let all_rows = if !marked && filter != SessionFilter::All {
+                let all_rows = if filter != SessionFilter::All {
                     Some(state.session_snapshot(SessionFilter::All, None).rows)
                 } else {
                     None
@@ -826,10 +826,16 @@ impl SessionCardsInner {
         if marked {
             // Preserve every displayed row's identity and its attached editor;
             // update live status without accepting a new row order or cap.
+            // Titles are still disambiguated against every session, not just
+            // the frozen rows, so they do not shift while composing.
             self.status_summary = snapshot.status_summary;
             self.update_filter_popup();
             self.update_summary(&snapshot, !self.rows.is_empty());
-            let displays = card_displays(self.locale, &marked_views);
+            let displays = card_displays_against(
+                self.locale,
+                &marked_views,
+                all_rows.as_deref().unwrap_or(&snapshot.rows),
+            );
             for row in &self.rows {
                 if let Some(index) = marked_views.iter().position(|view| view.key == *row.key()) {
                     let view = &marked_views[index];
@@ -986,18 +992,8 @@ impl SessionCardsInner {
     }
 
     fn update_rows(&mut self, snapshot: &SessionSnapshot, all_rows: &[SessionView]) {
-        let displays = card_displays(self.locale, all_rows);
-        for index in 0..snapshot.rows.len() {
-            let view = &snapshot.rows[index];
-            let fallback;
-            let display =
-                if let Some(position) = all_rows.iter().position(|row| row.key == view.key) {
-                    &displays[position]
-                } else {
-                    // An unfiltered snapshot is capped; filtered rows past that cap remain readable.
-                    fallback = card_displays(self.locale, std::slice::from_ref(view));
-                    &fallback[0]
-                };
+        let displays = card_displays_against(self.locale, &snapshot.rows, all_rows);
+        for (index, (view, display)) in snapshot.rows.iter().zip(&displays).enumerate() {
             let selected = self.selected.as_ref() == Some(&view.key);
             if let Some(row) = self.rows.get(index) {
                 if row.key() == &view.key {
@@ -1513,6 +1509,30 @@ fn card_source_label<'a>(locale: UiLocale, view: &'a SessionView) -> Cow<'a, str
     }
 }
 
+/// Card displays for `rows` (in order), disambiguated against every session
+/// (`all_rows`, the unfiltered snapshot) rather than only the rows on screen,
+/// so titles stay stable across filters and while IME composition freezes rows.
+fn card_displays_against(
+    locale: UiLocale,
+    rows: &[SessionView],
+    all_rows: &[SessionView],
+) -> Vec<CardDisplay> {
+    let mut shared: Vec<Option<CardDisplay>> = card_displays(locale, all_rows)
+        .into_iter()
+        .map(Some)
+        .collect();
+    rows.iter()
+        .map(|view| {
+            all_rows
+                .iter()
+                .position(|row| row.key == view.key)
+                .and_then(|position| shared[position].take())
+                // An unfiltered snapshot is capped; filtered rows past that cap remain readable.
+                .unwrap_or_else(|| card_displays(locale, std::slice::from_ref(view)).remove(0))
+        })
+        .collect()
+}
+
 fn card_displays(locale: UiLocale, rows: &[SessionView]) -> Vec<CardDisplay> {
     let cwd_paths: Vec<_> = rows
         .iter()
@@ -2002,6 +2022,35 @@ mod tests {
         assert_eq!(cards[0].title, "alpha/src · Tab 1");
         assert_eq!(cards[1].title, "beta/src · Tab 1");
         assert!(!cards[0].title.contains("/alpha/"));
+    }
+
+    #[test]
+    fn filtered_and_composing_cards_disambiguate_against_every_session() {
+        let all = [
+            row(1, "abc", Some("Refactor"), Some("1"), Some("Idea"), None),
+            row(1, "abd", Some("Refactor"), Some("1"), Some("Idea"), None),
+            row(2, "a", None, Some("1"), None, Some("/alpha/src")),
+            row(3, "b", None, Some("1"), None, Some("/beta/src")),
+        ];
+        let extra = row(4, "late", None, Some("2"), None, Some("/gamma/src"));
+        let displayed = [all[2].clone(), all[0].clone(), extra.clone()];
+        let full = card_displays(UiLocale::En, &all);
+        let visible_only = card_displays(UiLocale::En, &displayed);
+        let cards = card_displays_against(UiLocale::En, &displayed, &all);
+
+        assert_eq!(cards.len(), displayed.len());
+        assert_eq!(visible_only[0].title, "src · Tab 1");
+        assert_eq!(cards[0].title, "alpha/src · Tab 1");
+        assert_eq!(cards[0].title, full[2].title);
+        assert_eq!(cards[0].context, full[2].context);
+        assert!(!visible_only[1].context.starts_with("(#"));
+        assert!(cards[1].context.starts_with("(#1 · 1) · "));
+        assert_eq!(cards[1].title, full[0].title);
+        assert_eq!(cards[1].context, full[0].context);
+        let fallback = card_displays(UiLocale::En, std::slice::from_ref(&extra)).remove(0);
+        assert_eq!(cards[2].title, fallback.title);
+        assert_eq!(cards[2].context, fallback.context);
+        assert_eq!(cards[2].title, "src · Tab 2");
     }
 
     #[test]

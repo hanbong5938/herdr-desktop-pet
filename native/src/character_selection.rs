@@ -77,6 +77,12 @@ impl OperationStatus {
             Self::Completed | Self::Failed | Self::Canceled | Self::CommittedPendingApply
         )
     }
+
+    /// States the service never changes once reached; only these are evicted from its
+    /// bounded retention cache (`character_service::retain_capacity`).
+    fn is_final(self) -> bool {
+        self.is_terminal() || self == Self::DurabilityUnknown
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -369,12 +375,17 @@ impl CharacterSelection {
         }
     }
 
-    /// A cache miss leaves the ID and last observation intact, but current status is uncertain.
+    /// A miss after a final observation is retention eviction, not new information: keep it current.
+    /// Otherwise a miss leaves the ID and last observation intact, but current status is uncertain.
     pub fn reconcile_operation(&mut self, operation: Option<&PackOperation>) {
         if let Some(operation) = operation {
             self.record_operation(operation);
         } else if let Some(tracked) = self.operation.as_mut() {
-            if tracked.rejected.is_none() {
+            let evicted = tracked
+                .observed
+                .as_ref()
+                .is_some_and(|op| OperationStatus::from_operation(op).is_final());
+            if tracked.rejected.is_none() && !evicted {
                 tracked.submitted = true;
                 tracked.current = false;
             }
@@ -773,20 +784,73 @@ mod tests {
     }
 
     #[test]
-    fn generic_completed_does_not_wait_for_renderer_and_cache_miss_is_uncertain() {
+    fn generic_terminal_result_survives_cache_eviction() {
+        for (state, expected) in [
+            ("completed", OperationStatus::Completed),
+            ("failed", OperationStatus::Failed),
+            ("canceled", OperationStatus::Canceled),
+        ] {
+            let mut selection = CharacterSelection::new();
+            selection.reconcile(&listing());
+            selection.reserve_other("update".into());
+            selection.record_operation(&status("update", state, Some(8), false));
+            assert!(!selection.is_busy(), "{state}");
+            selection.reconcile_operation(None);
+            assert_eq!(selection.operation_id(), Some("update"), "{state}");
+            assert_eq!(selection.operation_status(), Some(expected), "{state}");
+            assert_eq!(selection.operation().unwrap().state, state);
+            assert!(!selection.is_busy(), "{state}");
+            assert!(selection.stage_head("cat").is_ok(), "{state}");
+        }
+    }
+
+    #[test]
+    fn owned_completed_resolves_after_cache_eviction() {
         let mut selection = CharacterSelection::new();
-        selection.reconcile(&listing());
-        selection.reserve_other("update".into());
-        selection.record_operation(&status("update", "completed", Some(8), false));
-        assert!(!selection.is_busy());
+        let mut current = listing();
+        selection.reconcile(&current);
+        selection.stage_head("cat").unwrap();
+        selection.request_apply("ours".into()).unwrap();
+        selection.record_operation(&status("ours", "completed", Some(8), true));
         selection.reconcile_operation(None);
-        assert_eq!(selection.operation_id(), Some("update"));
         assert_eq!(
             selection.operation_status(),
-            Some(OperationStatus::MissingStatus)
+            Some(OperationStatus::Completed)
         );
-        assert_eq!(selection.last_observation().unwrap().state, "completed");
-        assert!(selection.is_busy());
+        assert!(selection.is_busy()); // Candidate awaits the committed listing.
+        current.generation = 8;
+        current.selected = reference("cat", 3);
+        current.active = Some(reference("cat", 3));
+        selection.reconcile(&current);
+        assert!(selection.candidate().is_none());
+        assert!(!selection.is_busy());
+    }
+
+    #[test]
+    fn pending_apply_after_cache_eviction_waits_for_committed_listing() {
+        let mut selection = CharacterSelection::new();
+        let mut current = listing();
+        selection.reconcile(&current);
+        selection.stage_head("cat").unwrap();
+        selection.request_apply("first".into()).unwrap();
+        selection.record_operation(&status("first", "committed_pending_apply", Some(8), false));
+        selection.reconcile_operation(None);
+        assert_eq!(
+            selection.operation_status(),
+            Some(OperationStatus::CommittedPendingApply)
+        );
+        assert_eq!(selection.stage_head("cat"), Err(SelectionError::Busy));
+        current.generation = 8;
+        current.selected = reference("cat", 3);
+        selection.reconcile(&current);
+        assert!(!selection.is_busy());
+        assert!(selection.stale());
+        assert_eq!(
+            selection.request_apply("blind-retry".into()).unwrap_err(),
+            SelectionError::Stale
+        );
+        selection.stage_head("cat").unwrap();
+        assert!(selection.can_apply());
     }
 
     #[test]
