@@ -4,6 +4,7 @@ use crate::lifecycle::LifecycleSettings;
 use crate::session::{CompletionObservation, OutcomeObservation};
 use crate::session_view::{
     PromptTarget, PromptTargetError, SessionFilter, SessionKey, SessionSnapshot, SessionStore,
+    SessionView,
 };
 use crate::sources::{remote_machine_id, remote_source, ObservationPreferences, SourceCatalog};
 use serde::{Deserialize, Serialize};
@@ -328,6 +329,10 @@ impl AppState {
     ) -> SessionSnapshot {
         self.session_store.snapshot(filter, selected)
     }
+    pub(crate) fn session_view_for_key(&self, key: &SessionKey) -> Option<SessionView> {
+        self.session_store.view_for_key(key)
+    }
+
     pub(crate) fn prompt_target(
         &self,
         key: &SessionKey,
@@ -894,6 +899,37 @@ mod tests {
             at_unix_ms: 1,
             observed_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn display_bridge_observes_cached_offline_row_independently_of_prompt_readiness() {
+        let mut state = AppState::new();
+        connect(&mut state, "local.sock", 1);
+        publish(&mut state, "local.sock", 1, AgentStatus::Working);
+        let key = state.session_snapshot(SessionFilter::All, None).rows[0]
+            .key
+            .clone();
+        assert_eq!(
+            state.session_view_for_key(&key),
+            Some(state.session_snapshot(SessionFilter::All, None).rows[0].clone())
+        );
+        assert!(state.update_source(
+            "local.sock",
+            1,
+            false,
+            SourceCounts {
+                sessions: 1,
+                working: 1,
+                ..SourceCounts::default()
+            }
+        ));
+        assert_eq!(
+            state.session_view_for_key(&key).unwrap().display_status(),
+            crate::session_view::DisplayStatus::Offline
+        );
+        assert!(state.prompt_available(&key).is_err());
+        assert!(state.begin_source("local.sock".to_owned(), 2));
+        assert_eq!(state.session_view_for_key(&key), None);
     }
 
     #[test]

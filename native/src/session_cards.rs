@@ -13,6 +13,7 @@ use crate::state::AppState;
 use crate::status_indicator::{semantic_color, StatusIcon, STATUS_ICON_GAP, STATUS_ICON_SIZE};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::Message as _;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
@@ -47,21 +48,44 @@ pub(crate) const fn minimum_selectable_height() -> f64 {
     OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + ROW_HEIGHT
 }
 
+#[derive(Default)]
+struct CardsIntent {
+    composition_active: bool,
+    pending_selection: Option<SessionKey>,
+    pending_filter: Option<SessionFilter>,
+    pending_selection_deferred: bool,
+    deferred_refresh: bool,
+    deferred_selection_applied: bool,
+}
+impl CardsIntent {
+    fn request_selection(&mut self, key: SessionKey, marked: bool) {
+        self.pending_selection = Some(key);
+        self.pending_selection_deferred = true;
+        self.composition_active |= marked;
+        self.deferred_refresh = true;
+    }
+}
+
 struct SessionCardsRootIvars {
     inner: Weak<RefCell<SessionCardsInner>>,
+    intent: Rc<RefCell<CardsIntent>>,
     popup: Retained<NSPopUpButton>,
+    applied_filter: Cell<SessionFilter>,
 }
 
 struct SessionCardViewIvars {
     inner: Weak<RefCell<SessionCardsInner>>,
+    intent: Rc<RefCell<CardsIntent>>,
     key: SessionKey,
     title: Retained<NSTextField>,
     context: Retained<NSTextField>,
     status: Retained<NSTextField>,
     icon: StatusIcon,
+    accessibility_details: RefCell<CardAccessibilityDetails>,
     display_status: Cell<DisplayStatus>,
     show_status_indicators: Cell<bool>,
     selected: Cell<bool>,
+    reply_height: Cell<f64>,
     palette: Cell<BubblePalette>,
 }
 
@@ -103,23 +127,35 @@ define_class!(
             let Some(filter) = SessionFilter::ALL.get(index.max(0) as usize).copied() else {
                 return;
             };
+            let marked = crate::ui::composer_is_composing();
             let Some(inner) = self.ivars().inner.upgrade() else {
                 return;
             };
-            let height_changed = {
-                let mut cards = inner.borrow_mut();
-                if cards.filter == filter {
-                    return;
+            {
+                let mut intent = self.ivars().intent.borrow_mut();
+                intent.pending_filter = Some(filter);
+                intent.deferred_refresh = true;
+                intent.composition_active |= marked;
+            }
+            // AppKit may reenter while the cards are borrowed.
+            self.restore_popup();
+            if !marked {
+                let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
+                    if !self.ivars().intent.borrow().composition_active {
+                        cards.refresh();
+                    }
+                    true
+                } else {
+                    false
+                };
+                if ready {
+                    crate::ui::cards_content_changed();
+                } else {
+                    crate::ui::wake();
                 }
-                let previous_height = cards.content_height();
-                cards.filter = filter;
-                cards.refresh();
-                cards.content_height() != previous_height
-            };
-            if height_changed {
-                crate::ui::cards_content_changed();
             }
         }
+
 
         #[unsafe(method(acceptsFirstMouse:))]
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
@@ -127,6 +163,19 @@ define_class!(
         }
     }
 );
+
+impl SessionCardsRoot {
+    fn restore_popup(&self) {
+        let index = SessionFilter::ALL
+            .iter()
+            .position(|filter| *filter == self.ivars().applied_filter.get())
+            .unwrap_or(0) as isize;
+        let selected: isize = unsafe { msg_send![&*self.ivars().popup, indexOfSelectedItem] };
+        if selected != index {
+            let _: () = unsafe { msg_send![&*self.ivars().popup, selectItemAtIndex: index] };
+        }
+    }
+}
 
 define_class!(
     // SAFETY:
@@ -165,19 +214,22 @@ define_class!(
 
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<&NSView> {
-            // AppKit supplies the hit-test point in the superview's coordinate
-            // space here.  Compare it to this row's frame rather than bounds;
-            // the immutable key remains the action identity.
+            // Keep the header selectable, including its noninteractive labels,
+            // but let AppKit route events to controls inside the reply slot.
             let frame = self.frame();
-            if point.x >= frame.origin.x
-                && point.x <= frame.origin.x + frame.size.width
-                && point.y >= frame.origin.y
-                && point.y <= frame.origin.y + frame.size.height
+            if point.x < frame.origin.x
+                || point.x > frame.origin.x + frame.size.width
+                || point.y < frame.origin.y
+                || point.y > frame.origin.y + frame.size.height
             {
-                Some(&**self)
-            } else {
-                None
+                return None;
             }
+            if self.ivars().reply_height.get() > 0.0
+                && point.y >= frame.origin.y + ROW_HEIGHT
+            {
+                return unsafe { msg_send![super(self), hitTest: point] };
+            }
+            Some(&**self)
         }
 
         #[unsafe(method(mouseDown:))]
@@ -206,17 +258,32 @@ define_class!(
 
 impl SessionCardView {
     fn select(&self) {
+        let marked = crate::ui::composer_is_composing();
         let Some(inner) = self.ivars().inner.upgrade() else {
             return;
         };
-        let mut cards = inner.borrow_mut();
-        if cards.selected.as_ref() != Some(&self.ivars().key) {
-            cards.selected = Some(self.ivars().key.clone());
-            cards.selection_epoch = cards.selection_epoch.saturating_add(1);
+        {
+            let mut intent = self.ivars().intent.borrow_mut();
+            intent.request_selection(self.ivars().key.clone(), marked);
         }
-        cards.refresh();
-        drop(cards);
-        crate::ui::cards_content_changed();
+        if marked {
+            return;
+        }
+        let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
+            if !self.ivars().intent.borrow().composition_active {
+                self.ivars().intent.borrow_mut().pending_selection_deferred = false;
+                cards.reveal_selection = true;
+                cards.refresh();
+            }
+            true
+        } else {
+            false
+        };
+        if ready {
+            crate::ui::cards_selection_changed();
+        } else {
+            crate::ui::wake();
+        }
     }
 }
 
@@ -233,9 +300,15 @@ impl SessionCardsRoot {
         frame: NSRect,
         popup: Retained<NSPopUpButton>,
         inner: Weak<RefCell<SessionCardsInner>>,
+        intent: Rc<RefCell<CardsIntent>>,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(SessionCardsRootIvars { inner, popup });
+        let this = Self::alloc(mtm).set_ivars(SessionCardsRootIvars {
+            inner,
+            intent,
+            popup,
+            applied_filter: Cell::new(SessionFilter::All),
+        });
         // SAFETY: NSView's initWithFrame: has the expected signature.
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -251,6 +324,7 @@ impl SessionCardView {
         show_status_indicators: bool,
         palette: BubblePalette,
         inner: Weak<RefCell<SessionCardsInner>>,
+        intent: Rc<RefCell<CardsIntent>>,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
         let title = card_field(&display.title, true, mtm);
@@ -260,16 +334,20 @@ impl SessionCardView {
         status.setAlignment(NSTextAlignment::Right);
         let icon = StatusIcon::new(mtm);
 
+        let accessibility_details = CardAccessibilityDetails::new(view, display);
         let this = Self::alloc(mtm).set_ivars(SessionCardViewIvars {
             inner,
+            intent,
             key: view.key.clone(),
             title,
             context,
             status,
             icon,
+            accessibility_details: RefCell::new(accessibility_details),
             display_status: Cell::new(view.display_status()),
             show_status_indicators: Cell::new(show_status_indicators),
             selected: Cell::new(selected),
+            reply_height: Cell::new(0.0),
             palette: Cell::new(palette),
         });
         // SAFETY: NSView's initWithFrame: has the expected signature.
@@ -278,7 +356,11 @@ impl SessionCardView {
         unsafe {
             let _: () = msg_send![&*this, setAccessibilityElement: true];
         }
-        let accessibility = card_accessibility(locale, view, display, &status_text);
+        let accessibility = this
+            .ivars()
+            .accessibility_details
+            .borrow()
+            .label(locale, &status_text);
         let accessibility = NSString::from_str(&accessibility);
         this.setToolTip(Some(&accessibility));
         this.addSubview(&this.ivars().title);
@@ -316,8 +398,35 @@ impl SessionCardView {
             .set(show_status_indicators);
         self.ivars().selected.set(selected);
         self.layout_fields(self.frame().size);
-        let accessibility = card_accessibility(locale, view, display, &status_text);
+        self.ivars()
+            .accessibility_details
+            .borrow_mut()
+            .refresh(view, display);
+        let accessibility = self
+            .ivars()
+            .accessibility_details
+            .borrow()
+            .label(locale, &status_text);
         self.update_accessibility(&NSString::from_str(&accessibility));
+        self.update_status_tint();
+        self.setNeedsDisplay(true);
+    }
+    fn update_offline(&self, locale: UiLocale, show_status_indicators: bool) {
+        let status = display_status_label(locale, DisplayStatus::Offline);
+        self.ivars()
+            .status
+            .setStringValue(&NSString::from_str(status));
+        self.ivars().display_status.set(DisplayStatus::Offline);
+        self.ivars()
+            .show_status_indicators
+            .set(show_status_indicators);
+        self.layout_fields(self.frame().size);
+        let label = self
+            .ivars()
+            .accessibility_details
+            .borrow()
+            .label(locale, status);
+        self.update_accessibility(&NSString::from_str(&label));
         self.update_status_tint();
         self.setNeedsDisplay(true);
     }
@@ -352,9 +461,13 @@ impl SessionCardView {
         }
     }
     fn layout_fields(&self, size: objc2_foundation::NSSize) {
-        // Card rows are ordinary (non-flipped) views inside a flipped document.
-        // Higher local y is visually above lower local y.
-        let full = row_text_frame(size, size.height - ROW_TEXT_INSET - ROW_TEXT_HEIGHT);
+        // Rows are non-flipped inside the flipped document: the unchanged
+        // header lives at the top and the reply slot occupies the bottom.
+        let reply_height = (size.height - ROW_HEIGHT).max(0.0);
+        self.ivars().reply_height.set(reply_height);
+        let header = objc2_foundation::NSSize::new(size.width, ROW_HEIGHT);
+        let mut full = row_text_frame(header, ROW_HEIGHT - ROW_TEXT_INSET - ROW_TEXT_HEIGHT);
+        full.origin.y += reply_height;
         let measured = self
             .ivars()
             .status
@@ -410,9 +523,9 @@ impl SessionCardView {
                 ),
             ));
         }
-        self.ivars()
-            .context
-            .setFrame(row_text_frame(size, ROW_TEXT_INSET));
+        let mut context = row_text_frame(header, ROW_TEXT_INSET);
+        context.origin.y += reply_height;
+        self.ivars().context.setFrame(context);
         self.setNeedsDisplay(true);
     }
     fn set_palette(&self, palette: BubblePalette) {
@@ -447,8 +560,15 @@ impl SessionCardView {
         &self.ivars().key
     }
 }
+struct ReplySlot {
+    key: SessionKey,
+    view: Retained<NSView>,
+    height: f64,
+}
+
 struct SessionCardsInner {
     shared: Arc<Mutex<AppState>>,
+    intent: Rc<RefCell<CardsIntent>>,
     locale: UiLocale,
     mtm: MainThreadMarker,
     root: Retained<SessionCardsRoot>,
@@ -468,17 +588,26 @@ struct SessionCardsInner {
     rendered_locale: Option<UiLocale>,
     rendered_filter: Option<SessionFilter>,
     rendered_selected: Option<SessionKey>,
+    reply: Option<ReplySlot>,
+    reveal_selection: bool,
     rows: Vec<Retained<SessionCardView>>,
 }
 
 impl SessionCardsInner {
     fn content_height(&self) -> f64 {
-        let document_height = if self.rows.is_empty() {
+        let document_height = self.rows_height();
+        (OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + document_height).min(180.0)
+    }
+
+    fn rows_height(&self) -> f64 {
+        if self.rows.is_empty() {
             EMPTY_HEIGHT
         } else {
-            self.rows.len() as f64 * (ROW_HEIGHT + ROW_GAP) - ROW_GAP
-        };
-        (OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + document_height).min(180.0)
+            rows_height(
+                self.rows.len(),
+                self.reply.as_ref().map_or(0.0, |reply| reply.height),
+            )
+        }
     }
 
     fn set_frame(&mut self, frame: NSRect) {
@@ -526,7 +655,7 @@ impl SessionCardsInner {
         let document_height = if self.rows.is_empty() {
             scroll_height
         } else {
-            (self.rows.len() as f64 * (ROW_HEIGHT + ROW_GAP) - ROW_GAP).max(scroll_height)
+            self.rows_height().max(scroll_height)
         };
         // Set the new document height before measuring contentSize.  AppKit
         // only decides whether the vertical scroller consumes width during
@@ -544,17 +673,32 @@ impl SessionCardsInner {
             NSPoint::new(0.0, 0.0),
             objc2_foundation::NSSize::new(document_width, document_height),
         ));
+        let reply_index = self
+            .reply
+            .as_ref()
+            .and_then(|reply| self.rows.iter().position(|row| row.key() == &reply.key));
         for (index, row) in self.rows.iter().enumerate() {
-            // The flipped document uses a top-left origin.  Keep the first
-            // sorted row at y=0 so the initial clip shows the list beginning;
-            // the native scroller then reaches the tail naturally.
-            let y = index as f64 * (ROW_HEIGHT + ROW_GAP);
-            let frame = NSRect::new(
-                NSPoint::new(0.0, y),
-                objc2_foundation::NSSize::new(document_width, ROW_HEIGHT),
+            // The flipped document uses a top-left origin. Only the row
+            // following the selected row and its successors shift downward.
+            let frame = row_frame(
+                index,
+                reply_index,
+                self.reply.as_ref().map_or(0.0, |reply| reply.height),
+                document_width,
             );
             row.setFrame(frame);
             row.layout_fields(frame.size);
+            if reply_index == Some(index) {
+                if let Some(reply) = &self.reply {
+                    reply.view.setFrame(NSRect::new(
+                        NSPoint::new(ROW_HORIZONTAL_INSET, 0.0),
+                        objc2_foundation::NSSize::new(
+                            (document_width - 2.0 * ROW_HORIZONTAL_INSET).max(1.0),
+                            reply.height,
+                        ),
+                    ));
+                }
+            }
         }
         // Tiling after the final document width lets AppKit settle the
         // scroller geometry before restoring the old origin.  Constrain the
@@ -569,6 +713,23 @@ impl SessionCardsInner {
         let constrained_bounds = clip_view.constrainBoundsRect(proposed_bounds);
         clip_view.scrollToPoint(constrained_bounds.origin);
         self.scroll.reflectScrolledClipView(&clip_view);
+        if self.reveal_selection {
+            if let Some(row) = self
+                .rows
+                .iter()
+                .find(|row| Some(row.key()) == self.selected.as_ref())
+            {
+                let visible_height = clip_view.bounds().size.height;
+                let target = NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    objc2_foundation::NSSize::new(
+                        row.frame().size.width,
+                        row.frame().size.height.min(visible_height),
+                    ),
+                );
+                row.scrollRectToVisible(target);
+            }
+        }
     }
     fn set_palette(&mut self, palette: BubblePalette) {
         self.palette = palette;
@@ -601,36 +762,121 @@ impl SessionCardsInner {
 
     fn refresh(&mut self) {
         let scroll_origin = self.scroll.contentView().bounds().origin;
-
-        let (revision, snapshot, all_rows) = match self.shared.lock() {
+        let (marked, pending_filter, pending_selection, deferred) = {
+            let intent = self.intent.borrow();
+            (
+                intent.composition_active,
+                intent.pending_filter,
+                if intent.composition_active {
+                    None
+                } else {
+                    intent.pending_selection.clone()
+                },
+                intent.deferred_refresh,
+            )
+        };
+        let filter = if marked {
+            self.filter
+        } else {
+            pending_filter.unwrap_or(self.filter)
+        };
+        let (revision, snapshot, all_rows, marked_views, selection_valid) = match self.shared.lock()
+        {
             Ok(state) => {
                 let revision = state.session_revision();
-                if self.last_revision == Some(revision)
+                if (marked || !deferred)
+                    && self.last_revision == Some(revision)
                     && self.rendered_locale == Some(self.locale)
-                    && self.rendered_filter == Some(self.filter)
+                    && self.rendered_filter == Some(filter)
                     && self.rendered_selected == self.selected
                     && self.rendered_show_status_indicators == Some(self.show_status_indicators)
                 {
+                    drop(state);
+                    if !marked && self.reveal_selection {
+                        self.layout(self.root.frame().size, scroll_origin);
+                        self.reveal_selection = false;
+                    }
                     return;
                 }
-                let snapshot = state.session_snapshot(self.filter, self.selected.as_ref());
-                let all_rows = if self.filter == SessionFilter::All {
-                    None
+                let mut snapshot = state.session_snapshot(filter, self.selected.as_ref());
+                let selection_valid = pending_selection
+                    .as_ref()
+                    .is_some_and(|key| selection_visible(&snapshot, key));
+                if !marked && selection_valid {
+                    snapshot.selected = pending_selection.clone();
+                }
+                let marked_views = if marked {
+                    self.rows
+                        .iter()
+                        .filter_map(|row| state.session_view_for_key(row.key()))
+                        .collect()
                 } else {
-                    Some(state.session_snapshot(SessionFilter::All, None).rows)
+                    Vec::new()
                 };
-                (revision, snapshot, all_rows)
+                let all_rows = if !marked && filter != SessionFilter::All {
+                    Some(state.session_snapshot(SessionFilter::All, None).rows)
+                } else {
+                    None
+                };
+                (revision, snapshot, all_rows, marked_views, selection_valid)
             }
             Err(_) => return,
         };
 
+        if marked {
+            // Preserve every displayed row's identity and its attached editor;
+            // update live status without accepting a new row order or cap.
+            self.status_summary = snapshot.status_summary;
+            self.update_filter_popup();
+            self.update_summary(&snapshot, !self.rows.is_empty());
+            let displays = card_displays(self.locale, &marked_views);
+            for row in &self.rows {
+                if let Some(index) = marked_views.iter().position(|view| view.key == *row.key()) {
+                    let view = &marked_views[index];
+                    let display = &displays[index];
+                    row.update(
+                        self.locale,
+                        view,
+                        display,
+                        self.selected.as_ref() == Some(row.key()),
+                        self.show_status_indicators,
+                    );
+                } else {
+                    row.update_offline(self.locale, self.show_status_indicators);
+                }
+            }
+            self.last_revision = Some(revision);
+            self.rendered_locale = Some(self.locale);
+            self.rendered_filter = Some(self.filter);
+            self.rendered_selected = self.selected.clone();
+            self.rendered_show_status_indicators = Some(self.show_status_indicators);
+            self.intent.borrow_mut().deferred_refresh = true;
+            return;
+        }
+
+        {
+            let mut intent = self.intent.borrow_mut();
+            intent.pending_filter = None;
+            intent.pending_selection = None;
+            intent.deferred_refresh = false;
+            intent.deferred_selection_applied |=
+                selection_valid && intent.pending_selection_deferred;
+            intent.pending_selection_deferred = false;
+        }
+        self.filter = filter;
         if self.selected != snapshot.selected {
             self.selection_epoch = self.selection_epoch.saturating_add(1);
         }
         self.selected = snapshot.selected.clone();
+        if self.reply.as_ref().is_some_and(|reply| {
+            self.selected.as_ref() != Some(&reply.key)
+                || !snapshot.rows.iter().any(|row| row.key == reply.key)
+        }) {
+            self.detach_reply();
+        }
         self.status_summary = snapshot.status_summary;
         self.update_filter_popup();
-        self.update_summary(&snapshot);
+        self.update_summary(&snapshot, !snapshot.rows.is_empty());
         self.update_rows(&snapshot, all_rows.as_deref().unwrap_or(&snapshot.rows));
         self.last_revision = Some(revision);
         self.rendered_locale = Some(self.locale);
@@ -638,9 +884,11 @@ impl SessionCardsInner {
         self.rendered_show_status_indicators = Some(self.show_status_indicators);
         self.rendered_selected = self.selected.clone();
         self.layout(self.root.frame().size, scroll_origin);
+        self.reveal_selection = false;
     }
 
     fn update_filter_popup(&self) {
+        self.root.ivars().applied_filter.set(self.filter);
         for (index, filter) in SessionFilter::ALL.into_iter().enumerate() {
             let title = NSString::from_str(filter_label(self.locale, filter));
             if let Some(item) = self.root.ivars().popup.itemAtIndex(index as isize) {
@@ -658,7 +906,7 @@ impl SessionCardsInner {
         }
     }
 
-    fn update_summary(&self, snapshot: &SessionSnapshot) {
+    fn update_summary(&self, snapshot: &SessionSnapshot, visible_rows: bool) {
         let text = session_summary(
             self.locale,
             snapshot.total,
@@ -669,7 +917,72 @@ impl SessionCardsInner {
 
         let empty_text = session_empty(self.locale, snapshot.total, snapshot.matched);
         self.empty.setStringValue(&NSString::from_str(empty_text));
-        self.empty.setHidden(!snapshot.rows.is_empty());
+        self.empty.setHidden(visible_rows);
+    }
+
+    fn detach_reply(&mut self) {
+        if let Some(reply) = self.reply.take() {
+            reply.view.removeFromSuperview();
+        }
+    }
+
+    fn attach_reply(&mut self, key: &SessionKey, view: &NSView, height: f64) -> bool {
+        if self.selected.as_ref() != Some(key) || !self.rows.iter().any(|row| row.key() == key) {
+            return false;
+        }
+        let height = height.max(0.0);
+        if let Some(reply) = &mut self.reply {
+            if reply.key == *key && std::ptr::eq(&*reply.view, view) {
+                let row = self
+                    .rows
+                    .iter()
+                    .find(|row| row.key() == key)
+                    .expect("visible selected row");
+                // SAFETY: Cards and their retained reply view are created with the main-thread marker.
+                let orphaned = !unsafe { reply.view.superview() }
+                    .as_deref()
+                    .is_some_and(|parent| std::ptr::eq(parent, &***row));
+                if orphaned {
+                    row.addSubview(&reply.view);
+                }
+                if reply.height != height || orphaned {
+                    reply.height = height;
+                    let origin = self.scroll.contentView().bounds().origin;
+                    self.layout(self.root.frame().size, origin);
+                }
+                return true;
+            }
+        }
+        self.detach_reply();
+        let row = self
+            .rows
+            .iter()
+            .find(|row| row.key() == key)
+            .expect("visible selected row");
+        row.addSubview(view);
+        self.reply = Some(ReplySlot {
+            key: key.clone(),
+            view: view.retain(),
+            height,
+        });
+        self.reveal_selection = true;
+        let origin = self.scroll.contentView().bounds().origin;
+        self.layout(self.root.frame().size, origin);
+        self.reveal_selection = false;
+        true
+    }
+
+    fn remove_row(&self, old: &SessionCardView) {
+        if let Some(reply) = &self.reply {
+            // SAFETY: Cards and their retained reply view are created with the main-thread marker.
+            if unsafe { reply.view.superview() }
+                .as_deref()
+                .is_some_and(|parent| std::ptr::eq(parent, &**old))
+            {
+                reply.view.removeFromSuperview();
+            }
+        }
+        old.removeFromSuperview();
     }
 
     fn update_rows(&mut self, snapshot: &SessionSnapshot, all_rows: &[SessionView]) {
@@ -699,7 +1012,7 @@ impl SessionCardsInner {
                 }
             }
             if let Some(old) = self.rows.get(index) {
-                old.removeFromSuperview();
+                self.remove_row(old);
             }
             let row = SessionCardView::new(
                 NSRect::new(
@@ -713,6 +1026,7 @@ impl SessionCardsInner {
                 self.show_status_indicators,
                 self.palette,
                 self.root.ivars().inner.clone(),
+                Rc::clone(&self.intent),
                 self.mtm,
             );
             self.document.addSubview(&row);
@@ -724,14 +1038,29 @@ impl SessionCardsInner {
         }
         while self.rows.len() > snapshot.rows.len() {
             if let Some(old) = self.rows.pop() {
-                old.removeFromSuperview();
+                self.remove_row(&old);
+            }
+        }
+        if let Some(reply) = &self.reply {
+            if let Some(row) = self.rows.iter().find(|row| row.key() == &reply.key) {
+                // SAFETY: Cards and their retained reply view are created with the main-thread marker.
+                if !unsafe { reply.view.superview() }
+                    .as_deref()
+                    .is_some_and(|parent| std::ptr::eq(parent, &***row))
+                {
+                    row.addSubview(&reply.view);
+                }
             }
         }
     }
 }
+fn selection_visible(snapshot: &SessionSnapshot, key: &SessionKey) -> bool {
+    snapshot.rows.iter().any(|row| &row.key == key)
+}
 
 pub(crate) struct SessionCards {
     inner: Rc<RefCell<SessionCardsInner>>,
+    intent: Rc<RefCell<CardsIntent>>,
     root: Retained<SessionCardsRoot>,
 }
 
@@ -746,9 +1075,11 @@ impl SessionCards {
             objc2_foundation::NSSize::new(DEFAULT_FRAME_WIDTH, DEFAULT_FRAME_HEIGHT),
         );
         let palette = BubbleAppearance::default().palette();
+        let intent = Rc::new(RefCell::new(CardsIntent::default()));
         let inner = Rc::new_cyclic(|weak| {
             let popup = make_filter_popup(locale, mtm);
-            let root = SessionCardsRoot::new(default_frame, popup, weak.clone(), mtm);
+            let root =
+                SessionCardsRoot::new(default_frame, popup, weak.clone(), Rc::clone(&intent), mtm);
             unsafe {
                 let _: () = msg_send![&*root.ivars().popup, setTarget: Some(&*root)];
                 let _: () = msg_send![&*root.ivars().popup, setAction: sel!(filterChanged:)];
@@ -800,6 +1131,7 @@ impl SessionCards {
 
             SessionCardsInner {
                 shared,
+                intent: Rc::clone(&intent),
                 locale,
                 mtm,
                 root,
@@ -819,12 +1151,18 @@ impl SessionCards {
                 rendered_locale: None,
                 rendered_filter: None,
                 rendered_selected: None,
+                reply: None,
+                reveal_selection: false,
                 rows: Vec::new(),
             }
             .into()
         });
         let root = inner.borrow().root.clone();
-        let cards = Self { inner, root };
+        let cards = Self {
+            inner,
+            intent,
+            root,
+        };
         cards.set_frame(default_frame);
         cards.refresh();
         cards
@@ -882,6 +1220,23 @@ impl SessionCards {
     pub(crate) fn set_locale(&self, locale: UiLocale) {
         self.inner.borrow_mut().set_locale(locale);
     }
+    pub(crate) fn set_composition_active(&self, active: bool) {
+        let mut intent = self.intent.borrow_mut();
+        if intent.composition_active && !active {
+            intent.deferred_refresh = true;
+        }
+        intent.composition_active = active;
+    }
+
+    pub(crate) fn has_deferred_refresh(&self) -> bool {
+        self.intent.borrow().deferred_refresh
+    }
+
+    pub(crate) fn take_deferred_selection_applied(&self) -> bool {
+        let mut intent = self.intent.borrow_mut();
+        std::mem::take(&mut intent.deferred_selection_applied)
+    }
+
     pub(crate) fn set_show_status_indicators(&self, enabled: bool) {
         let mut inner = self.inner.borrow_mut();
         if inner.show_status_indicators == enabled {
@@ -903,10 +1258,60 @@ impl SessionCards {
     pub(crate) fn content_height(&self) -> f64 {
         self.inner.borrow().content_height()
     }
+    pub(crate) fn attach_reply(&self, key: &SessionKey, view: &NSView, height: f64) -> bool {
+        let mut inner = self.inner.borrow_mut();
+        if self.intent.borrow().composition_active
+            && !inner
+                .reply
+                .as_ref()
+                .is_some_and(|reply| reply.key == *key && std::ptr::eq(&*reply.view, view))
+        {
+            self.intent.borrow_mut().deferred_refresh = true;
+            return false;
+        }
+        inner.attach_reply(key, view, height)
+    }
+
+    pub(crate) fn detach_reply(&self) {
+        if self.intent.borrow().composition_active {
+            self.intent.borrow_mut().deferred_refresh = true;
+            return;
+        }
+        let mut inner = self.inner.borrow_mut();
+        if inner.reply.is_none() {
+            return;
+        }
+        inner.detach_reply();
+        let origin = inner.scroll.contentView().bounds().origin;
+        inner.layout(inner.root.frame().size, origin);
+    }
 
     pub(crate) fn set_palette(&mut self, palette: BubblePalette) {
         self.inner.borrow_mut().set_palette(palette);
     }
+}
+
+fn rows_height(count: usize, reply_height: f64) -> f64 {
+    count as f64 * (ROW_HEIGHT + ROW_GAP) - ROW_GAP + reply_height
+}
+
+fn row_frame(index: usize, reply_index: Option<usize>, reply_height: f64, width: f64) -> NSRect {
+    let y = index as f64 * (ROW_HEIGHT + ROW_GAP)
+        + if reply_index.is_some_and(|reply| index > reply) {
+            reply_height
+        } else {
+            0.0
+        };
+    let height = ROW_HEIGHT
+        + if reply_index == Some(index) {
+            reply_height
+        } else {
+            0.0
+        };
+    NSRect::new(
+        NSPoint::new(0.0, y),
+        objc2_foundation::NSSize::new(width, height),
+    )
 }
 
 fn make_filter_popup(locale: UiLocale, mtm: MainThreadMarker) -> Retained<NSPopUpButton> {
@@ -1228,39 +1633,95 @@ fn card_displays(locale: UiLocale, rows: &[SessionView]) -> Vec<CardDisplay> {
     displays
 }
 
+struct CardAccessibilityDetails {
+    title: String,
+    context: String,
+    source_id: u64,
+    terminal_id: String,
+    pane_id: String,
+    workspace_id: Option<String>,
+    tab_id: Option<String>,
+    cwd: Option<String>,
+}
+
+impl CardAccessibilityDetails {
+    fn new(view: &SessionView, display: &CardDisplay) -> Self {
+        Self {
+            title: display.title.clone(),
+            context: display.context.clone(),
+            source_id: view.key.source_id,
+            terminal_id: view.key.terminal_id.clone(),
+            pane_id: view.pane_id.clone(),
+            workspace_id: view.metadata.workspace_id.clone(),
+            tab_id: view.metadata.tab_id.clone(),
+            cwd: view.metadata.cwd.clone(),
+        }
+    }
+
+    fn refresh(&mut self, view: &SessionView, display: &CardDisplay) {
+        if self.title != display.title {
+            self.title.clone_from(&display.title);
+        }
+        if self.context != display.context {
+            self.context.clone_from(&display.context);
+        }
+        self.source_id = view.key.source_id;
+        if self.terminal_id != view.key.terminal_id {
+            self.terminal_id.clone_from(&view.key.terminal_id);
+        }
+        if self.pane_id != view.pane_id {
+            self.pane_id.clone_from(&view.pane_id);
+        }
+        if self.workspace_id != view.metadata.workspace_id {
+            self.workspace_id.clone_from(&view.metadata.workspace_id);
+        }
+        if self.tab_id != view.metadata.tab_id {
+            self.tab_id.clone_from(&view.metadata.tab_id);
+        }
+        if self.cwd != view.metadata.cwd {
+            self.cwd.clone_from(&view.metadata.cwd);
+        }
+    }
+
+    fn label(&self, locale: UiLocale, status: &str) -> String {
+        let mut details = format!(
+            "{} · {} · {} · {} · {}",
+            self.title,
+            self.context,
+            status,
+            session_source(
+                locale,
+                self.source_id,
+                &display_value(Some(&self.terminal_id)).unwrap_or_default()
+            ),
+            session_pane(
+                locale,
+                &display_value(Some(&self.pane_id)).unwrap_or_default()
+            )
+        );
+        for (kind, value) in [
+            (Message::Workspace, self.workspace_id.as_deref()),
+            (Message::Tab, self.tab_id.as_deref()),
+        ] {
+            if let Some(id) = display_value(value) {
+                details.push_str(&format!(" · {} {id}", text(locale, kind)));
+            }
+        }
+        if let Some(cwd) = display_value(self.cwd.as_deref()) {
+            details.push_str(&format!(" · {} {cwd}", text(locale, Message::Cwd)));
+        }
+        details
+    }
+}
+
+#[cfg(test)]
 fn card_accessibility(
     locale: UiLocale,
     view: &SessionView,
     display: &CardDisplay,
     status: &str,
 ) -> String {
-    let mut details = format!(
-        "{} · {} · {} · {} · {}",
-        display.title,
-        display.context,
-        status,
-        session_source(
-            locale,
-            view.key.source_id,
-            &display_value(Some(&view.key.terminal_id)).unwrap_or_default()
-        ),
-        session_pane(
-            locale,
-            &display_value(Some(&view.pane_id)).unwrap_or_default()
-        )
-    );
-    for (kind, value) in [
-        (Message::Workspace, view.metadata.workspace_id.as_deref()),
-        (Message::Tab, view.metadata.tab_id.as_deref()),
-    ] {
-        if let Some(id) = display_value(value) {
-            details.push_str(&format!(" · {} {id}", text(locale, kind)));
-        }
-    }
-    if let Some(cwd) = display_value(view.metadata.cwd.as_deref()) {
-        details.push_str(&format!(" · {} {cwd}", text(locale, Message::Cwd)));
-    }
-    details
+    CardAccessibilityDetails::new(view, display).label(locale, status)
 }
 
 fn card_display_status(locale: UiLocale, view: &SessionView, enabled: bool) -> String {
@@ -1310,6 +1771,25 @@ mod tests {
     use super::*;
     use crate::herdr_protocol::SessionMetadata;
 
+    #[test]
+    fn reply_slot_shifts_only_following_rows_and_extends_scroll_tail() {
+        let height = 58.0;
+        let frames: Vec<_> = (0..3)
+            .map(|index| row_frame(index, Some(1), height, 250.0))
+            .collect();
+        assert_eq!(frames[0].origin.y, 0.0);
+        assert_eq!(frames[0].size.height, ROW_HEIGHT);
+        assert_eq!(frames[1].origin.y, ROW_HEIGHT);
+        assert_eq!(frames[1].size.height, ROW_HEIGHT + height);
+        assert_eq!(frames[2].origin.y, 2.0 * ROW_HEIGHT + height);
+        assert_eq!(
+            frames[2].origin.y + frames[2].size.height,
+            rows_height(3, height)
+        );
+        assert_eq!(row_frame(2, None, 0.0, 250.0).origin.y, 2.0 * ROW_HEIGHT);
+        assert_eq!(rows_height(3, 0.0), 3.0 * ROW_HEIGHT);
+    }
+
     fn row(
         source: u64,
         terminal: &str,
@@ -1338,6 +1818,41 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+    #[test]
+    fn deferred_target_requires_the_exact_displayed_generation_and_filter_row() {
+        let old = row(1, "terminal", None, None, None, None);
+        let other = row(2, "other", None, None, None, None);
+        let snapshot = |rows: Vec<SessionView>, selected: Option<SessionKey>| SessionSnapshot {
+            revision: 9,
+            total: 2,
+            matched: 2,
+            omitted: 0,
+            status_summary: SessionStatusSummary::default(),
+            rows,
+            selected,
+        };
+        let mut intent = CardsIntent::default();
+        intent.request_selection(other.key.clone(), true);
+        intent.request_selection(old.key.clone(), true);
+        assert!(selection_visible(
+            &snapshot(vec![other.clone(), old.clone()], Some(other.key.clone())),
+            intent.pending_selection.as_ref().unwrap(),
+        ));
+
+        let mut replacement = old.clone();
+        replacement.key.generation += 1;
+        assert!(!selection_visible(
+            &snapshot(vec![replacement], None),
+            intent.pending_selection.as_ref().unwrap()
+        ));
+        // The old key can still exist in the store yet be hidden by the
+        // chosen filter or the displayed cap; neither permits replay.
+        assert!(!selection_visible(
+            &snapshot(vec![other.clone()], Some(old.key.clone())),
+            &old.key
+        ));
+        assert!(!selection_visible(&snapshot(vec![other], None), &old.key));
     }
 
     #[test]
