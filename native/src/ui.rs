@@ -48,7 +48,7 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAppearance, NSAppearanceNameAqua,
     NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSBezierPath, NSBorderType, NSButton, NSCell, NSColor,
+    NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBorderType, NSButton, NSCell, NSColor,
     NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition,
     NSEvent, NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType,
     NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
@@ -149,14 +149,10 @@ const BUBBLE_COLLAPSE_WIDTH: f64 = 72.0;
 const BUBBLE_CONTENT_GAP: f64 = 4.0;
 const BUBBLE_MESSAGE_MAX_HEIGHT: f64 = 116.0;
 const BUBBLE_CARDS_MAX_HEIGHT: f64 = 180.0;
-const COMPOSER_EDITOR_HEIGHT: f64 = 64.0;
-const COMPOSER_TARGET_HEIGHT: f64 = 20.0;
-const COMPOSER_STATUS_HEIGHT: f64 = 34.0;
-const COMPOSER_MIN_EDITOR_HEIGHT: f64 = 20.0;
-const COMPOSER_MIN_STATUS_HEIGHT: f64 = 18.0;
+const COMPOSER_REPLY_HEIGHT: f64 = 48.0;
+const COMPOSER_INPUT_HEIGHT: f64 = 22.0;
+const COMPOSER_STATUS_HEIGHT: f64 = 18.0;
 
-// Tight spacing is reserved for expanded bubbles whose normal one-row layout
-// cannot fit the visible screen. OFF keeps the legacy spacing.
 #[derive(Clone, Copy)]
 struct ExpandedSpacing {
     inset: f64,
@@ -166,26 +162,34 @@ struct ExpandedSpacing {
 fn expanded_spacing(
     body_height: f64,
     cards_height: f64,
+    minimum_cards: f64,
     show_status: bool,
     has_message: bool,
 ) -> ExpandedSpacing {
-    if show_status && expanded_minimum_height(cards_height, true, has_message) > body_height {
+    let normal = ExpandedSpacing {
+        inset: BUBBLE_VERTICAL_INSET,
+        gap: BUBBLE_CONTENT_GAP,
+    };
+    if expanded_height_budget(
+        cards_height,
+        minimum_cards,
+        show_status,
+        has_message,
+        normal,
+    ) > body_height
+    {
         ExpandedSpacing {
-            // Recover the three points needed for the fixed status/dialogue gap
-            // without reducing the selectable row or composer minimums.
             inset: 2.5,
             gap: 1.0,
         }
     } else {
-        ExpandedSpacing {
-            inset: BUBBLE_VERTICAL_INSET,
-            gap: BUBBLE_CONTENT_GAP,
-        }
+        normal
     }
 }
 
 fn expanded_height_budget(
     cards_height: f64,
+    minimum_cards: f64,
     show_status: bool,
     has_message: bool,
     spacing: ExpandedSpacing,
@@ -194,34 +198,17 @@ fn expanded_height_budget(
         + BUBBLE_CONTROL_HEIGHT
         + spacing.gap
             * (if show_status && !has_message {
-                4.0
+                1.0
             } else {
-                5.0
+                2.0
             })
         + if show_status {
             STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
         } else {
             0.0
         }
-        + COMPOSER_TARGET_HEIGHT
-        + COMPOSER_MIN_EDITOR_HEIGHT
-        + COMPOSER_MIN_STATUS_HEIGHT
-        + cards_height.min(minimum_selectable_height())
+        + cards_height.min(minimum_cards)
         + if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 }
-}
-
-// Allocation is shared by sizing and frame layout; the card minimum includes
-// its filter, summary and one full row rather than only its scroll viewport.
-fn expanded_minimum_height(cards_height: f64, show_status: bool, has_message: bool) -> f64 {
-    expanded_height_budget(
-        cards_height,
-        show_status,
-        has_message,
-        ExpandedSpacing {
-            inset: BUBBLE_VERTICAL_INSET,
-            gap: BUBBLE_CONTENT_GAP,
-        },
-    )
 }
 
 fn expanded_message_top(
@@ -238,9 +225,6 @@ fn expanded_message_top(
 }
 
 struct ExpandedHeights {
-    status: f64,
-    editor: f64,
-    target: f64,
     cards: f64,
     message: f64,
 }
@@ -249,17 +233,18 @@ fn expanded_heights(
     body_height: f64,
     desired_cards: f64,
     desired_message: f64,
+    minimum_cards: f64,
     show_status: bool,
     spacing: ExpandedSpacing,
 ) -> ExpandedHeights {
-    let mut remaining = (body_height
+    let remaining = (body_height
         - spacing.inset * 2.0
         - BUBBLE_CONTROL_HEIGHT
         - spacing.gap
             * (if show_status && desired_message == 0.0 {
-                4.0
+                1.0
             } else {
-                5.0
+                2.0
             })
         - if show_status {
             STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
@@ -267,38 +252,67 @@ fn expanded_heights(
             0.0
         })
     .max(0.0);
-    let target = COMPOSER_TARGET_HEIGHT.min(remaining);
-    remaining -= target;
-    let editor = COMPOSER_MIN_EDITOR_HEIGHT.min(remaining);
-    remaining -= editor;
-    let cards = desired_cards
-        .min(minimum_selectable_height())
-        .min(remaining);
-    remaining -= cards;
-    let status = COMPOSER_MIN_STATUS_HEIGHT.min(remaining);
-    remaining -= status;
-    let message = desired_message.min(BUBBLE_LINE_HEIGHT).min(remaining);
-    remaining -= message;
-
-    let editor_extra = (COMPOSER_EDITOR_HEIGHT - editor).min(remaining);
-    remaining -= editor_extra;
-    let status_extra = (COMPOSER_STATUS_HEIGHT - status).min(remaining);
-    remaining -= status_extra;
-    let cards_extra = (desired_cards - cards).min(remaining);
-    remaining -= cards_extra;
+    let cards = desired_cards.min(minimum_cards).min(remaining);
+    let message = desired_message.min((remaining - cards).max(0.0));
     ExpandedHeights {
-        status: status + status_extra,
-        editor: editor + editor_extra,
-        target,
-        cards: cards + cards_extra,
-        message: message + (desired_message - message).min(remaining),
+        cards: desired_cards.min((remaining - message).max(0.0)),
+        message,
     }
+}
+
+// NSTextView indices are UTF-16 offsets. Only CRLF changes their width; preserve
+// every other code unit (including surrogate pairs) in the text storage.
+fn line_break_ranges(value: &NSString) -> Vec<NSRange> {
+    let mut ranges = Vec::new();
+    let mut index = 0;
+    while index < value.length() {
+        let ch = value.characterAtIndex(index);
+        let length = match ch {
+            0x0d if index + 1 < value.length() && value.characterAtIndex(index + 1) == 0x0a => 2,
+            0x0a | 0x0d | 0x2028 | 0x2029 => 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        ranges.push(NSRange::new(index, length));
+        index += length;
+    }
+    ranges
+}
+
+fn adjusted_composer_selection(selection: NSRange, breaks: &[NSRange]) -> NSRange {
+    if selection.location == usize::MAX {
+        return selection;
+    }
+    let adjust = |position: usize| {
+        position
+            - breaks
+                .iter()
+                .filter(|range| range.length == 2 && range.location + 2 <= position)
+                .count()
+    };
+    let start = adjust(selection.location);
+    let end = adjust(selection.location + selection.length);
+    NSRange::new(start, end - start)
 }
 const COMPOSER_DRAFT_LIMIT: usize = 32;
 
 fn bubble_color(color: BubbleColor, alpha: f64) -> Retained<NSColor> {
     let (r, g, b) = color.rgb();
     NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, alpha)
+}
+
+fn reply_input_color(palette: BubblePalette) -> Retained<NSColor> {
+    let (r, g, b) = palette.surface.rgb();
+    let (text_r, text_g, text_b) = palette.text.rgb();
+    // NSScrollView paints an opaque background; blend before handing it to AppKit.
+    NSColor::colorWithSRGBRed_green_blue_alpha(
+        r * 0.9 + text_r * 0.1,
+        g * 0.9 + text_g * 0.1,
+        b * 0.9 + text_b * 0.1,
+        1.0,
+    )
 }
 
 fn bubble_surface_is_dark(color: BubbleColor) -> bool {
@@ -462,7 +476,9 @@ struct BubbleViewIvars {
 }
 
 #[derive(Debug)]
-struct ComposerViewIvars;
+struct ComposerViewIvars {
+    normalizing: Cell<bool>,
+}
 
 define_class!(
     #[unsafe(super = NSTextView)]
@@ -473,13 +489,16 @@ define_class!(
     unsafe impl NSObjectProtocol for ComposerView {}
 
     impl ComposerView {
+        #[unsafe(method(didChangeText))]
+        fn did_change_text(&self) {
+            let _: () = unsafe { msg_send![super(self), didChangeText] };
+            self.normalize_committed_text();
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             let marked: bool = unsafe { msg_send![self, hasMarkedText] };
-            if !marked
-                && matches!(event.keyCode(), 36 | 76)
-                && event.modifierFlags().contains(NSEventModifierFlags::Command)
-            {
+            if !marked && matches!(event.keyCode(), 36 | 76) {
                 with_ui_mut(|ui| ui.submit_composer());
             } else if event.keyCode() == 53 {
                 if marked {
@@ -487,18 +506,53 @@ define_class!(
                     let _: () = unsafe { msg_send![super(self), keyDown: event] };
                     self.discard_composition();
                 } else {
-                    with_ui_mut(|ui| ui.collapse_bubble());
+                    with_ui_mut(|ui| ui.fold_reply());
                 }
             } else {
                 let _: () = unsafe { msg_send![super(self), keyDown: event] };
             }
         }
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            let _: () = unsafe { msg_send![super(self), unmarkText] };
+            self.normalize_committed_text();
+            wake();
+        }
+
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text_replacement_range(&self, text: &AnyObject, range: NSRange) {
+            let _: () = unsafe { msg_send![super(self), insertText: text, replacementRange: range] };
+            self.normalize_committed_text();
+            wake();
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text_selected_range_replacement_range(
+            &self,
+            text: &AnyObject,
+            selected: NSRange,
+            replacement: NSRange,
+        ) {
+            let was_normalizing = self.ivars().normalizing.replace(true);
+            let _: () = unsafe {
+                msg_send![super(self), setMarkedText: text, selectedRange: selected, replacementRange: replacement]
+            };
+            self.ivars().normalizing.set(was_normalizing);
+            wake();
+        }
+
 
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, sender: Option<&AnyObject>) {
             if !self.discard_composition() {
-                let _: () = unsafe { msg_send![super(self), cancelOperation: sender] };
+                with_ui_mut(|ui| ui.fold_reply());
             }
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            let _: () = unsafe { msg_send![super(self), paste: sender] };
+            self.normalize_committed_text();
         }
 
         #[unsafe(method(mouseDown:))]
@@ -517,6 +571,41 @@ define_class!(
 );
 
 impl ComposerView {
+    fn normalize_committed_text(&self) {
+        let marked: bool = unsafe { msg_send![self, hasMarkedText] };
+        if marked || self.ivars().normalizing.get() {
+            return;
+        }
+        self.ivars().normalizing.set(true);
+        // Scan the existing NSString, not a UTF-8 copy of the entire draft.
+        let value = self.string();
+        let mut breaks = line_break_ranges(&value);
+        if !breaks.is_empty() {
+            let selection = self.selectedRange();
+            let affinity = self.selectionAffinity();
+            let storage: Option<&NSTextStorage> = unsafe { msg_send![self, textStorage] };
+            if let Some(storage) = storage {
+                let space = NSString::from_str(" ");
+                for index in (0..breaks.len()).rev() {
+                    let range = breaks[index];
+                    if self.shouldChangeTextInRange_replacementString(range, Some(&space)) {
+                        storage.replaceCharactersInRange_withString(range, &space);
+                        self.didChangeText();
+                    } else {
+                        breaks.remove(index);
+                    }
+                }
+                let adjusted = adjusted_composer_selection(selection, &breaks);
+                if !breaks.is_empty()
+                    && (self.selectedRange() != adjusted || self.selectionAffinity() != affinity)
+                {
+                    self.setSelectedRange_affinity_stillSelecting(adjusted, affinity, false);
+                }
+            }
+        }
+        self.ivars().normalizing.set(false);
+    }
+
     fn discard_composition(&self) -> bool {
         let marked: bool = unsafe { msg_send![self, hasMarkedText] };
         if !marked {
@@ -539,10 +628,12 @@ impl ComposerView {
     }
 
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ComposerViewIvars);
+        let this = Self::alloc(mtm).set_ivars(ComposerViewIvars {
+            normalizing: Cell::new(false),
+        });
         unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0), NSSize::new(320.0, COMPOSER_EDITOR_HEIGHT)
+                NSPoint::new(0.0, 0.0), NSSize::new(220.0, COMPOSER_INPUT_HEIGHT)
             )]
         }
     }
@@ -602,6 +693,7 @@ struct Ui {
     collapse: Retained<NSButton>,
     message_scroll: Retained<NSScrollView>,
     message_view: Retained<NSTextView>,
+    reply_container: Retained<NSView>,
     composer_scroll: Retained<NSScrollView>,
     composer_view: Retained<ComposerView>,
     composer_target: Retained<NSTextField>,
@@ -610,6 +702,7 @@ struct Ui {
     prompt_sender: PromptSender,
     composer_render_stamp: Option<ComposerRenderStamp>,
     composer_key: Option<SessionKey>,
+    reply_open: bool,
     composer_pending_key: Option<SessionKey>,
     composer_drafts: VecDeque<(SessionKey, String)>,
     composer_results: VecDeque<(SessionKey, String)>,
@@ -940,7 +1033,7 @@ define_class!(
                 if self.composing_editor().is_some() {
                     let _: () = unsafe { msg_send![super(self), keyDown: event] };
                 } else {
-                    with_ui_mut(|ui| ui.collapse_bubble());
+                    with_ui_mut(|ui| ui.escape_reply_or_collapse());
                 }
                 return;
             }
@@ -953,7 +1046,7 @@ define_class!(
                 if let Some(editor) = self.composing_editor() {
                     let _: () = unsafe { msg_send![editor, cancelOperation: sender] };
                 } else {
-                    with_ui_mut(|ui| ui.collapse_bubble());
+                    with_ui_mut(|ui| ui.escape_reply_or_collapse());
                 }
             } else {
                 let _: () = unsafe { msg_send![super(self), cancelOperation: sender] };
@@ -2095,23 +2188,47 @@ where
     }
 }
 
+pub(crate) fn composer_is_composing() -> bool {
+    UI.with(|cell| match cell.try_borrow() {
+        Ok(slot) => slot.as_ref().is_some_and(|ui| ui.composer_marked()),
+        Err(_) => {
+            wake();
+            true
+        }
+    })
+}
+
 pub(crate) fn cards_content_changed() {
     with_ui_mut(|ui| {
+        ui.cards.set_composition_active(ui.composer_marked());
         ui.composer_render_stamp = None;
         ui.sync_composer();
+        if ui.bubble_mode == BubbleMode::Expanded {
+            ui.bubble_content_dirty = true;
+            let scene = ui.last_scene.clone();
+            ui.refresh_bubble_content(&scene);
+        }
+    });
+}
+
+pub(crate) fn cards_selection_changed() {
+    with_ui_mut(|ui| {
         if ui.bubble_mode != BubbleMode::Expanded {
             return;
         }
-        if ui.bubble_content_tracking_locked() {
-            ui.defer_bubble_content();
-            return;
-        }
+        ui.reply_open = true;
+        ui.composer_render_stamp = None;
+        ui.sync_composer();
+        ui.bubble_content_dirty = true;
         let scene = ui.last_scene.clone();
-        if ui.pending_bubble_content {
-            ui.bubble_content_dirty = true;
-            ui.refresh_bubble_content(&scene);
-        } else {
-            ui.remeasure_bubble(&scene);
+        ui.refresh_bubble_content(&scene);
+        if ui.reply_open {
+            if ui.composer_input_visible() {
+                ui.bubble_panel.makeKeyAndOrderFront(None);
+                let _ = ui.bubble_panel.makeFirstResponder(Some(&ui.composer_view));
+            } else if ui.bubble_panel.isKeyWindow() && !ui.composer_marked() {
+                let _ = ui.bubble_panel.makeFirstResponder(None);
+            }
         }
     });
 }
@@ -2607,11 +2724,13 @@ impl Ui {
         composer_view.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_PRIMARY_FONT_SIZE)));
         composer_view.setTextColor(Some(&ivory));
         composer_view.setDrawsBackground(false);
-        composer_view.setHorizontallyResizable(false);
-        composer_view.setVerticallyResizable(true);
-        composer_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        composer_view.setHorizontallyResizable(true);
+        composer_view.setVerticallyResizable(false);
+        composer_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewHeightSizable);
         if let Some(container) = unsafe { composer_view.textContainer() } {
-            container.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+            container.setWidthTracksTextView(false);
+            container.setContainerSize(NSSize::new(1_000_000.0, COMPOSER_INPUT_HEIGHT));
+            container.setLineBreakMode(NSLineBreakMode::ByClipping);
             container.setLineFragmentPadding(4.0);
         }
         composer_view.setTextContainerInset(NSSize::new(3.0, 3.0));
@@ -2619,17 +2738,23 @@ impl Ui {
         set_accessibility_label(&composer_view, text(locale, Message::ComposerInput));
         let composer_scroll: Retained<NSScrollView> = unsafe {
             msg_send![NSScrollView::alloc(mtm), initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0), NSSize::new(320.0, COMPOSER_EDITOR_HEIGHT)
+                NSPoint::new(0.0, 0.0), NSSize::new(220.0, COMPOSER_INPUT_HEIGHT)
             )]
         };
         composer_scroll.setScrollerStyle(NSScrollerStyle::Overlay);
         composer_scroll.setBorderType(NSBorderType::LineBorder);
         composer_scroll.setDocumentView(Some(&*composer_view));
-        composer_scroll.setHasVerticalScroller(true);
+        composer_scroll.setHasVerticalScroller(false);
+        composer_scroll.setHasHorizontalScroller(true);
         composer_scroll.setAutohidesScrollers(true);
-        composer_scroll.setDrawsBackground(false);
-        composer_scroll.setHidden(true);
-        bubble_root.addSubview(&composer_scroll);
+        composer_scroll.setDrawsBackground(true);
+        composer_scroll.setBackgroundColor(&reply_input_color(palette));
+        let reply_container: Retained<NSView> = unsafe {
+            msg_send![NSView::alloc(mtm), initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0), NSSize::new(270.0, COMPOSER_REPLY_HEIGHT)
+            )]
+        };
+        reply_container.addSubview(&composer_scroll);
         let composer_target = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         composer_target.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_SECONDARY_FONT_SIZE)));
         composer_target.setTextColor(Some(&muted));
@@ -2638,13 +2763,13 @@ impl Ui {
         composer_target.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         set_accessibility_identifier(&composer_target, "pet-message-target");
         composer_target.setHidden(true);
-        bubble_root.addSubview(&composer_target);
-        let composer_status = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
+        let composer_status = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         composer_status.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_SECONDARY_FONT_SIZE)));
         composer_status.setTextColor(Some(&muted));
+        composer_status.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
         set_accessibility_identifier(&composer_status, "pet-message-status");
         composer_status.setHidden(true);
-        bubble_root.addSubview(&composer_status);
+        reply_container.addSubview(&composer_status);
         let composer_send = NSButton::initWithFrame(
             NSButton::alloc(mtm),
             NSRect::new(
@@ -2655,6 +2780,7 @@ impl Ui {
         composer_send.setTitle(&NSString::from_str(text(locale, Message::ComposerSend)));
         composer_send.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_SECONDARY_FONT_SIZE)));
         composer_send.setContentTintColor(Some(&bubble_color(palette.accent, 1.0)));
+        composer_send.setBezelStyle(NSBezelStyle::AccessoryBarAction);
         set_accessibility_identifier(&composer_send, "pet-message-send");
         set_accessibility_label(&composer_send, text(locale, Message::ComposerSend));
         unsafe {
@@ -2662,7 +2788,7 @@ impl Ui {
             composer_send.setAction(Some(sel!(sendComposer:)));
         }
         composer_send.setHidden(true);
-        bubble_root.addSubview(&composer_send);
+        reply_container.addSubview(&composer_send);
         bubble_panel.setContentView(Some(&bubble_root));
 
         let dialogue_editor = DialogueEditor::new(&menu_target, locale, mtm);
@@ -2709,6 +2835,7 @@ impl Ui {
             collapse,
             message_scroll,
             message_view,
+            reply_container,
             composer_scroll,
             composer_view,
             composer_target,
@@ -2717,6 +2844,7 @@ impl Ui {
             prompt_sender,
             composer_render_stamp: None,
             composer_key: None,
+            reply_open: false,
             composer_pending_key: None,
             composer_drafts: VecDeque::new(),
             composer_results: VecDeque::new(),
@@ -2829,6 +2957,7 @@ impl Ui {
             return;
         }
         self.menu_panel.set_show_status_indicators(enabled);
+        self.cards.set_composition_active(self.composer_marked());
         // Change the backing together with the content, after AppKit releases tracking.
         self.bubble_content_dirty = true;
         let scene = self.last_scene.clone();
@@ -2897,6 +3026,8 @@ impl Ui {
             .setContentTintColor(Some(&bubble_color(palette.accent, 1.0)));
         self.composer_send
             .setContentTintColor(Some(&bubble_color(palette.accent, 1.0)));
+        self.composer_scroll
+            .setBackgroundColor(&reply_input_color(palette));
         self.composer_view
             .setTextColor(Some(&bubble_color(palette.text, 1.0)));
         self.composer_target
@@ -3022,6 +3153,7 @@ impl Ui {
             set_accessibility_label(&button, text(locale, Message::MenuPanelTitle));
         }
         self.menu_panel.set_locale(locale);
+        self.cards.set_composition_active(self.composer_marked());
         self.cards.set_locale(locale);
         self.character_menu.set_locale(locale);
         self.dialogue_editor.set_locale(locale);
@@ -3699,6 +3831,112 @@ impl Ui {
     fn composer_text(&self) -> String {
         self.composer_view.string().to_string()
     }
+    fn composer_marked(&self) -> bool {
+        unsafe { msg_send![&*self.composer_view, hasMarkedText] }
+    }
+
+    fn composer_has_focus(&self) -> bool {
+        if !self.bubble_panel.isKeyWindow() {
+            return false;
+        }
+        let responder: Option<&AnyObject> =
+            unsafe { msg_send![&*self.bubble_panel, firstResponder] };
+        responder
+            .is_some_and(|responder| unsafe { msg_send![responder, isEqual: &*self.composer_view] })
+    }
+
+    fn composer_input_visible(&self) -> bool {
+        self.reply_open
+            && !self.cards.view().isHidden()
+            && !self.composer_scroll.isHidden()
+            && self.composer_scroll.frame().size.width > 0.0
+            && self.composer_scroll.frame().size.height > 0.0
+    }
+
+    fn restore_composer_focus(&self, was_focused: bool) {
+        if !was_focused || !self.bubble_panel.isKeyWindow() || !self.bubble_panel.isVisible() {
+            return;
+        }
+        if self.composer_input_visible() {
+            if !self.composer_has_focus() {
+                let _ = self
+                    .bubble_panel
+                    .makeFirstResponder(Some(&self.composer_view));
+            }
+        } else if self.composer_has_focus() {
+            let _ = self.bubble_panel.makeFirstResponder(None);
+        }
+    }
+
+    fn refresh_cards(&mut self) -> bool {
+        let marked = self.composer_marked();
+        self.cards.set_composition_active(marked);
+        self.cards.refresh();
+        !marked && self.cards.take_deferred_selection_applied()
+    }
+
+    fn close_reply(&mut self) {
+        if !self.reply_open || self.composer_marked() {
+            return;
+        }
+        self.reply_open = false;
+        if let Some(key) = self.composer_key.clone() {
+            let draft = self.composer_text();
+            self.remember_composer_draft(key, draft);
+        }
+        self.cards.set_composition_active(false);
+        self.cards.detach_reply();
+        self.composer_render_stamp = None;
+        self.bubble_content_dirty = true;
+    }
+
+    fn fold_reply(&mut self) {
+        if !self.reply_open {
+            return;
+        }
+        if self.composer_marked() {
+            return;
+        }
+        if self.bubble_panel.isKeyWindow() {
+            let _ = self.bubble_panel.makeFirstResponder(None);
+        }
+        self.close_reply();
+        let scene = self.last_scene.clone();
+        self.refresh_bubble_content(&scene);
+    }
+
+    fn escape_reply_or_collapse(&mut self) {
+        if self.reply_open {
+            self.fold_reply();
+        } else {
+            self.collapse_bubble();
+        }
+    }
+
+    fn minimum_cards_height(&self) -> f64 {
+        minimum_selectable_height()
+            + if self.reply_open {
+                self.reply_container.frame().size.height
+            } else {
+                0.0
+            }
+    }
+
+    fn layout_reply_children(&self) {
+        let geometry = reply_child_geometry(
+            self.reply_container.frame().size,
+            self.reply_container.frame().size.height <= 25.0,
+        );
+        self.composer_status.setFrame(geometry.status);
+        self.composer_scroll.setFrame(geometry.input);
+        self.composer_send.setFrame(geometry.send);
+        self.composer_status
+            .setHidden(geometry.status.size.height <= 0.0 || geometry.status.size.width <= 0.0);
+        self.composer_scroll
+            .setHidden(geometry.readonly || !geometry.interactive);
+        self.composer_send
+            .setHidden(geometry.readonly || !geometry.interactive);
+    }
 
     fn sync_composer(&mut self) {
         // The cards' rendered revision can lag live state (for example, a source
@@ -3709,8 +3947,20 @@ impl Ui {
             .lock()
             .ok()
             .map(|state| state.session_revision());
-        if self.cards.selection_stamp().0 != revision {
-            self.cards.refresh();
+        let marked = self.composer_marked();
+        self.cards.set_composition_active(marked);
+        let was_focused = self.composer_has_focus();
+        let replayed = if self.cards.selection_stamp().0 != revision
+            || (!marked && self.cards.has_deferred_refresh())
+        {
+            self.refresh_cards()
+        } else {
+            false
+        };
+        if replayed && self.bubble_mode == BubbleMode::Expanded {
+            self.reply_open = true;
+            self.composer_render_stamp = None;
+            self.bubble_content_dirty = true;
         }
         let stamp = ComposerRenderStamp {
             cards: self.cards.selection_stamp(),
@@ -3718,13 +3968,19 @@ impl Ui {
             pending: self.prompt_sender.is_pending(),
             live_revision: revision,
         };
-        if self.composer_render_stamp == Some(stamp) {
+        if !marked && self.composer_render_stamp == Some(stamp) {
+            self.restore_composer_focus(was_focused);
             return;
         }
         self.composer_render_stamp = Some(stamp);
         let selected = self.cards.selected_target();
-        let next_key = selected.as_ref().map(|(key, _)| key.clone());
+        let next_key = if marked {
+            self.composer_key.clone()
+        } else {
+            selected.as_ref().map(|(key, _)| key.clone())
+        };
         if self.composer_key != next_key {
+            self.cards.detach_reply();
             if let Some(old) = self.composer_key.take() {
                 let value = self.composer_text();
                 self.remember_composer_draft(old, value);
@@ -3750,7 +4006,7 @@ impl Ui {
         set_accessibility_label(&self.composer_target, &target);
         self.composer_target
             .setToolTip(Some(&NSString::from_str(&target)));
-        let available = selected.as_ref().map(|(key, _)| {
+        let available = next_key.as_ref().map(|key| {
             self.shared
                 .lock()
                 .map_err(|_| PromptError::Offline)
@@ -3762,7 +4018,7 @@ impl Ui {
             && self.composer_pending_key.as_ref() == next_key.as_ref()
         {
             text(self.locale, Message::ComposerSending).to_owned()
-        } else if let Some((key, _)) = selected.as_ref() {
+        } else if let Some(key) = next_key.as_ref() {
             if let Some(Err(error)) = available.as_ref() {
                 self.composer_error_text(error)
             } else if let Some((_, previous)) =
@@ -3772,7 +4028,15 @@ impl Ui {
             } else if self.prompt_sender.is_pending() {
                 text(self.locale, Message::ComposerBusy).to_owned()
             } else {
-                text(self.locale, Message::ComposerShortcut).to_owned()
+                text(
+                    self.locale,
+                    if marked {
+                        Message::ComposerComposingShortcut
+                    } else {
+                        Message::ComposerShortcut
+                    },
+                )
+                .to_owned()
             }
         } else {
             text(self.locale, Message::ComposerSelectSession).to_owned()
@@ -3780,6 +4044,8 @@ impl Ui {
         self.composer_status
             .setStringValue(&NSString::from_str(&status));
         set_accessibility_label(&self.composer_status, &status);
+        self.composer_status
+            .setToolTip(Some(&NSString::from_str(&status)));
         let send = if self.prompt_sender.is_pending() {
             Message::ComposerSending
         } else {
@@ -3788,8 +4054,34 @@ impl Ui {
         self.composer_send
             .setTitle(&NSString::from_str(text(self.locale, send)));
         set_accessibility_label(&self.composer_send, text(self.locale, send));
-        self.composer_send
-            .setEnabled(matches!(available, Some(Ok(()))) && !self.prompt_sender.is_pending());
+        self.composer_send.setEnabled(
+            !marked
+                && matches!(available.as_ref(), Some(Ok(())))
+                && !self.prompt_sender.is_pending(),
+        );
+        if marked {
+            self.composer_render_stamp = None;
+            return;
+        }
+        if self.reply_open && self.bubble_mode == BubbleMode::Expanded {
+            if let Some(key) = next_key.as_ref() {
+                let readonly = matches!(available.as_ref(), Some(Err(PromptError::ReadOnly)));
+                let height = if readonly {
+                    25.0
+                } else {
+                    COMPOSER_REPLY_HEIGHT
+                };
+                if self.cards.attach_reply(key, &self.reply_container, height) {
+                    self.composer_scroll.setHidden(readonly);
+                    self.composer_send.setHidden(readonly);
+                    self.layout_reply_children();
+                    self.restore_composer_focus(was_focused);
+                    return;
+                }
+            }
+            self.reply_open = false;
+        }
+        self.cards.detach_reply();
     }
 
     fn composer_error_text(&self, error: &PromptError) -> String {
@@ -3825,7 +4117,15 @@ impl Ui {
         // A visibility change can invalidate the retained selection between
         // refresh ticks; reconcile before using its key for submission.
         self.sync_composer();
-        let Some(key) = self.composer_key.clone() else {
+        let Some(key) = self.composer_key.clone().filter(|key| {
+            self.reply_open
+                && self.bubble_mode == BubbleMode::Expanded
+                && self
+                    .cards
+                    .selected_target()
+                    .is_some_and(|(selected, _)| &selected == key)
+                && !self.composer_scroll.isHidden()
+        }) else {
             return;
         };
         let marked: bool = unsafe { msg_send![&*self.composer_view, hasMarkedText] };
@@ -3856,9 +4156,14 @@ impl Ui {
                     let marked: bool = unsafe { msg_send![&*self.composer_view, hasMarkedText] };
                     let current = !marked
                         && self.composer_key.as_ref() == Some(&result.key)
+                        && self
+                            .cards
+                            .selected_target()
+                            .is_some_and(|(key, _)| key == result.key)
                         && self.composer_text() == result.text;
                     if current {
                         self.composer_view.setString(&NSString::from_str(""));
+                        self.close_reply();
                     }
                     if self
                         .composer_drafts
@@ -3899,23 +4204,19 @@ impl Ui {
             completed = outcome.outcome == crate::agent_outcome::AgentOutcome::Succeeded;
         }
         let cards_height = self.cards.content_height();
-        self.cards.refresh();
+        let was_focused = self.composer_has_focus();
+        let replayed = self.refresh_cards();
+        if replayed && self.bubble_mode == BubbleMode::Expanded {
+            self.reply_open = true;
+            self.composer_render_stamp = None;
+        }
         self.poll_composer();
         self.sync_composer();
-        self.refresh_event(scene, completed);
         if self.bubble_mode == BubbleMode::Expanded && cards_height != self.cards.content_height() {
-            if self.bubble_content_tracking_locked() {
-                self.defer_bubble_content();
-            } else {
-                let scene = self.last_scene.clone();
-                if self.pending_bubble_content {
-                    self.bubble_content_dirty = true;
-                    self.refresh_bubble_content(&scene);
-                } else {
-                    self.remeasure_bubble(&scene);
-                }
-            }
+            self.bubble_content_dirty = true;
         }
+        self.refresh_event(scene, completed);
+        self.restore_composer_focus(was_focused);
         self.refresh_character_menu();
     }
 
@@ -4484,6 +4785,15 @@ impl Ui {
             RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
                 let event_ptr = event.as_ptr();
                 let event = unsafe { event.as_ref() };
+                with_ui_mut(|ui| {
+                    if ui.reply_open
+                        && event.window(ui.mtm).is_some_and(|window| {
+                            window.windowNumber() != ui.bubble_panel.windowNumber()
+                        })
+                    {
+                        ui.fold_reply();
+                    }
+                });
                 let inside = with_ui_read(|ui| {
                     ui.menu_panel.is_visible() && menu_event_is_inside(event, ui)
                 })
@@ -4504,6 +4814,7 @@ impl Ui {
         }
 
         let global: RcBlock<dyn Fn(NonNull<NSEvent>)> = RcBlock::new(|_event: NonNull<NSEvent>| {
+            with_ui_mut(|ui| ui.fold_reply());
             with_ui_mut(|ui| {
                 if ui.menu_panel.is_visible() {
                     ui.menu_panel.hide();
@@ -5059,6 +5370,7 @@ impl Ui {
             return;
         }
         let show_status = self.prefs.show_status_indicators();
+        self.cards.set_composition_active(self.composer_marked());
         self.cards.set_show_status_indicators(show_status);
         self.bubble_root.set_opaque_surface(show_status);
         let status = if show_status {
@@ -5310,9 +5622,11 @@ impl Ui {
             .message_content_height
             .min(BUBBLE_MESSAGE_MAX_HEIGHT);
         let cards_height = self.cards.content_height().min(BUBBLE_CARDS_MAX_HEIGHT);
+        let minimum_cards = self.minimum_cards_height();
         let spacing = expanded_spacing(
             body_height_cap,
             cards_height,
+            minimum_cards,
             show_status,
             message_height > 0.0,
         );
@@ -5324,14 +5638,11 @@ impl Ui {
             }
             + message_height
             + cards_height
-            + COMPOSER_TARGET_HEIGHT
-            + COMPOSER_EDITOR_HEIGHT
-            + COMPOSER_STATUS_HEIGHT
             + spacing.gap
                 * (if show_status && message_height == 0.0 {
-                    4.0
+                    1.0
                 } else {
-                    5.0
+                    2.0
                 })
             + BUBBLE_CONTROL_HEIGHT
             + spacing.inset)
@@ -5339,6 +5650,7 @@ impl Ui {
                 (visible_height * 0.78).min(530.0).max(
                     expanded_height_budget(
                         cards_height,
+                        minimum_cards,
                         show_status,
                         message_height > 0.0,
                         spacing,
@@ -5403,6 +5715,7 @@ impl Ui {
             expanded_spacing(
                 body.height,
                 self.cards.content_height().min(BUBBLE_CARDS_MAX_HEIGHT),
+                self.minimum_cards_height(),
                 show_status,
                 self.bubble_layout.message_content_height > 0.0,
             )
@@ -5636,7 +5949,7 @@ impl Ui {
                     ),
                     body_frame,
                 );
-                let mut bottom = collapse_frame.origin.y + collapse_frame.size.height + spacing.gap;
+                let bottom = collapse_frame.origin.y + collapse_frame.size.height + spacing.gap;
                 let message_top = expanded_message_top(
                     status_row.origin.y,
                     content_top,
@@ -5652,79 +5965,12 @@ impl Ui {
                     body.height,
                     desired_cards,
                     desired_message,
+                    self.minimum_cards_height(),
                     show_status,
                     spacing,
                 );
-                let status_height = heights.status;
-                let status_frame = bounded_frame(
-                    NSRect::new(
-                        NSPoint::new(content_x, bottom),
-                        NSSize::new(content_width, status_height),
-                    ),
-                    body_frame,
-                );
-                bottom += status_height + spacing.gap;
-                let editor_height = heights.editor;
-                let editor_frame = bounded_frame(
-                    NSRect::new(
-                        NSPoint::new(content_x, bottom),
-                        NSSize::new(content_width, editor_height),
-                    ),
-                    body_frame,
-                );
-                bottom += editor_height + spacing.gap;
-                let target_height = heights.target;
-                let send_width = 78.0_f64.min(content_width);
-                let target_frame = bounded_frame(
-                    NSRect::new(
-                        NSPoint::new(content_x, bottom),
-                        NSSize::new(
-                            (content_width - send_width - spacing.gap).max(0.0),
-                            target_height,
-                        ),
-                    ),
-                    body_frame,
-                );
-                let send_frame = bounded_frame(
-                    NSRect::new(
-                        NSPoint::new(content_x + content_width - send_width, bottom),
-                        NSSize::new(send_width, target_height),
-                    ),
-                    body_frame,
-                );
-                bottom += target_height + spacing.gap;
                 let cards_height = heights.cards;
                 let message_height = heights.message;
-                let composer_visible = editor_frame.size.width > 0.0 && editor_height > 0.0;
-                self.composer_status.setFrame(status_frame);
-                self.composer_status.setHidden(status_height <= 0.0);
-                self.composer_scroll.setFrame(editor_frame);
-                self.composer_scroll.setHidden(!composer_visible);
-                self.composer_target.setFrame(target_frame);
-                self.composer_target.setHidden(target_height <= 0.0);
-                self.composer_send.setFrame(send_frame);
-                self.composer_send.setHidden(target_height <= 0.0);
-                if composer_visible {
-                    let width = self
-                        .composer_scroll
-                        .documentVisibleRect()
-                        .size
-                        .width
-                        .max(1.0);
-                    let height = measure_text_view(&self.composer_view, width)
-                        .size
-                        .height
-                        .max(editor_height);
-                    self.composer_view.setFrame(NSRect::new(
-                        NSPoint::new(0.0, 0.0),
-                        NSSize::new(width, height),
-                    ));
-                }
-                for frame in [status_frame, editor_frame, target_frame, send_frame] {
-                    if frame.size.width > 0.0 && frame.size.height > 0.0 {
-                        regions.push(frame);
-                    }
-                }
                 let message_frame = bounded_frame(
                     NSRect::new(
                         NSPoint::new(content_x, message_top - message_height),
@@ -5777,7 +6023,9 @@ impl Ui {
                 ));
                 self.cards.view().setHidden(!cards_visible);
                 if cards_visible {
+                    self.cards.set_composition_active(self.composer_marked());
                     self.cards.set_frame(cards_frame);
+                    self.layout_reply_children();
                 }
                 self.collapse.setHidden(
                     collapse_frame.size.width <= 0.0 || collapse_frame.size.height <= 0.0,
@@ -5803,26 +6051,29 @@ impl Ui {
         }
         self.bubble_mode = BubbleMode::Expanded;
         self.bubble_content_dirty = true;
-        if let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) {
-            self.remeasure_bubble(&scene);
-        }
+        let scene = self.last_scene.clone();
+        self.refresh_bubble_content(&scene);
     }
 
     fn collapse_bubble(&mut self) {
-        if self.bubble_mode == BubbleMode::Compact {
+        if self.bubble_mode == BubbleMode::Compact || self.composer_marked() {
             return;
         }
+        self.close_reply();
         self.bubble_mode = BubbleMode::Compact;
         self.bubble_content_dirty = true;
-        if let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) {
-            self.remeasure_bubble(&scene);
-        }
+        let scene = self.last_scene.clone();
+        self.refresh_bubble_content(&scene);
         if self.bubble_panel.isKeyWindow() {
             let _ = self.bubble_panel.makeFirstResponder(None);
         }
     }
 
     fn reset_bubble_mode(&mut self) {
+        if self.composer_marked() {
+            return;
+        }
+        self.close_reply();
         if self.bubble_mode != BubbleMode::Compact {
             self.bubble_mode = BubbleMode::Compact;
             self.bubble_content_dirty = true;
@@ -6569,6 +6820,65 @@ fn configure_panel(panel: &NSPanel) {
     panel.setAcceptsMouseMovedEvents(true);
 }
 
+struct ReplyChildGeometry {
+    status: NSRect,
+    input: NSRect,
+    send: NSRect,
+    readonly: bool,
+    interactive: bool,
+}
+
+fn reply_child_geometry(size: NSSize, readonly: bool) -> ReplyChildGeometry {
+    let width = size.width.max(0.0);
+    let height = size.height.max(0.0);
+    let inset = 2.0_f64.min(width / 2.0);
+    let content_width = (width - 2.0 * inset).max(0.0);
+    let status_y = 2.0_f64.min(height);
+    let status = NSRect::new(
+        NSPoint::new(inset, status_y),
+        NSSize::new(
+            content_width,
+            COMPOSER_STATUS_HEIGHT.min((height - status_y).max(0.0)),
+        ),
+    );
+    let input_y = 23.0_f64.min(height);
+    let input_height = if readonly {
+        0.0
+    } else {
+        COMPOSER_INPUT_HEIGHT.min((height - input_y).max(0.0))
+    };
+    let send_width = if readonly {
+        0.0
+    } else {
+        58.0_f64.min(content_width * 0.35)
+    };
+    let gap = if readonly {
+        0.0
+    } else {
+        4.0_f64.min((content_width - send_width).max(0.0))
+    };
+    let input_width = if readonly {
+        0.0
+    } else {
+        (content_width - send_width - gap).max(0.0)
+    };
+    let input = NSRect::new(
+        NSPoint::new(inset, input_y),
+        NSSize::new(input_width, input_height),
+    );
+    let send = NSRect::new(
+        NSPoint::new(inset + input_width + gap, input_y),
+        NSSize::new(send_width, input_height),
+    );
+    ReplyChildGeometry {
+        status,
+        input,
+        send,
+        readonly,
+        interactive: !readonly && input_width > 0.0 && send_width > 0.0 && input_height > 0.0,
+    }
+}
+
 fn bounded_frame(frame: NSRect, bounds: NSRect) -> NSRect {
     let bounds_x = bounds.origin.x;
     let bounds_y = bounds.origin.y;
@@ -7100,78 +7410,120 @@ mod tests {
         assert!(!drag_survives_screen_change(None, frame));
     }
     #[test]
-    fn expanded_composer_fits_one_row_on_300_by_260_screen() {
-        let body_cap = 260.0 - BUBBLE_WINDOW_INSET * 2.0;
-        let cards = minimum_selectable_height();
+    fn reply_children_stay_in_bounds_across_width_and_height_changes() {
+        for width in [0.0, 1.0, 4.0, 8.0, 12.0, 32.0, 120.0, 270.0, 600.0] {
+            for height in [0.0, 1.0, 20.0, 25.0, COMPOSER_REPLY_HEIGHT] {
+                for readonly in [false, true] {
+                    let size = NSSize::new(width, height);
+                    let layout = reply_child_geometry(size, readonly);
+                    for rect in [layout.status, layout.input, layout.send] {
+                        assert!(rect.origin.x >= 0.0 && rect.origin.y >= 0.0);
+                        assert!(rect.size.width >= 0.0 && rect.size.height >= 0.0);
+                        assert!(rect.origin.x + rect.size.width <= width);
+                        assert!(rect.origin.y + rect.size.height <= height);
+                    }
+                    assert!(
+                        layout.input.origin.x + layout.input.size.width <= layout.send.origin.x
+                    );
+                    assert!(
+                        layout.status.origin.y + layout.status.size.height <= layout.input.origin.y
+                            || layout.input.size.height == 0.0
+                    );
+                    if layout.interactive {
+                        assert!(!readonly && layout.input.size.width > 0.0);
+                        assert!(layout.send.size.width > 0.0 && layout.send.size.height > 0.0);
+                    }
+                    if readonly || width == 0.0 || height == 0.0 {
+                        assert!(!layout.interactive);
+                    }
+                    if readonly {
+                        assert_eq!(layout.input.size, NSSize::new(0.0, 0.0));
+                        assert_eq!(layout.send.size, NSSize::new(0.0, 0.0));
+                    }
+                }
+            }
+        }
+        assert!(reply_child_geometry(NSSize::new(270.0, COMPOSER_REPLY_HEIGHT), false).interactive);
+    }
+
+    #[test]
+    fn committed_reply_breaks_are_utf16_local_edits() {
+        let input = NSString::from_str("first\r\nsecond\nthird\rfourth\u{2028}fifth\u{2029}끝");
+        let breaks = line_break_ranges(&input);
+        assert_eq!(
+            breaks,
+            [
+                NSRange::new(5, 2),
+                NSRange::new(13, 1),
+                NSRange::new(19, 1),
+                NSRange::new(26, 1),
+                NSRange::new(32, 1)
+            ]
+        );
+        let mut units: Vec<u16> = input.to_string().encode_utf16().collect();
+        for range in breaks.iter().rev() {
+            units.splice(range.location..range.location + range.length, [b' ' as u16]);
+        }
+        assert_eq!(
+            String::from_utf16(&units).unwrap(),
+            "first second third fourth fifth 끝"
+        );
+        assert_eq!(
+            line_break_ranges(&NSString::from_str("\r\nA\r\n\r\n")),
+            [NSRange::new(0, 2), NSRange::new(3, 2), NSRange::new(5, 2)]
+        );
+        assert!(line_break_ranges(&NSString::from_str("hello 🌎")).is_empty());
+    }
+
+    #[test]
+    fn committed_reply_preserves_utf16_selection_endpoints() {
+        let breaks = line_break_ranges(&NSString::from_str("🌎\r\nA\u{2028}🦊\r\nZ"));
+        assert_eq!(
+            breaks,
+            [NSRange::new(2, 2), NSRange::new(5, 1), NSRange::new(8, 2)]
+        );
+        assert_eq!(
+            adjusted_composer_selection(NSRange::new(4, 6), &breaks),
+            NSRange::new(3, 5)
+        );
+        assert_eq!(
+            adjusted_composer_selection(NSRange::new(7, 0), &breaks),
+            NSRange::new(6, 0)
+        );
+        assert_eq!(
+            adjusted_composer_selection(NSRange::new(0, 2), &breaks),
+            NSRange::new(0, 2)
+        );
+        assert_eq!(
+            adjusted_composer_selection(NSRange::new(usize::MAX, 0), &breaks),
+            NSRange::new(usize::MAX, 0)
+        );
+    }
+
+    #[test]
+    fn selected_reply_keeps_full_card_visible_on_short_screen() {
+        let cards = minimum_selectable_height() + COMPOSER_REPLY_HEIGHT;
+        let cap = 260.0 - BUBBLE_WINDOW_INSET * 2.0;
         for show_status in [false, true] {
             for has_message in [false, true] {
-                let normal_minimum = expanded_minimum_height(cards, show_status, has_message);
-                let spacing = expanded_spacing(body_cap, cards, show_status, has_message);
-                let minimum = expanded_height_budget(cards, show_status, has_message, spacing);
-                let body_height = minimum.max(260.0 * 0.78).min(body_cap);
-                let desired_message = if has_message { 116.0 } else { 0.0 };
+                let spacing = expanded_spacing(cap, cards, cards, show_status, has_message);
+                let minimum =
+                    expanded_height_budget(cards, cards, show_status, has_message, spacing);
                 let slots = expanded_heights(
-                    body_height,
-                    BUBBLE_CARDS_MAX_HEIGHT,
-                    desired_message,
+                    minimum.min(cap),
+                    cards,
+                    if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 },
+                    cards,
                     show_status,
                     spacing,
                 );
-                assert!(slots.cards >= cards);
-                assert!(slots.editor >= COMPOSER_MIN_EDITOR_HEIGHT);
-                assert!(slots.target >= COMPOSER_TARGET_HEIGHT);
-                assert!(slots.status >= COMPOSER_MIN_STATUS_HEIGHT);
-                if has_message {
-                    assert!(slots.message > 0.0);
-                    if show_status {
-                        assert!(slots.message >= BUBBLE_LINE_HEIGHT);
-                    }
-                } else {
-                    assert_eq!(slots.message, 0.0);
-                }
-                let content_top = body_height - spacing.inset;
-                let status_bottom = content_top - STATUS_ROW_HEIGHT;
-                let message_top =
-                    expanded_message_top(status_bottom, content_top, show_status, has_message);
-                if show_status {
-                    assert_eq!(
-                        status_bottom - message_top,
-                        if has_message { BUBBLE_CONTENT_GAP } else { 0.0 }
-                    );
-                }
-                if show_status {
-                    assert!(normal_minimum > body_cap);
-                    assert!(minimum <= body_cap);
-                } else {
-                    assert_eq!(spacing.gap, BUBBLE_CONTENT_GAP);
-                }
-                let occupied = spacing.inset * 2.0
-                    + BUBBLE_CONTROL_HEIGHT
-                    + spacing.gap
-                        * (if show_status && !has_message {
-                            4.0
-                        } else {
-                            5.0
-                        })
-                    + if show_status {
-                        STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
-                    } else {
-                        0.0
-                    }
-                    + slots.status
-                    + slots.editor
-                    + slots.target
-                    + slots.cards
-                    + slots.message;
-                assert!(occupied <= body_height);
+                assert_eq!(slots.cards, cards);
+                assert_eq!(
+                    slots.message,
+                    if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 }
+                );
             }
         }
-        let desktop = expanded_spacing(530.0, cards, true, true);
-        assert_eq!(desktop.inset, BUBBLE_VERTICAL_INSET);
-        assert_eq!(desktop.gap, BUBBLE_CONTENT_GAP);
-
-        let width = 300.0 - BUBBLE_WINDOW_INSET * 2.0 - BUBBLE_HORIZONTAL_INSET * 2.0;
-        assert!(width > 78.0 + BUBBLE_CONTENT_GAP);
     }
 
     #[test]

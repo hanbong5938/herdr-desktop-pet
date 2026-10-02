@@ -1,5 +1,5 @@
-Herdr Desktop Pet 0.1.3; UNRELEASED source lifecycle integration
-===============================================================
+Herdr Desktop Pet 0.1.4; UNRELEASED source inline replies
+==========================================================
 
 Requirements and distribution
 - Apple Silicon macOS 13+. Local observation supports Herdr 0.9.0+;
@@ -10,8 +10,9 @@ Requirements and distribution
   actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
   implement client.attached. A manifest minimum version alone does not prove
   compatibility: inspect plugin-link warnings and verify subscription.
-- Released 0.1.3 prebuilt does NOT include these unreleased lifecycle settings.
-  Build this checkout from source: bash scripts/install.sh --source
+- Published 0.1.4 prebuilt includes lifecycle settings, editable dialogue,
+  status indicators, and the legacy message composer. Only this checkout's
+  inline-card replies are unreleased: bash scripts/install.sh --source.
   Link against the running patched host (PATCHED_HERDR from the integration
   guide, not an installed herdr on PATH):
     "$PATCHED_HERDR" plugin link /absolute/path/to/checkout --enabled
@@ -20,17 +21,20 @@ Requirements and distribution
   start once or wait for a subsequent shell/terminal attach with auto_start on.
   See integrations/herdr/README.md for a separate disposable patched-host
   XDG profile; do not replace an installed host or assume stable PATH is patched.
-- The published 0.1.3 prebuilt remains available with --prebuilt and
-  authenticated gh; the installer verifies checksum, archive layout/types,
-  arm64, signature and default model. It is NOT an install path for these
-  new settings. An optionless install may select the published prebuilt;
-  use explicit --source. Source builds require Rust, Bun, Node.js/npm and
-  Xcode Command Line Tools. Running prebuilt needs no build toolchain.
+- The published 0.1.4 prebuilt is available with --prebuilt and authenticated
+  gh; the installer verifies checksum, archive layout/types, arm64, signature
+  and default model. It does NOT contain inline-card replies: its composer
+  inserts a newline on Enter, sends on Command+Enter, and collapses the bubble
+  on Escape (after canceling active IME composition). An optionless install
+  may select the published prebuilt; use explicit --source for local changes.
+  Source builds require Rust, Bun, Node.js/npm and Xcode Command Line Tools.
+  Running prebuilt needs no build toolchain.
 - Rubelia is the only bundled character and default model (default@0).
   User-imported PNG and rig packs remain supported. Optional Aurora,
   Coding Cat and Rubelia outfits live in herdr-characters, not this bundle.
 - Releases: https://github.com/hanbong5938/herdr-desktop-pet/releases
-- The repository is private; GitHub downloads require authenticated access.
+- The primary repository is public. Homebrew needs no GitHub login; the
+  --prebuilt download script uses authenticated gh.
 - Rubelia uses the owner's shared-world-canon identity, ten independent native
   rig poses, and upper-thigh framing. Source and AI/model-usage records are
   included. The software's MIT license does not relicense the artwork.
@@ -38,6 +42,22 @@ Requirements and distribution
   macOS may require explicit approval to open the app.
 - Native hit-overlay blending uses typed subexpressions for compatibility with
   the release runner's Xcode 16.4 Swift compiler.
+
+Unreleased source-only inline interaction changes
+- Replace the always-visible multiline composer with on-demand, single-line
+  replies under the selected session card; keep session drafts and send safety.
+- Preserve composing text while deferring card selection, filter changes, and
+  row replacement; replay only the latest valid, visible target after composition.
+- Reflow reply controls from the final card width and invalidate bubble content
+  on reply close, independent of whether a frame tick or wake consumes the ACK.
+- Refine inline reply controls with an opaque palette-derived input fill and a
+  compact native action button; preserve geometry, IME, drafts, and send behavior.
+- Normalize line breaks in every committed reply input, including direct
+  typing, paste and text import, to spaces; do not alter active IME preedit.
+- Keep the reply attached to the final selected displayed row after row
+  insertion or deletion. During composition, resolve displayed session keys
+  from retained records independently of the filter and display cap; update
+  live status and localized Korean/English hints with submission disabled.
 
 Controls
 - Use the menu-bar icon for character selection and dialogue editing, observation
@@ -47,17 +67,26 @@ Controls
 - Drag the body/background to move; Option-drag anywhere also moves.
 - Use the bottom-right grip to resize.
 - Full-window click-through ignores both pet and bubble windows, disabling
-  bubble composer interaction too.
+  inline reply interaction too.
 - Alpha click-through lets clicks pass through transparent artwork regions.
   It uses pointer polling, so leave it off if a click-routing race is unacceptable.
 - The bubble shows observed Herdr session status, not inferred provider results.
-- Expand the bubble, explicitly select a local agent session (not All), and
-  compose text for the shown target. Remote cards are read-only observation,
-  even when selected. Enter inserts a newline; Command+Enter or Send submits.
-  Escape cancels active IME composition first; otherwise it collapses the bubble.
-  IME composition does not submit. Per-session drafts live in memory through
-  collapse, not app restart. Success clears only the matching draft; failure
-  preserves it. Acknowledged submission is not completed agent processing.
+- Expand the bubble to see cards. Source build only: the one-line reply is
+  initially hidden, including in All. Click a local agent session card to open
+  its inline reply; choosing another card folds the old field and opens the
+  new one. Remote cards show read-only feedback, with no reply or Send
+  control. Enter, Command+Enter,
+  or Send submits; IME composition does not submit. Escape cancels active IME
+  composition first, otherwise it folds only the reply field. Clicking outside
+  the bubble also folds only the field, except during IME composition; clicking
+  elsewhere inside the bubble does not automatically fold it. Selection, filter,
+  and row replacement wait for composition to end, with live status and send
+  eligibility still current. Per-session drafts live in memory through folding
+  or bubble collapse, not app restart. Success
+  clears and folds only the matching current reply; an edited draft or a newly
+  selected field survives an in-flight send. Failure or uncertain delivery
+  preserves the draft and field state. Acknowledged submission is not completed
+  agent processing.
 - Submission uses only the selected local source's agent.prompt API, not a
   global CLI, shell, SSH, or raw pane input. Excluded local sources, offline,
   stale, unready, and unsupported targets cannot receive prompts; retained
@@ -117,14 +146,39 @@ Observation sources
   fallback for remote errors. Remote sources are observation-only; prompts
   are never sent through machine forwarding.
 
-UNRELEASED integration notes (not a 0.1.3 release or host release)
-- Preserve 0.1.3 Rubelia-only bundle and optional separate content repository
-  alongside remote observation, readable session titles, and local-only bubble
-  messaging. Add lifecycle switches and patched-host attach without changing
-  those observation or prompt boundaries.
-- Manifest 0.1.3 is source metadata, not a newly published artifact. Its
-  min_herdr_version 0.9.3 is the patch baseline, not proof of attach support.
-  No Windows native distribution or accessibility-based click routing is
+UNRELEASED source integration notes (not a new app or host release)
+- The published 0.1.4 prebuilt already includes lifecycle settings, editable
+  dialogue, status indicators, remote observation and the legacy composer;
+  this checkout's inline-card reply replacement is source-only. Preserve the
+  Rubelia-only bundle and optional separate content repository.
+- Source-built inline replies open below selected local session cards; remote
+  cards remain read-only, and submission uses local agent.prompt. All committed
+  line breaks become spaces, while active Cocoa marked text is preserved.
+- Inline navigation preserves active marked text and revalidates deferred
+  targets against the current filter, display cap and connection generation.
+  Reentrant Cocoa card callbacks queue navigation rather than reborrowing the
+  in-flight card layout. Reply attachment uses the final displayed row;
+  live status lookup is independent of the filter and display cap.
+  Retained composing offline rows preserve full accessibility/tooltip identity
+  and relayout the current localized status badge.
+  Reply frames track final card geometry; successful matching-ACK close uses
+  tracking-safe content invalidation. Outside-click folding excludes the
+  bubble and does not fold during composition.
+- Scoped verification: cargo test (273 passing), cargo build, and bun check
+  passed for the source checkout. An actual source-built native app in an
+  isolated profile with a real Unix-socket fixture exercised direct Cocoa
+  committed insertion, UTF-16 selection and undo/redo, pasteboard import,
+  marked-text protocol for Korean/Japanese preedit, selected-row reflow,
+  deferred filtering, and a matching agent.prompt/ACK. Native source-loss
+  probes verified retained offline accessibility identity, locale/indicator
+  transitions, and fitting status frames. Model tests cover accepted outcome versus
+  offline/ambiguous identity, hidden rows, remote read-only and generation.
+  This is not proof of physical keyboard IME behavior, OS-granted focus
+  transfer, or publication of a new binary.
+- Manifest version 0.1.4 matches the published prebuilt version; these
+  source changes are not a newly published artifact. min_herdr_version
+  0.9.3 is the patch baseline, not proof of client.attached support. No
+  Windows native distribution or accessibility-based click routing is
   claimed; pre-existing native clippy all-target erasing_op is out of scope.
 
 Lifecycle settings and plugin actions

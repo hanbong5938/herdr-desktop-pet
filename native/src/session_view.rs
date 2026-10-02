@@ -558,6 +558,17 @@ impl SessionStore {
     pub(crate) fn invalidate(&mut self) {
         self.bump_revision();
     }
+    /// Resolve a displayed key directly from retained rows, independently of
+    /// snapshot filtering/capping and prompt eligibility.
+    pub(crate) fn view_for_key(&self, key: &SessionKey) -> Option<SessionView> {
+        let source = self.sources.iter().find(|source| {
+            source.visible
+                && source.source_id == key.source_id
+                && source.generation == key.generation
+        })?;
+        let record = source.records.get(&key.terminal_id)?;
+        Some(Self::view_from_record(source, &key.terminal_id, record))
+    }
 
     pub(crate) fn snapshot(
         &self,
@@ -602,20 +613,7 @@ impl SessionStore {
                 }
                 matched = matched.saturating_add(1);
                 if rows.len() < MAX_ROWS {
-                    rows.push(SessionView {
-                        key: SessionKey {
-                            source_id: source.source_id,
-                            generation: source.generation,
-                            terminal_id: terminal_id.clone(),
-                        },
-                        source_label: source.label.clone(),
-                        is_local: crate::sources::remote_machine_id(&source.source).is_none(),
-                        pane_id: record.pane_id.clone(),
-                        status: record.status,
-                        outcome: record.outcome,
-                        metadata: record.metadata.clone(),
-                        availability,
-                    });
+                    rows.push(Self::view_from_record(source, terminal_id, record));
                 }
             }
         }
@@ -668,6 +666,27 @@ impl SessionStore {
             matched,
             omitted,
             selected,
+        }
+    }
+
+    fn view_from_record(
+        source: &SourceState,
+        terminal_id: &str,
+        record: &StoredRecord,
+    ) -> SessionView {
+        SessionView {
+            key: SessionKey {
+                source_id: source.source_id,
+                generation: source.generation,
+                terminal_id: terminal_id.to_owned(),
+            },
+            source_label: source.label.clone(),
+            is_local: crate::sources::remote_machine_id(&source.source).is_none(),
+            pane_id: record.pane_id.clone(),
+            status: record.status,
+            outcome: record.outcome,
+            metadata: record.metadata.clone(),
+            availability: source.availability,
         }
     }
 
@@ -1185,6 +1204,117 @@ mod tests {
         assert_eq!(working.matched, 50);
         assert_eq!(working.rows.len(), 50);
         assert_eq!(working.omitted, 0);
+    }
+
+    #[test]
+    fn displayed_key_observes_filtered_row_past_all_cap_through_outcome_and_invalidation() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("socket", 1));
+        let mut records: Vec<_> = (0..128)
+            .map(|index| {
+                record(
+                    &format!("idle-{index:03}"),
+                    "shared-pane",
+                    AgentStatus::Idle,
+                )
+            })
+            .collect();
+        records.push(record("working", "working-pane", AgentStatus::Working));
+        assert!(store.replace_source("socket", 1, records.iter()));
+        let filtered = store.snapshot(SessionFilter::Working, None);
+        let key = filtered.rows[0].key.clone();
+        assert_eq!(store.snapshot(SessionFilter::All, None).rows.len(), 128);
+        assert!(!store
+            .snapshot(SessionFilter::All, None)
+            .rows
+            .iter()
+            .any(|row| row.key == key));
+        assert_eq!(store.view_for_key(&key), Some(filtered.rows[0].clone()));
+        assert_eq!(
+            store.view_for_key(&key).unwrap().display_status(),
+            DisplayStatus::Running
+        );
+        assert!(store.update_status("socket", 1, "working", "working-pane", AgentStatus::Done));
+        assert!(store.snapshot(SessionFilter::Working, None).rows.is_empty());
+        let completed = store.view_for_key(&key).unwrap();
+        assert_eq!(completed.status, AgentStatus::Done);
+        assert_eq!(completed.display_status(), DisplayStatus::Completed);
+
+        let mut result = reported("working", "turn-1", AgentOutcome::Succeeded);
+        result.pane_id = "working-pane".into();
+        records[128] = result;
+        assert!(store.replace_source("socket", 1, records.iter()));
+        assert!(store.accept_outcome(
+            "socket",
+            1,
+            "working",
+            "working-pane",
+            AgentOutcome::Succeeded,
+            123
+        ));
+        let accepted = store.view_for_key(&key).unwrap();
+        assert_eq!(accepted.outcome, Some(AgentOutcome::Succeeded));
+        assert_eq!(accepted.display_status(), DisplayStatus::Succeeded);
+        assert_eq!(store.prompt_target(&key).unwrap().pane_id, "working-pane");
+
+        assert!(store.mark_offline("socket", 1));
+        let offline = store.view_for_key(&key).unwrap();
+        assert_eq!(offline.availability, Availability::Offline);
+        assert_eq!(offline.display_status(), DisplayStatus::Offline);
+        assert_eq!(store.prompt_target(&key), Err(PromptTargetError::Offline));
+        store.set_visibility("socket", false);
+        assert_eq!(store.view_for_key(&key), None);
+        store.set_visibility("socket", true);
+        assert_eq!(
+            store.view_for_key(&key).unwrap().display_status(),
+            DisplayStatus::Offline
+        );
+        assert!(store.begin_source("socket", 2));
+        assert_eq!(store.view_for_key(&key), None);
+        let new_key = SessionKey {
+            generation: 2,
+            ..key
+        };
+        assert_eq!(
+            store.view_for_key(&new_key).unwrap().display_status(),
+            DisplayStatus::Offline
+        );
+    }
+
+    #[test]
+    fn display_lookup_keeps_remote_and_ambiguous_panes_without_prompt_permission() {
+        let mut store = SessionStore::new();
+        let remote = crate::sources::remote_source("east");
+        assert!(store.begin_source(&remote, 1));
+        let remote_row = record("remote", "remote-pane", AgentStatus::Working);
+        assert!(store.replace_source(&remote, 1, [&remote_row]));
+        let remote_key = store.snapshot(SessionFilter::All, None).rows[0].key.clone();
+        assert_eq!(
+            store.view_for_key(&remote_key).unwrap().status,
+            AgentStatus::Working
+        );
+        assert_eq!(
+            store.prompt_target(&remote_key),
+            Err(PromptTargetError::ReadOnly)
+        );
+
+        assert!(store.begin_source("socket", 1));
+        let first = record("first", "shared-pane", AgentStatus::Idle);
+        let second = record("second", "shared-pane", AgentStatus::Done);
+        assert!(store.replace_source("socket", 1, [&first, &second]));
+        let local = store.snapshot(SessionFilter::All, None);
+        let ambiguous = local
+            .rows
+            .iter()
+            .find(|row| row.key.terminal_id == "second")
+            .unwrap();
+        assert_eq!(store.view_for_key(&ambiguous.key), Some(ambiguous.clone()));
+        assert_eq!(
+            store.prompt_target(&ambiguous.key),
+            Err(PromptTargetError::Stale)
+        );
+        assert!(store.remove_source("socket", 1));
+        assert_eq!(store.view_for_key(&ambiguous.key), None);
     }
 
     #[test]
