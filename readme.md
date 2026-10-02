@@ -47,26 +47,32 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | Prebuilt v0.1.6, or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
+| App | Prebuilt v0.1.7, or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
 | Prebuilt release download script | [GitHub CLI](https://cli.github.com/) (`gh`); not needed for Homebrew |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
 
 ## Install with Homebrew
 
-Install the prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap); no GitHub login or source-build toolchain is required:
+Install the prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap) formula; no GitHub login or source-build toolchain is required:
 
 ```sh
-brew install --cask hanbong5938/tap/herdr-desktop-pet
+brew install hanbong5938/tap/herdr-desktop-pet
 herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-Homebrew installs `/Applications/HerdrDesktopPet.app` and links its CLI onto `PATH`. This installs the app only: it does not register the Herdr plugin or install a patched Herdr host. Use the source installation below for plugin startup hooks; client-attach auto-start still requires the supplied host patch. The app is **ad-hoc signed, not notarized**; if macOS blocks opening it, review **System Settings → Privacy & Security** and explicitly allow it.
+If you installed an earlier release from the old Homebrew cask, remove the cask before installing the formula:
 
 ```sh
-brew upgrade --cask hanbong5938/tap/herdr-desktop-pet
-brew uninstall --cask hanbong5938/tap/herdr-desktop-pet
+brew uninstall --cask herdr-desktop-pet
+```
+
+Homebrew installs the app under its own prefix (`$(brew --prefix herdr-desktop-pet)/libexec/HerdrDesktopPet.app`), not in `/Applications`, and puts a `herdr-desktop-pet` CLI wrapper on `PATH`. This installs the app only: it does not register the Herdr plugin or install a patched Herdr host. Install the plugin separately with `herdr plugin install hanbong5938/herdr-desktop-pet`, or use the source installation below for plugin startup hooks; client-attach auto-start still requires the supplied host patch. The app is **ad-hoc signed, not notarized**; if macOS blocks opening it, review **System Settings → Privacy & Security** and explicitly allow it.
+
+```sh
+brew upgrade hanbong5938/tap/herdr-desktop-pet
+brew uninstall hanbong5938/tap/herdr-desktop-pet
 ```
 
 Uninstalling keeps your character packs, preferences, and lifecycle state.
@@ -87,7 +93,7 @@ bash scripts/install.sh --source
 
 The installer installs pinned JavaScript dependencies, builds the Rust executable, packages the native rig runtime and creator resources, and validates the app. Linking/enabling on an already-running server does not itself launch the pet: invoke `start` once, or wait for a subsequent successful shell/terminal client attach when `auto_start` is on. Server startup also runs automatic `ensure`. Inspect link warnings: an unknown `client.attached` hook means the host lacks the required patch. Herdr plugin actions require a running, enabled host; direct native settings commands below work without one.
 
-The **v0.1.6 prebuilt app includes the newly drawn ten-pose Rubelia default, lifecycle settings, editable dialogue, inline replies, and status indicators**. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` using authenticated `gh` and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` may select a pinned prebuilt for a GitHub checkout; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; macOS may require explicit approval.
+The **v0.1.7 prebuilt app includes the newly drawn ten-pose Rubelia default, lifecycle settings, editable dialogue, inline replies, and status indicators**. v0.1.7 fixes the packaged CLI so it finds its bundled default character when launched through a symlink on `PATH`. `bash scripts/install.sh --prebuilt` downloads the version pinned by this checkout's `herdr-plugin.toml` using authenticated `gh` and validates SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character. Running the prebuilt app requires no source-build toolchain; client-attach auto-start still requires the patched Herdr host described above. Without an option, `scripts/install.sh` may select a pinned prebuilt for a GitHub checkout; use explicit `--source` to build local changes. App bundles are **ad-hoc signed, not Developer ID signed or notarized**; macOS may require explicit approval.
 
 The older **v0.1.4 prebuilt message composer** differs from v0.1.6 inline replies: **Enter** inserts a newline, **Command+Enter** sends, and **Escape** collapses the bubble (during IME composition, Escape cancels composition first). Upgrade to v0.1.6 or use `--source` for inline-card replies.
 
