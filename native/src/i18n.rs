@@ -1,3 +1,4 @@
+use crate::dialogue::DialogueSlot;
 use crate::session_view::{DisplayStatus, SessionStatusSummary};
 use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::ser::Serializer;
@@ -257,16 +258,42 @@ pub(crate) enum Message {
     ObservationSaveFailed,
     ObservationReconnect,
     MenuManageCharacter,
-    DialogueEditor,
+    CharacterCandidate,
+    CharacterSelectionPrompt,
+    CharacterApply,
+    CharacterCancelSelection,
+    CharacterSelectionStale,
+    CharacterOperationQueued,
+    CharacterOperationPreparing,
+    CharacterOperationApplying,
+    CharacterOperationCompleted,
+    CharacterOperationFailed,
+    CharacterOperationCanceled,
+    CharacterOperationPendingApply,
+    CharacterOperationUnknown,
+    CharacterOperationNotSubmitted,
+    CharacterOperationUnavailable,
+    CharacterEditingOpen,
+    DialogueWindowTitle,
+    DialogueTarget,
+    DialogueDefaultValue,
+    DialogueCustomValue,
+    DialogueNoChanges,
+    DialogueShowOriginal,
+    DialogueHideOriginal,
+    DialogueLoading,
+    DialogueTargetUnavailable,
+    DialogueResetMenu,
+    DialogueResetDraftConfirm,
+    DialogueResetDraftConfirmHelp,
+    DialogueDraftSessionHelp,
     DialogueLanguage,
     DialogueSlot,
-    DialogueOriginal,
     DialogueText,
     DialogueBytes,
     DialogueTooLong,
     DialogueStatusReference,
     DialogueUnsaved,
-    DialogueUnchanged,
     DialogueSave,
     DialogueResetEntry,
     DialogueResetCharacter,
@@ -364,7 +391,22 @@ pub(crate) enum Message {
     ManagedTag,
     CharacterDiagnostics,
     SelectedMismatchWarning,
+    OverrideActiveWarning,
     Close,
+}
+
+/// The shared event label for a dialogue slot in menus and the editor sidebar.
+pub(crate) const fn dialogue_slot_message(slot: DialogueSlot) -> Message {
+    match slot {
+        DialogueSlot::Idle => Message::DialogueIdle,
+        DialogueSlot::Running => Message::DialogueRunning,
+        DialogueSlot::Waiting => Message::DialogueWaiting,
+        DialogueSlot::Unknown => Message::DialogueUnknown,
+        DialogueSlot::HeadTap => Message::DialogueHeadTap,
+        DialogueSlot::BodyTap => Message::DialogueBodyTap,
+        DialogueSlot::Pet => Message::DialoguePet,
+        DialogueSlot::Completion => Message::DialogueCompletion,
+    }
 }
 
 /// Look up one fixed catalog entry without allocating.
@@ -444,10 +486,41 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::LifecycleQuitHelp => "종료는 현재 실행만 멈춥니다. 자동 시작 설정은 바뀌지 않습니다.",
             Message::LifecycleSaveFailure => "실행 관리 설정 저장 실패",
             Message::MenuManageCharacter => "캐릭터 관리",
-            Message::DialogueEditor => "대사 편집 · 활성 캐릭터",
+            Message::CharacterCandidate => "적용할 캐릭터",
+            Message::CharacterSelectionPrompt => "캐릭터를 선택하세요.",
+            Message::CharacterApply => "캐릭터 적용",
+            Message::CharacterCancelSelection => "선택 취소",
+            Message::CharacterSelectionStale => "선택한 캐릭터가 변경되었습니다. 다시 선택하세요.",
+            Message::CharacterOperationQueued => "캐릭터 작업 대기 중",
+            Message::CharacterOperationPreparing => "캐릭터 작업 준비 중",
+            Message::CharacterOperationApplying => "캐릭터 적용 중",
+            Message::CharacterOperationCompleted => "캐릭터 작업 완료",
+            Message::CharacterOperationFailed => "캐릭터 작업 실패",
+            Message::CharacterOperationCanceled => "캐릭터 작업 취소됨",
+            Message::CharacterOperationPendingApply => "저장됨 · 화면에 적용 대기 중",
+            Message::CharacterOperationUnknown => "캐릭터 작업 결과를 확인할 수 없음",
+            Message::CharacterOperationNotSubmitted => "미제출/접수 거절 · 서비스에서 실행되지 않았습니다",
+            Message::CharacterOperationUnavailable => "현재 캐릭터 작업을 시작할 수 없음",
+            Message::CharacterEditingOpen => "대사 편집…",
+            Message::DialogueWindowTitle => "대사 편집기",
+            Message::DialogueTarget => "편집할 캐릭터",
+            Message::DialogueDefaultValue => "팩 기본 대사",
+            Message::DialogueCustomValue => "사용자 지정 대사",
+            Message::DialogueNoChanges => "변경 사항 없음",
+            Message::DialogueShowOriginal => "팩 원본 보기",
+            Message::DialogueHideOriginal => "팩 원본 숨기기",
+            Message::DialogueLoading => "대사 불러오는 중",
+            Message::DialogueTargetUnavailable => "선택한 캐릭터를 사용할 수 없습니다. 다시 선택하세요.",
+            Message::DialogueResetMenu => "대사 초기화",
+            Message::DialogueResetDraftConfirm => "초안을 버리고 이 대사를 초기화할까요?",
+            Message::DialogueResetDraftConfirmHelp => {
+                "현재 초안과 이 항목에 저장된 사용자 대사를 삭제합니다. 팩 원본은 변경되지 않습니다."
+            }
+            Message::DialogueDraftSessionHelp => {
+                "초안은 앱 실행 중 캐릭터·언어·대사 종류별로 유지됩니다. 저장해야 다음 실행에도 남습니다."
+            }
             Message::DialogueLanguage => "편집 언어",
             Message::DialogueSlot => "대사 종류",
-            Message::DialogueOriginal => "팩의 원본 대사",
             Message::DialogueText => "대사 입력 (여러 줄 가능)",
             Message::DialogueBytes => "UTF-8 바이트",
             Message::DialogueTooLong => "대사는 2048바이트를 넘을 수 없습니다.",
@@ -455,7 +528,6 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
                 "원본 대사가 없습니다. 시스템 상태 메시지가 표시됩니다."
             }
             Message::DialogueUnsaved => "저장하지 않음",
-            Message::DialogueUnchanged => "저장됨",
             Message::DialogueSave => "대사 저장",
             Message::DialogueResetEntry => "이 대사 초기화",
             Message::DialogueResetCharacter => "캐릭터 대사 전체 초기화…",
@@ -559,6 +631,7 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ManagedTag => "관리 팩",
             Message::CharacterDiagnostics => "진단 정보",
             Message::SelectedMismatchWarning => "선택된 캐릭터와 활성 캐릭터가 일치하지 않습니다.",
+            Message::OverrideActiveWarning => "임시 캐릭터 재정의가 활성화되어 있습니다.",
             Message::Close => "닫기",
         },
         UiLocale::En => match message {
@@ -633,10 +706,41 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ObservationSaveFailed => "Could not save observation settings",
             Message::ObservationReconnect => "Reconnect manually in Herdr:",
             Message::MenuManageCharacter => "Manage character",
-            Message::DialogueEditor => "Dialogue · active character",
+            Message::CharacterCandidate => "Character to apply",
+            Message::CharacterSelectionPrompt => "Select a character to apply.",
+            Message::CharacterApply => "Apply character",
+            Message::CharacterCancelSelection => "Cancel selection",
+            Message::CharacterSelectionStale => "The selected character has changed. Select it again.",
+            Message::CharacterOperationQueued => "Character operation queued",
+            Message::CharacterOperationPreparing => "Preparing character operation",
+            Message::CharacterOperationApplying => "Applying character",
+            Message::CharacterOperationCompleted => "Character operation completed",
+            Message::CharacterOperationFailed => "Character operation failed",
+            Message::CharacterOperationCanceled => "Character operation canceled",
+            Message::CharacterOperationPendingApply => "Saved · waiting to appear on screen",
+            Message::CharacterOperationUnknown => "Character operation outcome is unknown",
+            Message::CharacterOperationNotSubmitted => "Not submitted / rejected · not executed by the service",
+            Message::CharacterOperationUnavailable => "Character operation is currently unavailable",
+            Message::CharacterEditingOpen => "Edit dialogue…",
+            Message::DialogueWindowTitle => "Dialogue editor",
+            Message::DialogueTarget => "Character to edit",
+            Message::DialogueDefaultValue => "Pack default dialogue",
+            Message::DialogueCustomValue => "Custom dialogue",
+            Message::DialogueNoChanges => "No changes",
+            Message::DialogueShowOriginal => "Show pack original",
+            Message::DialogueHideOriginal => "Hide pack original",
+            Message::DialogueLoading => "Loading dialogue",
+            Message::DialogueTargetUnavailable => "The selected character is unavailable. Select another.",
+            Message::DialogueResetMenu => "Reset dialogue",
+            Message::DialogueResetDraftConfirm => "Discard the draft and reset this entry?",
+            Message::DialogueResetDraftConfirmHelp => {
+                "This discards the current draft and removes the saved custom dialogue for this entry. The pack original is unchanged."
+            }
+            Message::DialogueDraftSessionHelp => {
+                "Drafts are kept by character, language, and event during this app session. Save to keep them after restarting."
+            }
             Message::DialogueLanguage => "Editing language",
             Message::DialogueSlot => "Dialogue event",
-            Message::DialogueOriginal => "Original pack dialogue",
             Message::DialogueText => "Dialogue text (multiple lines)",
             Message::DialogueBytes => "UTF-8 bytes",
             Message::DialogueTooLong => "Dialogue cannot exceed 2048 bytes.",
@@ -644,7 +748,6 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
                 "No original dialogue. The system status message appears instead."
             }
             Message::DialogueUnsaved => "Unsaved",
-            Message::DialogueUnchanged => "Saved",
             Message::DialogueSave => "Save dialogue",
             Message::DialogueResetEntry => "Reset this entry",
             Message::DialogueResetCharacter => "Reset all character dialogue…",
@@ -746,6 +849,7 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ManagedTag => "Managed",
             Message::CharacterDiagnostics => "Diagnostics",
             Message::SelectedMismatchWarning => "Selected character differs from active character.",
+            Message::OverrideActiveWarning => "A temporary character override is active.",
             Message::Close => "Close",
         },
     }

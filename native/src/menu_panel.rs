@@ -1,7 +1,4 @@
-use crate::assets::CharacterMetadata;
 use crate::bubble::BubblePlacement;
-use crate::dialogue::{DialogueOverrides, DialogueSlot, DialogueTarget};
-use crate::i18n::{default_dialogue, DefaultDialogue};
 use crate::i18n::{text, LanguagePreference, Message, UiLocale};
 use crate::lifecycle::LifecycleSettings;
 use crate::lifecycle_settings_ui::{LifecycleSettingsCard, CARD_HEIGHT};
@@ -10,24 +7,20 @@ use crate::sources::{MachineStatus, ObservationPreferences, SourceCatalog};
 use crate::state::Scene;
 use crate::ui::MenuTarget;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::AnyObject;
 use objc2::{
-    define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly,
-    Message as ObjcMessage,
+    define_class, msg_send, sel, MainThreadMarker, MainThreadOnly, Message as ObjcMessage,
 };
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBox,
     NSBoxType, NSButton, NSButtonType, NSCellImagePosition, NSColor, NSControl, NSControlSize,
     NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
     NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSPanel, NSPopUpButton, NSScreen,
-    NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSwitch, NSTextAlignment, NSTextDelegate,
-    NSTextField, NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSwitch, NSTextAlignment, NSTextField,
+    NSUserInterfaceItemIdentification, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUndoManager};
-use std::cell::RefCell;
-use std::collections::BTreeMap;
 
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 const PANEL_WIDTH: f64 = 352.0;
 const PANEL_HEIGHT: f64 = 540.0;
 const PANEL_EDGE_INSET: f64 = 10.0;
@@ -36,9 +29,6 @@ const CARD_RADIUS: f64 = 10.0;
 const SCROLL_TOP: f64 = 86.0;
 const FOOTER_HEIGHT: f64 = 50.0;
 const CHARACTER_CONTENT_HEIGHT: f64 = 404.0;
-const DIALOGUE_CARD_HEIGHT: f64 = 414.0;
-const DIALOGUE_CHOOSER_HEIGHT: f64 = 246.0;
-const DIALOGUE_MAX_BYTES: usize = 2048;
 const BUBBLE_CONTENT_HEIGHT: f64 = 578.0;
 const SETTINGS_BASE_HEIGHT: f64 = 334.0 + CARD_HEIGHT + 14.0;
 const MACHINE_ROW_HEIGHT: f64 = 94.0;
@@ -64,129 +54,6 @@ const PRIMARY_BLUE: f64 = 0.97;
 const SECONDARY_RED: f64 = 0.60;
 const SECONDARY_GREEN: f64 = 0.61;
 const SECONDARY_BLUE: f64 = 0.66;
-
-struct DialogueFeedback {
-    baseline: String,
-    has_override: bool,
-    locale: UiLocale,
-    count: Retained<NSTextField>,
-    error: Retained<NSTextField>,
-    save: Retained<NSButton>,
-    reset: Retained<NSButton>,
-    storage_error: Option<String>,
-    undo: Retained<NSUndoManager>,
-}
-
-define_class!(
-    // SAFETY: AppKit creates and uses this view on the main thread only.
-    #[unsafe(super = NSTextView)]
-    #[thread_kind = MainThreadOnly]
-    #[name = "OMPetDialogueTextView"]
-    #[ivars = RefCell<Option<DialogueFeedback>>]
-    struct DialogueTextView;
-
-    unsafe impl NSObjectProtocol for DialogueTextView {}
-    unsafe impl NSTextDelegate for DialogueTextView {}
-
-    unsafe impl NSTextViewDelegate for DialogueTextView {
-        #[unsafe(method_id(undoManagerForTextView:))]
-        fn undo_manager_for_text_view(&self, _view: &NSTextView) -> Option<Retained<NSUndoManager>> {
-            self.dialogue_undo_manager()
-        }
-    }
-
-    impl DialogueTextView {
-        #[unsafe(method_id(undoManager))]
-        fn undo_manager(&self) -> Option<Retained<NSUndoManager>> {
-            self.dialogue_undo_manager()
-        }
-
-        #[unsafe(method(didChangeText))]
-        fn did_change_text(&self) {
-            let _: () = unsafe { msg_send![super(self), didChangeText] };
-            if let Some(feedback) = self.ivars().borrow_mut().as_mut() {
-                feedback.storage_error = None;
-            }
-            self.update_feedback();
-        }
-
-        #[unsafe(method(insertTab:))]
-        fn insert_tab(&self, _sender: Option<&AnyObject>) {
-            if let Some(window) = self.window() {
-                window.selectNextKeyView(Some(self));
-            }
-        }
-
-        #[unsafe(method(insertBacktab:))]
-        fn insert_backtab(&self, _sender: Option<&AnyObject>) {
-            if let Some(window) = self.window() {
-                window.selectPreviousKeyView(Some(self));
-            }
-        }
-    }
-);
-
-impl DialogueTextView {
-    fn new(frame: NSRect, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(RefCell::new(None));
-        unsafe { msg_send![super(this), initWithFrame: frame] }
-    }
-
-    fn dialogue_undo_manager(&self) -> Option<Retained<NSUndoManager>> {
-        self.ivars()
-            .borrow()
-            .as_ref()
-            .map(|feedback| feedback.undo.retain())
-    }
-
-    fn replace_dialogue(&self, value: &str) {
-        self.breakUndoCoalescing();
-        self.setString(&NSString::from_str(value));
-        if let Some(undo) = self.dialogue_undo_manager() {
-            undo.removeAllActions();
-        }
-    }
-
-    fn update_feedback(&self) {
-        let feedback = self.ivars().borrow();
-        let Some(feedback) = feedback.as_ref() else {
-            return;
-        };
-        let value = self.string().to_string();
-        let bytes = value.len();
-        let dirty = normalized_dialogue(&value) != normalized_dialogue(&feedback.baseline);
-        let status = if dirty {
-            Message::DialogueUnsaved
-        } else {
-            Message::DialogueUnchanged
-        };
-        feedback.count.setStringValue(&NSString::from_str(&format!(
-            "{}: {bytes}/{DIALOGUE_MAX_BYTES} · {}",
-            text(feedback.locale, Message::DialogueBytes),
-            text(feedback.locale, status),
-        )));
-        let error = if bytes > DIALOGUE_MAX_BYTES {
-            text(feedback.locale, Message::DialogueTooLong)
-        } else {
-            feedback.storage_error.as_deref().unwrap_or("")
-        };
-        feedback.error.setStringValue(&NSString::from_str(error));
-        set_accessibility_label(&*feedback.error, error);
-        set_tooltip(&*feedback.error, error);
-        feedback
-            .save
-            .setEnabled(bytes <= DIALOGUE_MAX_BYTES && dirty);
-        feedback.reset.setEnabled(feedback.has_override);
-    }
-}
-
-fn normalized_dialogue(value: &str) -> &str {
-    if value.trim().is_empty() {
-        ""
-    } else {
-        value
-    }
-}
 
 define_class!(
     // SAFETY:
@@ -481,36 +348,12 @@ pub(crate) struct MenuPanel {
     placement_buttons: [Retained<NSButton>; 5],
     character_view: Retained<NSView>,
     mtm: MainThreadMarker,
-    dialogue_card: Retained<MenuPanelCard>,
-    dialogue_title: Retained<NSTextField>,
-    dialogue_name: Retained<NSTextField>,
-    dialogue_language_label: Retained<NSTextField>,
-    dialogue_language: Retained<NSPopUpButton>,
-    dialogue_slot_label: Retained<NSTextField>,
-    dialogue_slot: Retained<NSPopUpButton>,
-    dialogue_original_label: Retained<NSTextField>,
-    dialogue_original: Retained<NSTextField>,
-    dialogue_input_label: Retained<NSTextField>,
-    dialogue_scroll: Retained<NSScrollView>,
-    dialogue_text: Retained<DialogueTextView>,
-    dialogue_count: Retained<NSTextField>,
-    dialogue_error: Retained<NSTextField>,
-    dialogue_save: Retained<NSButton>,
-    dialogue_reset_entry: Retained<NSButton>,
-    dialogue_reset_character: Retained<NSButton>,
-    dialogue_active: Option<DialogueTarget>,
-    dialogue_edit_locale: UiLocale,
-    dialogue_saved_pending: bool,
-    dialogue_edit_slot: DialogueSlot,
-    dialogue_drafts: BTreeMap<(DialogueTarget, String, DialogueSlot), String>,
-    dialogue_overrides: DialogueOverrides,
-    dialogue_base: Option<CharacterMetadata>,
+    character_editing_open: Retained<NSButton>,
     target: Retained<MenuTarget>,
     title: Retained<NSTextField>,
     panel_title: Retained<NSTextField>,
     character_visible_label: Retained<NSTextField>,
     character_visible_switch: Retained<NSSwitch>,
-    character_manage_label: Retained<NSButton>,
     bubble_visible_label: Retained<NSTextField>,
     bubble_visible_switch: Retained<NSSwitch>,
     status_indicators_label: Retained<NSTextField>,
@@ -716,154 +559,35 @@ impl MenuPanel {
             &*character_visible_switch,
             text(locale, Message::MenuCharacterVisible),
         );
-        let character_manage_label = make_section_button(
-            text(locale, Message::MenuManageCharacter),
+        let character_editing_open = make_action_button(
+            text(locale, Message::CharacterEditingOpen),
             target,
-            sel!(focusCharacterManager:),
+            sel!(openDialogueEditor:),
             mtm,
+        );
+        character_editing_open.setFont(Some(&NSFont::systemFontOfSize(11.5)));
+        character_editing_open.setImageHugsTitle(true);
+        character_editing_open.setImagePosition(NSCellImagePosition::ImageLeading);
+        let symbol_name = NSString::from_str("bubble.left.and.text.bubble.right");
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &symbol_name,
+            Some(&NSString::from_str(text(
+                locale,
+                Message::CharacterEditingOpen,
+            ))),
+        ) {
+            character_editing_open.setImage(Some(&image));
+        }
+        set_tooltip(
+            &character_editing_open,
+            text(locale, Message::CharacterEditingOpen),
         );
         let character_view = character_view.retain();
         character_card.addSubview(&character_visible_label);
         character_card.addSubview(&*character_visible_switch);
         character_tab.addSubview(&character_card);
-        character_tab.addSubview(&character_manage_label);
+        character_tab.addSubview(&character_editing_open);
         character_tab.addSubview(&character_view);
-
-        let dialogue_card = MenuPanelCard::new(NSRect::default(), mtm);
-        set_accessibility_element(&*dialogue_card, false);
-        let dialogue_title = label(
-            text(locale, Message::DialogueEditor),
-            12.5,
-            true,
-            primary(),
-            mtm,
-        );
-        let dialogue_name = label("", 11.0, false, secondary(), mtm);
-        let dialogue_language_label = label(
-            text(locale, Message::DialogueLanguage),
-            11.0,
-            false,
-            primary(),
-            mtm,
-        );
-        let dialogue_language = make_selection_popup(
-            &[(Message::KoreanLanguage, 0), (Message::EnglishLanguage, 1)],
-            locale,
-            target,
-            sel!(setDialogueLocale:),
-            mtm,
-        );
-        let dialogue_slot_label = label(
-            text(locale, Message::DialogueSlot),
-            11.0,
-            false,
-            primary(),
-            mtm,
-        );
-        let dialogue_slot = make_selection_popup(
-            &dialogue_slot_messages().map(|(message, index)| (message, index as isize)),
-            locale,
-            target,
-            sel!(setDialogueSlot:),
-            mtm,
-        );
-        let dialogue_original_label = label(
-            text(locale, Message::DialogueOriginal),
-            11.0,
-            false,
-            primary(),
-            mtm,
-        );
-        let dialogue_original = label("", 10.5, false, secondary(), mtm);
-        dialogue_original.setMaximumNumberOfLines(2);
-        let dialogue_input_label = label(
-            text(locale, Message::DialogueText),
-            11.0,
-            false,
-            primary(),
-            mtm,
-        );
-        let dialogue_text = DialogueTextView::new(NSRect::default(), mtm);
-        dialogue_text.setRichText(false);
-        dialogue_text.setImportsGraphics(false);
-        dialogue_text.setAllowsUndo(true);
-        dialogue_text.setDelegate(Some(ProtocolObject::from_ref(&*dialogue_text)));
-        dialogue_text.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-        dialogue_text.setTextColor(Some(&primary()));
-        dialogue_text.setBackgroundColor(&color(TRACK_RED, TRACK_GREEN, TRACK_BLUE, 1.0));
-        dialogue_text.setTextContainerInset(NSSize::new(6.0, 5.0));
-        dialogue_text.setVerticallyResizable(true);
-        dialogue_text.setHorizontallyResizable(false);
-        dialogue_text.setAutomaticQuoteSubstitutionEnabled(false);
-        dialogue_text.setAutomaticDashSubstitutionEnabled(false);
-        dialogue_text.setAutomaticTextReplacementEnabled(false);
-        dialogue_text.setAutomaticSpellingCorrectionEnabled(false);
-        if let Some(container) = unsafe { dialogue_text.textContainer() } {
-            container.setWidthTracksTextView(true);
-            container.setContainerSize(NSSize::new(300.0, 10_000_000.0));
-        }
-        let dialogue_scroll: Retained<NSScrollView> =
-            unsafe { msg_send![NSScrollView::alloc(mtm), initWithFrame: NSRect::default()] };
-        dialogue_scroll.setHasVerticalScroller(true);
-        dialogue_scroll.setHasHorizontalScroller(false);
-        dialogue_scroll.setAutohidesScrollers(true);
-        dialogue_scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
-        dialogue_scroll.setVerticalScrollElasticity(NSScrollElasticity::None);
-        dialogue_scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
-        dialogue_scroll.setDocumentView(Some(&dialogue_text));
-        let dialogue_count = label("", 10.0, false, secondary(), mtm);
-        let dialogue_error = label("", 10.0, false, color(1.0, 0.55, 0.52, 1.0), mtm);
-        dialogue_error.setMaximumNumberOfLines(2);
-        let dialogue_save = make_action_button(
-            text(locale, Message::DialogueSave),
-            target,
-            sel!(saveDialogue:),
-            mtm,
-        );
-        let dialogue_reset_entry = make_action_button(
-            text(locale, Message::DialogueResetEntry),
-            target,
-            sel!(resetDialogueEntry:),
-            mtm,
-        );
-        let dialogue_reset_character = make_action_button(
-            text(locale, Message::DialogueResetCharacter),
-            target,
-            sel!(resetCharacterDialogue:),
-            mtm,
-        );
-        dialogue_reset_character.setEnabled(false);
-        *dialogue_text.ivars().borrow_mut() = Some(DialogueFeedback {
-            baseline: String::new(),
-            has_override: false,
-            locale,
-            count: dialogue_count.retain(),
-            error: dialogue_error.retain(),
-            save: dialogue_save.retain(),
-            reset: dialogue_reset_entry.retain(),
-            storage_error: None,
-            undo: NSUndoManager::new(mtm),
-        });
-        for view in [
-            &*dialogue_title as &NSView,
-            &*dialogue_name,
-            &*dialogue_language_label,
-            &*dialogue_language,
-            &*dialogue_slot_label,
-            &*dialogue_slot,
-            &*dialogue_original_label,
-            &*dialogue_original,
-            &*dialogue_input_label,
-            &*dialogue_scroll,
-            &*dialogue_count,
-            &*dialogue_error,
-            &*dialogue_save,
-            &*dialogue_reset_entry,
-            &*dialogue_reset_character,
-        ] {
-            dialogue_card.addSubview(view);
-        }
-        character_tab.addSubview(&dialogue_card);
 
         let bubble_visibility_card = MenuPanelCard::new(NSRect::default(), mtm);
         set_accessibility_element(&*bubble_visibility_card, false);
@@ -1224,36 +948,12 @@ impl MenuPanel {
             placement_buttons,
             character_view,
             mtm,
-            dialogue_card,
-            dialogue_title,
-            dialogue_name,
-            dialogue_language_label,
-            dialogue_language,
-            dialogue_slot_label,
-            dialogue_slot,
-            dialogue_original_label,
-            dialogue_original,
-            dialogue_input_label,
-            dialogue_scroll,
-            dialogue_text,
-            dialogue_count,
-            dialogue_error,
-            dialogue_save,
-            dialogue_reset_entry,
-            dialogue_reset_character,
-            dialogue_active: None,
-            dialogue_edit_locale: locale,
-            dialogue_edit_slot: DialogueSlot::Idle,
-            dialogue_saved_pending: false,
-            dialogue_drafts: BTreeMap::new(),
-            dialogue_overrides: DialogueOverrides::default(),
-            dialogue_base: None,
+            character_editing_open,
             target: target.retain(),
             title,
             panel_title,
             character_visible_label,
             character_visible_switch,
-            character_manage_label,
             bubble_visible_label,
             bubble_visible_switch,
             status_indicators_label,
@@ -1351,24 +1051,6 @@ impl MenuPanel {
         }
     }
 
-    pub(crate) fn focus_character_manager(&mut self) {
-        self.select_tab(0);
-        let point = self
-            .scroll
-            .contentView()
-            .constrainBoundsRect(NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                self.scroll.contentView().bounds().size,
-            ))
-            .origin;
-        self.scroll.contentView().scrollToPoint(point);
-        self.scroll
-            .reflectScrolledClipView(&self.scroll.contentView());
-        if self.panel.isKeyWindow() {
-            self.panel
-                .makeFirstResponder(Some(&*self.character_visible_switch));
-        }
-    }
     pub(crate) fn set_bubble_appearance(&mut self, appearance: BubbleAppearance) {
         let tag = match appearance.theme {
             BubbleTheme::WarmIvory => 0,
@@ -1614,218 +1296,6 @@ impl MenuPanel {
         self.layout_documents();
     }
 
-    pub(crate) fn sync_dialogue(
-        &mut self,
-        target: DialogueTarget,
-        name: &str,
-        overrides: &DialogueOverrides,
-        base: Option<&CharacterMetadata>,
-        initial_locale: UiLocale,
-    ) {
-        if self.dialogue_active.as_ref() != Some(&target) {
-            self.dialogue_saved_pending = false;
-            self.capture_dialogue();
-            if self.dialogue_active.is_none() {
-                self.dialogue_edit_locale = initial_locale;
-            }
-            self.dialogue_active = Some(target);
-            self.dialogue_edit_slot = DialogueSlot::Idle;
-            self.dialogue_overrides = overrides.clone();
-            self.dialogue_base = base.cloned();
-            self.load_dialogue();
-        } else {
-            self.dialogue_overrides = overrides.clone();
-            self.dialogue_base = base.cloned();
-            let baseline = self.committed_dialogue();
-            if self.dialogue_saved_pending {
-                self.dialogue_text.replace_dialogue(&baseline);
-                self.dialogue_saved_pending = false;
-            }
-            let mut feedback = self.dialogue_text.ivars().borrow_mut();
-            if let Some(feedback) = feedback.as_mut() {
-                feedback.has_override = !baseline.is_empty();
-                feedback.baseline = baseline;
-            }
-            drop(feedback);
-            self.dialogue_text.update_feedback();
-            self.update_dialogue_reference();
-        }
-        self.dialogue_name.setStringValue(&NSString::from_str(name));
-        set_accessibility_label(&*self.dialogue_name, name);
-        self.dialogue_reset_character.setEnabled(true);
-    }
-
-    pub(crate) fn select_dialogue_locale(&mut self, locale: UiLocale) {
-        if self.dialogue_edit_locale != locale {
-            self.capture_dialogue();
-            self.dialogue_edit_locale = locale;
-            self.load_dialogue();
-        }
-    }
-
-    pub(crate) fn select_dialogue_slot(&mut self, slot: DialogueSlot) {
-        if self.dialogue_edit_slot != slot {
-            self.capture_dialogue();
-            self.dialogue_edit_slot = slot;
-            self.load_dialogue();
-        }
-    }
-
-    pub(crate) fn dialogue_edit(
-        &mut self,
-    ) -> Option<(DialogueTarget, UiLocale, DialogueSlot, String)> {
-        self.capture_dialogue();
-        Some((
-            self.dialogue_active.clone()?,
-            self.dialogue_edit_locale,
-            self.dialogue_edit_slot,
-            self.dialogue_text.string().to_string(),
-        ))
-    }
-
-    pub(crate) fn dialogue_target(&self) -> Option<DialogueTarget> {
-        self.dialogue_active.clone()
-    }
-
-    pub(crate) fn dialogue_saved(
-        &mut self,
-        target: &DialogueTarget,
-        locale: UiLocale,
-        slot: DialogueSlot,
-    ) {
-        self.dialogue_drafts
-            .remove(&(target.clone(), locale.tag().to_owned(), slot));
-        if self.dialogue_active.as_ref() == Some(target)
-            && self.dialogue_edit_locale == locale
-            && self.dialogue_edit_slot == slot
-        {
-            let value = self.dialogue_text.string().to_string();
-            self.dialogue_saved_pending = true;
-            let mut feedback = self.dialogue_text.ivars().borrow_mut();
-            if let Some(feedback) = feedback.as_mut() {
-                feedback.baseline = normalized_dialogue(&value).to_owned();
-                feedback.has_override = !feedback.baseline.is_empty();
-                feedback.storage_error = None;
-            }
-            drop(feedback);
-            self.dialogue_text.update_feedback();
-        }
-    }
-
-    pub(crate) fn dialogue_reset(&mut self, target: &DialogueTarget) {
-        self.dialogue_saved_pending = false;
-        self.dialogue_drafts.retain(|(key, _, _), _| key != target);
-        if self.dialogue_active.as_ref() == Some(target) {
-            self.dialogue_text.replace_dialogue("");
-            if let Some(feedback) = self.dialogue_text.ivars().borrow_mut().as_mut() {
-                feedback.baseline.clear();
-                feedback.has_override = false;
-                feedback.storage_error = None;
-            }
-            self.dialogue_text.update_feedback();
-        }
-    }
-
-    pub(crate) fn set_dialogue_error(&mut self, detail: Option<&str>) {
-        if let Some(feedback) = self.dialogue_text.ivars().borrow_mut().as_mut() {
-            feedback.storage_error = detail.map(str::to_owned);
-        }
-        self.dialogue_text.update_feedback();
-    }
-
-    fn committed_dialogue(&self) -> String {
-        self.dialogue_active
-            .as_ref()
-            .and_then(|target| {
-                self.dialogue_overrides.entry(
-                    target,
-                    self.dialogue_edit_locale.tag(),
-                    self.dialogue_edit_slot,
-                )
-            })
-            .unwrap_or("")
-            .to_owned()
-    }
-
-    fn capture_dialogue(&mut self) {
-        let Some(target) = self.dialogue_active.as_ref() else {
-            return;
-        };
-        let key = (
-            target.clone(),
-            self.dialogue_edit_locale.tag().to_owned(),
-            self.dialogue_edit_slot,
-        );
-        let value = self.dialogue_text.string().to_string();
-        if normalized_dialogue(&value) == normalized_dialogue(&self.committed_dialogue()) {
-            self.dialogue_drafts.remove(&key);
-        } else {
-            self.dialogue_drafts.insert(key, value);
-        }
-    }
-
-    fn load_dialogue(&mut self) {
-        let baseline = self.committed_dialogue();
-        let value = self
-            .dialogue_active
-            .as_ref()
-            .and_then(|target| {
-                self.dialogue_drafts.get(&(
-                    target.clone(),
-                    self.dialogue_edit_locale.tag().to_owned(),
-                    self.dialogue_edit_slot,
-                ))
-            })
-            .unwrap_or(&baseline);
-        self.dialogue_text.replace_dialogue(value);
-        if let Some(feedback) = self.dialogue_text.ivars().borrow_mut().as_mut() {
-            feedback.has_override = !baseline.is_empty();
-            feedback.baseline = baseline;
-            feedback.storage_error = None;
-        }
-        self.dialogue_language
-            .selectItemWithTag(if self.dialogue_edit_locale == UiLocale::Ko {
-                0
-            } else {
-                1
-            });
-        if let Some(index) = DialogueSlot::ALL
-            .iter()
-            .position(|slot| *slot == self.dialogue_edit_slot)
-        {
-            self.dialogue_slot.selectItemWithTag(index as isize);
-        }
-        self.dialogue_text.update_feedback();
-        self.update_dialogue_reference();
-    }
-
-    fn update_dialogue_reference(&self) {
-        let locale = self.dialogue_edit_locale;
-        let slot = self.dialogue_edit_slot;
-        let original = self.dialogue_base.as_ref().and_then(|base| {
-            if slot.is_reaction() {
-                base.dialogue_text("", Some(slot.key()), locale.tag())
-            } else {
-                base.dialogue_text(slot.key(), None, locale.tag())
-            }
-        });
-        let reference = original
-            .or_else(|| match slot {
-                DialogueSlot::HeadTap => Some(default_dialogue(locale, DefaultDialogue::HeadTap)),
-                DialogueSlot::BodyTap => Some(default_dialogue(locale, DefaultDialogue::BodyTap)),
-                DialogueSlot::Pet => Some(default_dialogue(locale, DefaultDialogue::Pet)),
-                DialogueSlot::Completion => {
-                    Some(default_dialogue(locale, DefaultDialogue::Completion))
-                }
-                _ => None,
-            })
-            .unwrap_or(text(self.locale, Message::DialogueStatusReference));
-        self.dialogue_original
-            .setStringValue(&NSString::from_str(reference));
-        set_accessibility_label(&*self.dialogue_original, reference);
-        set_tooltip(&*self.dialogue_original, reference);
-    }
-
     pub(crate) fn set_locale(&mut self, locale: UiLocale) {
         self.panel
             .setTitle(&NSString::from_str(text(locale, Message::MenuPanelTitle)));
@@ -1843,11 +1313,29 @@ impl MenuPanel {
                 locale,
                 Message::MenuCharacterVisible,
             )));
-        self.character_manage_label
+        self.character_editing_open
             .setTitle(&NSString::from_str(text(
                 locale,
-                Message::MenuManageCharacter,
+                Message::CharacterEditingOpen,
             )));
+        set_accessibility_label(
+            &self.character_editing_open,
+            text(locale, Message::CharacterEditingOpen),
+        );
+        set_tooltip(
+            &self.character_editing_open,
+            text(locale, Message::CharacterEditingOpen),
+        );
+        let symbol_name = NSString::from_str("bubble.left.and.text.bubble.right");
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &symbol_name,
+            Some(&NSString::from_str(text(
+                locale,
+                Message::CharacterEditingOpen,
+            ))),
+        ) {
+            self.character_editing_open.setImage(Some(&image));
+        }
         self.bubble_visible_label
             .setStringValue(&NSString::from_str(text(
                 locale,
@@ -1974,48 +1462,6 @@ impl MenuPanel {
                 Message::FollowSystemSettings,
             ))));
         self.locale = locale;
-        for (field, message) in [
-            (&self.dialogue_title, Message::DialogueEditor),
-            (&self.dialogue_language_label, Message::DialogueLanguage),
-            (&self.dialogue_slot_label, Message::DialogueSlot),
-            (&self.dialogue_original_label, Message::DialogueOriginal),
-            (&self.dialogue_input_label, Message::DialogueText),
-        ] {
-            field.setStringValue(&NSString::from_str(text(locale, message)));
-            set_accessibility_label(field, text(locale, message));
-        }
-        localize_popup_items(
-            &self.dialogue_language,
-            locale,
-            &[(Message::KoreanLanguage, 0), (Message::EnglishLanguage, 1)],
-        );
-        localize_popup_items(
-            &self.dialogue_slot,
-            locale,
-            &dialogue_slot_messages().map(|(message, index)| (message, index as isize)),
-        );
-        set_accessibility_label(
-            &self.dialogue_language,
-            text(locale, Message::DialogueLanguage),
-        );
-        set_accessibility_label(&self.dialogue_slot, text(locale, Message::DialogueSlot));
-        set_accessibility_label(&*self.dialogue_text, text(locale, Message::DialogueText));
-        for (button, message) in [
-            (&self.dialogue_save, Message::DialogueSave),
-            (&self.dialogue_reset_entry, Message::DialogueResetEntry),
-            (
-                &self.dialogue_reset_character,
-                Message::DialogueResetCharacter,
-            ),
-        ] {
-            button.setTitle(&NSString::from_str(text(locale, message)));
-            set_accessibility_label(button, text(locale, message));
-        }
-        if let Some(feedback) = self.dialogue_text.ivars().borrow_mut().as_mut() {
-            feedback.locale = locale;
-        }
-        self.dialogue_text.update_feedback();
-        self.update_dialogue_reference();
         self.observation_catalog = None;
         self.observation_title
             .setStringValue(&NSString::from_str(text(locale, Message::ObservationTitle)));
@@ -2242,9 +1688,8 @@ impl MenuPanel {
         let scroll_width = scroll_frame.size.width.max(1.0);
         let scroll_height = scroll_frame.size.height.max(1.0);
 
-        let char_view_height = DIALOGUE_CHOOSER_HEIGHT;
-        let char_content_height =
-            (58.0 + DIALOGUE_CARD_HEIGHT + 10.0 + char_view_height + 12.0).max(scroll_height);
+        let char_view_height = (scroll_height - 106.0).max(250.0);
+        let char_content_height = (106.0 + char_view_height).max(scroll_height);
 
         let content_height = match self.selected_tab {
             0 => char_content_height,
@@ -2314,64 +1759,12 @@ impl MenuPanel {
             NSPoint::new(card_width - 58.0, 8.0),
             NSSize::new(46.0, 30.0),
         ));
-        self.character_manage_label.setHidden(true);
-        self.character_manage_label
-            .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-        self.dialogue_card.setFrame(NSRect::new(
+        self.character_editing_open.setFrame(NSRect::new(
             NSPoint::new(8.0, 58.0),
-            NSSize::new(card_width, DIALOGUE_CARD_HEIGHT),
-        ));
-        let field_width = (card_width - 28.0).max(1.0);
-        for (field, y, height) in [
-            (&self.dialogue_title, 9.0, 19.0),
-            (&self.dialogue_name, 29.0, 17.0),
-            (&self.dialogue_language_label, 51.0, 16.0),
-            (&self.dialogue_slot_label, 100.0, 16.0),
-            (&self.dialogue_original_label, 149.0, 16.0),
-            (&self.dialogue_original, 167.0, 38.0),
-            (&self.dialogue_input_label, 209.0, 16.0),
-            (&self.dialogue_count, 296.0, 16.0),
-            (&self.dialogue_error, 315.0, 32.0),
-        ] {
-            field.setFrame(NSRect::new(
-                NSPoint::new(14.0, y),
-                NSSize::new(field_width, height),
-            ));
-        }
-        self.dialogue_language.setFrame(NSRect::new(
-            NSPoint::new(14.0, 69.0),
-            NSSize::new(field_width, 26.0),
-        ));
-        self.dialogue_slot.setFrame(NSRect::new(
-            NSPoint::new(14.0, 118.0),
-            NSSize::new(field_width, 26.0),
-        ));
-        self.dialogue_scroll.setFrame(NSRect::new(
-            NSPoint::new(14.0, 228.0),
-            NSSize::new(field_width, 66.0),
-        ));
-        self.dialogue_text.setMinSize(NSSize::new(0.0, 66.0));
-        self.dialogue_text
-            .setMaxSize(NSSize::new(field_width, 10_000_000.0));
-        self.dialogue_text.setFrameSize(NSSize::new(
-            field_width,
-            self.dialogue_text.frame().size.height.max(66.0),
-        ));
-        let half = ((field_width - 8.0) / 2.0).max(1.0);
-        self.dialogue_save.setFrame(NSRect::new(
-            NSPoint::new(14.0, 353.0),
-            NSSize::new(half, 26.0),
-        ));
-        self.dialogue_reset_entry.setFrame(NSRect::new(
-            NSPoint::new(22.0 + half, 353.0),
-            NSSize::new(half, 26.0),
-        ));
-        self.dialogue_reset_character.setFrame(NSRect::new(
-            NSPoint::new(14.0, 383.0),
-            NSSize::new(field_width, 26.0),
+            NSSize::new(card_width, 36.0),
         ));
         self.character_view.setFrame(NSRect::new(
-            NSPoint::new(0.0, 58.0 + DIALOGUE_CARD_HEIGHT + 10.0),
+            NSPoint::new(0.0, 106.0),
             NSSize::new(clip_width, char_view_height),
         ));
     }
@@ -2657,19 +2050,6 @@ impl MenuPanel {
     }
 }
 
-fn dialogue_slot_messages() -> [(Message, usize); 8] {
-    [
-        (Message::DialogueIdle, 0),
-        (Message::DialogueRunning, 1),
-        (Message::DialogueWaiting, 2),
-        (Message::DialogueUnknown, 3),
-        (Message::DialogueHeadTap, 4),
-        (Message::DialogueBodyTap, 5),
-        (Message::DialoguePet, 6),
-        (Message::DialogueCompletion, 7),
-    ]
-}
-
 fn configure_panel(panel: &NSPanel) {
     // SAFETY: the panel is not owned by a window controller and therefore
     // must not release itself when closed.
@@ -2816,26 +2196,6 @@ fn localize_popup_items(popup: &NSPopUpButton, locale: UiLocale, items: &[(Messa
             .setTitle(&NSString::from_str(text(locale, message)));
     }
 }
-fn make_section_button(
-    title: &str,
-    target: &MenuTarget,
-    action: objc2::runtime::Sel,
-    mtm: MainThreadMarker,
-) -> Retained<NSButton> {
-    let button = unsafe {
-        NSButton::buttonWithTitle_target_action(&NSString::from_str(title), None, None, mtm)
-    };
-    button.setButtonType(NSButtonType::MomentaryPushIn);
-    button.setBordered(false);
-    button.setEnabled(true);
-    button.setRefusesFirstResponder(false);
-    button.setFont(Some(&NSFont::boldSystemFontOfSize(11.5)));
-    button.setContentTintColor(Some(&secondary()));
-    bind_control(&button, target, action);
-    set_accessibility_label(&*button, title);
-    button
-}
-
 fn make_action_button(
     title: &str,
     target: &MenuTarget,

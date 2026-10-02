@@ -71,20 +71,25 @@ Controls
   out.
 
 Custom dialogue
-- Open Settings -> Characters -> Dialogue, for the actually active character.
-- Choose Korean/English and idle/running/waiting/unknown/head tap/body tap/pet/
-  observed task completion. Original pack dialogue is shown separately.
-- Save dialogue accepts multiple lines, up to 2048 UTF-8 bytes per entry, and
-  refreshes applicable bubble text immediately after a successful save.
-- Reset this entry or save blank/whitespace-only text to remove that override.
-  Reset all character dialogue requires confirmation and removes both languages
-  for the current character. Missing entries keep existing dialogue fallbacks.
-- Character/language/event drafts survive panel hiding and selection changes
-  during the app session; only saved text survives restart. Save failures retain
-  the draft and previously committed dialogue. Undo history is local to the
-  current editing context and clears on context switch without discarding drafts.
+- Open the separate resizable Dialogue window from the Characters tab; choose
+  inactive characters and historical revisions without renderer activation.
+  Select Korean/English and one of eight sidebar events: idle/running/waiting/
+  unknown/head tap/body tap/pet/observed task completion. Unsaved event badges
+  identify drafts; without an override, the original pre-fills the editable
+  field and is also available as a collapsible reference.
+- Save one language/event entry with Save dialogue or Command+S, multiline and
+  at most 2048 UTF-8 bytes. Blank/whitespace-only text removes that override.
+  Successful saves refresh applicable bubbles for the active character ID, even
+  when editing its historical revision; inactive edits do not activate the renderer.
+- Reset this entry confirms loss of a dirty draft. Reset all character dialogue
+  always confirms removal of that character's Korean and English overrides.
+  Missing entries keep existing dialogue fallbacks.
+- Character/language/event drafts survive context changes and closing/reopening
+  the editor during this app session; only saved entries survive restart.
+  Command+Z/Shift+Command+Z undo/redo within the current editing context.
+  Failed saves retain the draft and committed dialogue.
 - preferences.json stores personal dialogue separately from pack files, keyed
-  by character ID across revision changes. External --assets paths use a
+  by character ID and shared across revisions. External --assets paths use a
   separate canonical-path namespace, isolated from the bundled character.
   The active external character remains editable under its activation-time
   canonical identity if its source folder is renamed while running; restarting
@@ -177,11 +182,27 @@ Use the Characters menu, or the native executable:
   dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack remove ID
   dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet pack status OPID
 
+In the Characters tab, row/revision choices stage a candidate until explicit
+Apply. Cancel selection clears an unsubmitted candidate; closing/reopening the
+panel preserves it. Pending pack mutations block selection, Apply, Cancel,
+Import, Update, Remove, and Restore; read-only inspection/diagnostics stay usable.
+Picker/confirmation returns recheck busy work and the original listing generation.
+Canceled/failed operations retain the candidate; unknown submitted results retain
+their full operation ID in the footer tooltip and diagnostics for pack status.
+Rejected submissions are distinct from unknown submitted operations. The latest
+UI result survives Apply completion and fresh staging; inactive non-rendering
+mutations show completed, not pending renderer apply. Live/committed selection
+mismatches are separate warnings. Native CLI pack select/restore remain immediate
+without UI Apply, and CLI queue/idempotency behavior is unchanged.
+
 Import accepts a character directory or .herdrchar archive and does not select it.
 Select uses the newest revision; restore selects an existing historic revision.
 Removing an active pack returns to Rubelia. The built-in default@0 cannot
 be imported, updated or removed. Preserve operation IDs: if an outcome is
 uncertain, query pack status instead of blindly repeating the mutation.
+If both registry files are corrupt, builtin original dialogue remains readable
+at the current listing generation without activation or registry repair;
+unavailable managed revisions remain unavailable.
 
 Character authoring
 - CLI: Contents/Resources/creator/character-pack.py in the packaged app,

@@ -1,4 +1,5 @@
-use crate::character_types::{CharacterRef, PackListing, PackOperation, PackRecord};
+use crate::character_selection::{CharacterSelection, OperationStatus};
+use crate::character_types::{CharacterRef, PackListing, PackRecord};
 use crate::i18n::{self, Message, UiLocale};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -7,7 +8,7 @@ use objc2::{
     Message as _,
 };
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezierPath, NSBezelStyle, NSButton, NSControlSize, NSFont,
+    NSAutoresizingMaskOptions, NSBezelStyle, NSBezierPath, NSButton, NSControlSize, NSFont,
     NSImage, NSImageScaling, NSImageView, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
     NSScrollElasticity, NSScrollView, NSScrollerStyle, NSTextAlignment, NSTextField, NSView,
 };
@@ -19,6 +20,7 @@ use crate::ui::MenuTarget;
 
 const ROOT_WIDTH: f64 = 328.0;
 const ROOT_HEIGHT: f64 = 260.0;
+const FOOTER_HEIGHT: f64 = 116.0;
 const PADDING: f64 = 10.0;
 const CARD_GAP: f64 = 8.0;
 const CARD_RADIUS: f64 = 10.0;
@@ -62,10 +64,7 @@ const ROW_HOVER_BLUE: f64 = 0.22;
 fn resolve_builtin_thumbnail_path() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(contents) = exe.parent().and_then(Path::parent) {
-            if contents
-                .file_name()
-                .is_some_and(|name| name == "Contents")
-            {
+            if contents.file_name().is_some_and(|name| name == "Contents") {
                 let bundle_path = contents.join("Resources/default-thumbnail.png");
                 if bundle_path.is_file() {
                     return Some(bundle_path);
@@ -73,8 +72,7 @@ fn resolve_builtin_thumbnail_path() -> Option<PathBuf> {
             }
         }
     }
-    let dev_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/rubelia-thumbnail.png");
+    let dev_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/rubelia-thumbnail.png");
     if dev_path.is_file() {
         return Some(dev_path);
     }
@@ -192,6 +190,46 @@ define_class!(
 );
 
 impl CharacterCardView {
+    fn new(frame: NSRect, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        view.setAutoresizesSubviews(false);
+        view
+    }
+}
+
+define_class!(
+    #[unsafe(super = NSView)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OMPetCharacterFooterView"]
+    struct CharacterFooterView;
+
+    unsafe impl NSObjectProtocol for CharacterFooterView {}
+
+    impl CharacterFooterView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty_rect: NSRect) {
+            let bounds = self.bounds();
+            card_color().setFill();
+            NSBezierPath::fillRect(bounds);
+
+            let border = card_border_color();
+            border.setStroke();
+            let sep_path = NSBezierPath::bezierPath();
+            sep_path.moveToPoint(NSPoint::new(0.0, 0.5));
+            sep_path.lineToPoint(NSPoint::new(bounds.size.width, 0.5));
+            sep_path.setLineWidth(1.0);
+            sep_path.stroke();
+        }
+    }
+);
+
+impl CharacterFooterView {
     fn new(frame: NSRect, mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(());
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -339,15 +377,16 @@ impl CharacterThumbView {
     }
 }
 
-
 pub(crate) struct CharacterMenu {
     root: Retained<NSView>,
     scroll: Retained<NSScrollView>,
+    footer: Retained<CharacterFooterView>,
     document: Retained<CharacterMenuDocument>,
     target: Retained<MenuTarget>,
     locale: UiLocale,
     listing: Option<PackListing>,
-    operation: Option<PackOperation>,
+    busy: bool,
+    selection: CharacterSelection,
     last_layout_width: Option<f64>,
     last_layout_height: Option<f64>,
     builtin_image: Option<Retained<NSImage>>,
@@ -368,12 +407,12 @@ impl CharacterMenu {
         document.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         document.setAutoresizesSubviews(false);
 
-        let scroll: Retained<NSScrollView> = unsafe {
-            msg_send![
-                NSScrollView::alloc(mtm),
-                initWithFrame: frame
-            ]
-        };
+        let scroll_frame = NSRect::new(
+            NSPoint::new(0.0, FOOTER_HEIGHT),
+            NSSize::new(ROOT_WIDTH, (ROOT_HEIGHT - FOOTER_HEIGHT).max(1.0)),
+        );
+        let scroll: Retained<NSScrollView> =
+            unsafe { msg_send![NSScrollView::alloc(mtm), initWithFrame: scroll_frame] };
         scroll.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -394,16 +433,26 @@ impl CharacterMenu {
         }
         scroll.contentView().setAutoresizesSubviews(true);
         root.addSubview(&scroll);
+        let footer = CharacterFooterView::new(
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(ROOT_WIDTH, FOOTER_HEIGHT),
+            ),
+            mtm,
+        );
+        root.addSubview(&footer);
 
         let builtin_image = load_builtin_thumbnail();
         let mut menu = Self {
             root,
             scroll,
+            footer,
             document,
             target: target.retain(),
             locale,
             listing: None,
-            operation: None,
+            busy: false,
+            selection: CharacterSelection::new(),
             last_layout_width: None,
             last_layout_height: None,
             builtin_image,
@@ -420,7 +469,13 @@ impl CharacterMenu {
     pub(crate) fn set_frame(&mut self, frame: NSRect) {
         let scroll_origin = self.scroll.contentView().bounds().origin;
         self.root.setFrame(frame);
-        self.scroll.setFrame(self.root.bounds());
+        self.scroll.setFrame(NSRect::new(
+            NSPoint::new(0.0, FOOTER_HEIGHT),
+            NSSize::new(
+                frame.size.width,
+                (frame.size.height - FOOTER_HEIGHT).max(1.0),
+            ),
+        ));
         let root_width = self.root.bounds().size.width.max(1.0);
         let mut document_frame = self.document.frame();
         document_frame.size.width = root_width;
@@ -428,8 +483,21 @@ impl CharacterMenu {
         self.scroll.layoutSubtreeIfNeeded();
         self.scroll.tile();
         self.scroll.layoutSubtreeIfNeeded();
-        let clip_width = self.scroll.contentView().bounds().size.width.min(root_width).max(1.0);
-        let width = self.scroll.documentVisibleRect().size.width.min(clip_width).max(1.0);
+        let clip_width = self
+            .scroll
+            .contentView()
+            .bounds()
+            .size
+            .width
+            .min(root_width)
+            .max(1.0);
+        let width = self
+            .scroll
+            .documentVisibleRect()
+            .size
+            .width
+            .min(clip_width)
+            .max(1.0);
         document_frame.size.width = width;
         self.document.setFrame(document_frame);
         self.scroll.layoutSubtreeIfNeeded();
@@ -442,8 +510,7 @@ impl CharacterMenu {
         self.scroll.reflectScrolledClipView(&clip_view);
 
         if let Some(listing) = self.listing.clone() {
-            let operation = self.operation.clone();
-            self.rebuild(&listing, operation.as_ref());
+            self.rebuild(&listing);
         }
     }
 
@@ -453,20 +520,21 @@ impl CharacterMenu {
         }
         self.locale = locale;
         if let Some(listing) = self.listing.clone() {
-            let operation = self.operation.clone();
-            self.rebuild(&listing, operation.as_ref());
+            self.rebuild(&listing);
         }
     }
 
     pub(crate) fn refresh(
         &mut self,
         listing: &PackListing,
-        operation: Option<&PackOperation>,
+        selection: &CharacterSelection,
+        busy: bool,
         _target: &MenuTarget,
         _mtm: MainThreadMarker,
     ) {
-        let same_content =
-            self.listing.as_ref() == Some(listing) && self.operation.as_ref() == operation;
+        let same_content = self.listing.as_ref() == Some(listing)
+            && &self.selection == selection
+            && self.busy == busy;
         let root_bounds = self.root.bounds();
         let root_width = root_bounds.size.width.max(1.0);
         let root_height = root_bounds.size.height.max(1.0);
@@ -480,30 +548,49 @@ impl CharacterMenu {
             return;
         }
         self.listing = Some(listing.clone());
-        self.operation = operation.cloned();
-        let operation = self.operation.clone();
-        self.rebuild(listing, operation.as_ref());
+        self.selection = selection.clone();
+        self.busy = busy;
+        self.rebuild(listing);
     }
 
-    fn rebuild(&mut self, listing: &PackListing, operation: Option<&PackOperation>) {
+    fn rebuild(&mut self, listing: &PackListing) {
         let saved_origin = self.scroll.contentView().bounds().origin;
+        let footer_children = self.footer.subviews();
+        for index in (0..footer_children.count()).rev() {
+            footer_children.objectAtIndex(index).removeFromSuperview();
+        }
         self.remove_document_subviews();
 
         let root_bounds = self.root.bounds();
-        self.scroll.setFrame(root_bounds);
         let root_width = root_bounds.size.width.max(1.0);
         let root_height = root_bounds.size.height.max(1.0);
+        self.scroll.setFrame(NSRect::new(
+            NSPoint::new(0.0, FOOTER_HEIGHT),
+            NSSize::new(root_width, (root_height - FOOTER_HEIGHT).max(1.0)),
+        ));
+        self.footer.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(root_width, FOOTER_HEIGHT),
+        ));
 
-        let error_message = listing
-            .error
-            .as_deref()
-            .or_else(|| operation.and_then(|op| op.error.as_deref()));
+        let operation_visible = self.selection.operation_visible_for_candidate();
+        let operation_error = if operation_visible {
+            self.selection.operation_error().or_else(|| {
+                self.selection
+                    .operation()
+                    .and_then(|op| op.error.as_deref())
+            })
+        } else {
+            None
+        };
+        let error_message = listing.error.as_deref().or(operation_error);
         let has_error = error_message.is_some();
 
-        let is_mismatched = !has_error
-            && listing.active.as_ref().map_or(false, |active| {
-                active.id != listing.selected.id || active.revision != listing.selected.revision
-            });
+        let is_mismatched = listing.override_active
+            || listing
+                .active
+                .as_ref()
+                .map_or(true, |active| active != &listing.selected);
 
         let banner_count = if has_error || is_mismatched { 1 } else { 0 };
         let banner_total_height = if banner_count > 0 {
@@ -529,7 +616,7 @@ impl CharacterMenu {
             + CARD_GAP
             + BUTTON_HEIGHT
             + PADDING)
-            .max(root_height);
+            .max((root_height - FOOTER_HEIGHT).max(1.0));
 
         self.document.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
@@ -539,8 +626,21 @@ impl CharacterMenu {
         self.scroll.tile();
         self.scroll.layoutSubtreeIfNeeded();
 
-        let clip_width = self.scroll.contentView().bounds().size.width.min(root_width).max(1.0);
-        let visible_width = self.scroll.documentVisibleRect().size.width.min(clip_width).max(1.0);
+        let clip_width = self
+            .scroll
+            .contentView()
+            .bounds()
+            .size
+            .width
+            .min(root_width)
+            .max(1.0);
+        let visible_width = self
+            .scroll
+            .documentVisibleRect()
+            .size
+            .width
+            .min(clip_width)
+            .max(1.0);
         let is_legacy = visible_width < root_width - 1.0;
         let scroller_allowance = if is_legacy { 0.0 } else { 14.0 };
         let outer_inset = 6.0_f64.min(visible_width * 0.5);
@@ -552,7 +652,10 @@ impl CharacterMenu {
 
         // 1. Hero Card: Current Character Summary & Diagnostics Entry
         let hero = CharacterCardView::new(
-            NSRect::new(NSPoint::new(outer_inset, y), NSSize::new(content_width, HERO_HEIGHT)),
+            NSRect::new(
+                NSPoint::new(outer_inset, y),
+                NSSize::new(content_width, HERO_HEIGHT),
+            ),
             self.mtm,
         );
         self.document.addSubview(&hero);
@@ -569,7 +672,10 @@ impl CharacterMenu {
         let avatar_y = (HERO_HEIGHT - avatar_size) * 0.5;
         let avatar_box = thumbnail_box(
             active_image,
-            NSRect::new(NSPoint::new(avatar_x, avatar_y), NSSize::new(avatar_size, avatar_size)),
+            NSRect::new(
+                NSPoint::new(avatar_x, avatar_y),
+                NSSize::new(avatar_size, avatar_size),
+            ),
             self.mtm,
         );
         hero.addSubview(&avatar_box);
@@ -579,15 +685,24 @@ impl CharacterMenu {
         let diag_btn_size = 24.0;
         let text_width = (content_width - inner_inset - text_x - diag_btn_size - 6.0).max(1.0);
 
+        let live_name = if let Some(active) = listing.active.as_ref() {
+            format!(
+                "{} · {}",
+                active_name,
+                i18n::revision_label(self.locale, active.revision)
+            )
+        } else {
+            active_name
+        };
         let name_label = add_label(
             &hero,
-            &bounded(&active_name, 60),
+            &bounded(&live_name, 60),
             NSRect::new(NSPoint::new(text_x, 8.0), NSSize::new(text_width, 18.0)),
             LabelStyle::PrimaryBold,
             1,
             self.mtm,
         );
-        set_accessibility_label(&name_label, &active_name);
+        set_accessibility_label(&name_label, &live_name);
 
         let status_badge_text = if listing.active.is_none() {
             i18n::operation_pending(self.locale).to_owned()
@@ -668,7 +783,17 @@ impl CharacterMenu {
             );
             self.document.addSubview(&banner);
 
-            let warn_text = format!("⚠ {}", i18n::text(self.locale, Message::SelectedMismatchWarning));
+            let warn_text = format!(
+                "⚠ {}",
+                i18n::text(
+                    self.locale,
+                    if listing.override_active {
+                        Message::OverrideActiveWarning
+                    } else {
+                        Message::SelectedMismatchWarning
+                    }
+                )
+            );
             add_label(
                 &banner,
                 &warn_text,
@@ -709,7 +834,7 @@ impl CharacterMenu {
         let mut row_y = list_card_padding + list_card_header_height;
 
         // Built-in character
-        let is_default_selected = listing.selected == CharacterRef::builtin();
+        let live_default = listing.active.as_ref() == Some(&CharacterRef::builtin());
         self.render_character_row(
             &list_card,
             "default",
@@ -719,7 +844,19 @@ impl CharacterMenu {
                 .as_ref()
                 .map(|img| img.retain())
                 .or_else(|| symbol_image("sparkles")),
-            is_default_selected,
+            live_default,
+            self.selection
+                .candidate()
+                .is_some_and(|candidate| candidate.reference.id == "default"),
+            listing
+                .active
+                .as_ref()
+                .filter(|reference| reference.id == "default")
+                .map(|reference| reference.revision),
+            self.selection
+                .candidate()
+                .filter(|candidate| candidate.reference.id == "default")
+                .map(|candidate| candidate.reference.revision),
             None,
             row_y,
             inner_inset,
@@ -730,7 +867,10 @@ impl CharacterMenu {
 
         // Managed Packs
         for pack in &listing.packs {
-            let is_pack_selected = listing.selected.id == pack.id;
+            let is_pack_live = listing
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id == pack.id);
             let pack_thumb = symbol_image("cube.box.fill");
             self.render_character_row(
                 &list_card,
@@ -738,7 +878,19 @@ impl CharacterMenu {
                 &pack.name,
                 i18n::text(self.locale, Message::ManagedTag),
                 pack_thumb,
-                is_pack_selected,
+                is_pack_live,
+                self.selection
+                    .candidate()
+                    .is_some_and(|candidate| candidate.reference.id == pack.id),
+                listing
+                    .active
+                    .as_ref()
+                    .filter(|reference| reference.id == pack.id)
+                    .map(|reference| reference.revision),
+                self.selection
+                    .candidate()
+                    .filter(|candidate| candidate.reference.id == pack.id)
+                    .map(|candidate| candidate.reference.revision),
                 Some(pack),
                 row_y,
                 inner_inset,
@@ -763,6 +915,7 @@ impl CharacterMenu {
             true,
         );
         self.document.addSubview(&import);
+        import.setEnabled(!self.busy);
 
         // Finalize geometry and scrolling
         self.document.setFrame(NSRect::new(
@@ -778,6 +931,7 @@ impl CharacterMenu {
         clip_view.scrollToPoint(clip_view.constrainBoundsRect(proposed_bounds).origin);
         self.scroll.reflectScrolledClipView(&clip_view);
         self.last_layout_width = Some(root_width);
+        self.render_footer(listing, root_width);
         self.last_layout_height = Some(root_height);
     }
 
@@ -797,10 +951,7 @@ impl CharacterMenu {
         } else if let Some(pack) = listing.packs.iter().find(|p| p.id == reference.id) {
             (pack.name.clone(), symbol_image("cube.box.fill"))
         } else {
-            (
-                reference.id.clone(),
-                symbol_image("person.crop.circle"),
-            )
+            (reference.id.clone(), symbol_image("person.crop.circle"))
         }
     }
 
@@ -811,7 +962,10 @@ impl CharacterMenu {
         name: &str,
         tag: &str,
         thumbnail: Option<Retained<NSImage>>,
-        selected: bool,
+        live: bool,
+        candidate: bool,
+        live_revision: Option<u64>,
+        candidate_revision: Option<u64>,
         pack_record: Option<&PackRecord>,
         row_y: f64,
         inner_inset: f64,
@@ -820,8 +974,11 @@ impl CharacterMenu {
     ) {
         let row_w = (content_width - inner_inset * 2.0).max(1.0);
         let row_box = CharacterRowView::new(
-            NSRect::new(NSPoint::new(inner_inset, row_y), NSSize::new(row_w, ROW_HEIGHT)),
-            selected,
+            NSRect::new(
+                NSPoint::new(inner_inset, row_y),
+                NSSize::new(row_w, ROW_HEIGHT),
+            ),
+            candidate,
             self.mtm,
         );
         parent.addSubview(&row_box);
@@ -832,7 +989,10 @@ impl CharacterMenu {
         let thumb_y = (ROW_HEIGHT - thumb_size) * 0.5;
         let thumb_view = thumbnail_box(
             thumbnail,
-            NSRect::new(NSPoint::new(thumb_x, thumb_y), NSSize::new(thumb_size, thumb_size)),
+            NSRect::new(
+                NSPoint::new(thumb_x, thumb_y),
+                NSSize::new(thumb_size, thumb_size),
+            ),
             self.mtm,
         );
         row_box.addSubview(&thumb_view);
@@ -840,7 +1000,7 @@ impl CharacterMenu {
         // Labels
         let has_overflow = pack_record.is_some();
         let overflow_btn_width = if has_overflow { 28.0 } else { 0.0 };
-        let checkmark_width = if selected { 20.0 } else { 0.0 };
+        let checkmark_width = if live { 20.0 } else { 0.0 };
         let text_x = thumb_x + thumb_size + 8.0;
         let text_w = (row_w - text_x - overflow_btn_width - checkmark_width - 8.0).max(1.0);
 
@@ -864,7 +1024,7 @@ impl CharacterMenu {
         );
 
         // Selection Checkmark
-        if selected {
+        if live {
             let check_x = row_w - overflow_btn_width - checkmark_width - 4.0;
             add_label(
                 &row_box,
@@ -883,7 +1043,10 @@ impl CharacterMenu {
         let select_hit_w = (row_w - overflow_btn_width).max(1.0);
         let select_btn = command_button(
             "",
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(select_hit_w, ROW_HEIGHT)),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(select_hit_w, ROW_HEIGHT),
+            ),
             sel!(packSelect:),
             &MenuCommand::Select {
                 id: id.to_owned(),
@@ -892,8 +1055,24 @@ impl CharacterMenu {
             &self.target,
             self.mtm,
         );
+        select_btn.setEnabled(!self.busy);
         select_btn.setTransparent(true);
-        set_accessibility_label(&select_btn, name);
+        let mut accessibility = name.to_owned();
+        if let Some(revision) = live_revision {
+            accessibility.push_str(&format!(
+                " · {} {}",
+                i18n::text(self.locale, Message::Active),
+                i18n::revision_label(self.locale, revision)
+            ));
+        }
+        if let Some(revision) = candidate_revision {
+            accessibility.push_str(&format!(
+                " · {} {}",
+                i18n::text(self.locale, Message::CharacterCandidate),
+                i18n::revision_label(self.locale, revision)
+            ));
+        }
+        set_accessibility_label(&select_btn, &accessibility);
         row_box.addSubview(&select_btn);
 
         // Overflow Popup Menu for managed packs
@@ -901,6 +1080,7 @@ impl CharacterMenu {
             let overflow_menu = pack_menu(
                 pack,
                 generation,
+                self.busy,
                 self.locale,
                 &self.target,
                 self.mtm,
@@ -923,6 +1103,200 @@ impl CharacterMenu {
             set_accessibility_label(&overflow, &accessibility);
             row_box.addSubview(&overflow);
         }
+    }
+
+    fn render_footer(&self, listing: &PackListing, width: f64) {
+        let inset = 12.0;
+        let available = (width - 2.0 * inset).max(1.0);
+        let candidate = self.selection.candidate();
+
+        let (header_title, header_style) = if let Some(cand) = candidate {
+            let is_cand_live = listing
+                .active
+                .as_ref()
+                .is_some_and(|act| act == &cand.reference);
+            if is_cand_live {
+                (
+                    format!(
+                        "{} · {}",
+                        i18n::text(self.locale, Message::CharacterCandidate),
+                        i18n::text(self.locale, Message::Active)
+                    ),
+                    LabelStyle::Success,
+                )
+            } else {
+                (
+                    format!("● {}", i18n::text(self.locale, Message::CharacterCandidate)),
+                    LabelStyle::Accent,
+                )
+            }
+        } else {
+            (
+                i18n::text(self.locale, Message::CharacterCandidate).to_owned(),
+                LabelStyle::Secondary,
+            )
+        };
+        add_label(
+            &self.footer,
+            &header_title,
+            NSRect::new(NSPoint::new(inset, 7.0), NSSize::new(available, 15.0)),
+            header_style,
+            1,
+            self.mtm,
+        );
+
+        let candidate_full_name = candidate.map(|candidate| {
+            let name = if candidate.reference.id == "default" {
+                i18n::text(self.locale, Message::RubeliaBuiltIn)
+            } else {
+                listing
+                    .packs
+                    .iter()
+                    .find(|pack| pack.id == candidate.reference.id)
+                    .map_or(candidate.reference.id.as_str(), |pack| pack.name.as_str())
+            };
+            format!(
+                "{} · {}",
+                name,
+                i18n::revision_label(self.locale, candidate.reference.revision)
+            )
+        });
+        let display_name = candidate_full_name.as_deref().unwrap_or("—");
+        let name_label = add_label(
+            &self.footer,
+            &bounded(display_name, 45),
+            NSRect::new(NSPoint::new(inset, 22.0), NSSize::new(available, 18.0)),
+            LabelStyle::PrimaryBold,
+            1,
+            self.mtm,
+        );
+        set_tooltip(&name_label, display_name);
+        set_accessibility_label(&name_label, display_name);
+
+        let operation_visible = self.selection.operation_visible_for_candidate();
+        let status = if operation_visible {
+            self.selection.operation_status()
+        } else {
+            None
+        };
+        let reported = if operation_visible {
+            self.selection.operation()
+        } else {
+            None
+        };
+        let (message, style) = match status {
+            Some(OperationStatus::AwaitingSubmission | OperationStatus::Accepted) => {
+                (Message::CharacterOperationQueued, LabelStyle::Accent)
+            }
+            Some(OperationStatus::Preparing) => {
+                (Message::CharacterOperationPreparing, LabelStyle::Accent)
+            }
+            Some(OperationStatus::Applying) => {
+                (Message::CharacterOperationApplying, LabelStyle::Accent)
+            }
+            Some(OperationStatus::Completed) => {
+                (Message::CharacterOperationCompleted, LabelStyle::Success)
+            }
+            Some(OperationStatus::Failed) => (Message::CharacterOperationFailed, LabelStyle::Error),
+            Some(OperationStatus::Canceled) => {
+                (Message::CharacterOperationCanceled, LabelStyle::Warning)
+            }
+            Some(OperationStatus::CommittedPendingApply) => {
+                (Message::CharacterOperationPendingApply, LabelStyle::Warning)
+            }
+            Some(
+                OperationStatus::MissingStatus
+                | OperationStatus::DurabilityUnknown
+                | OperationStatus::Unknown,
+            ) => (Message::CharacterOperationUnknown, LabelStyle::Error),
+            None if operation_visible && self.selection.operation_rejected() => {
+                (Message::CharacterOperationFailed, LabelStyle::Error)
+            }
+            None if self.selection.stale() => {
+                (Message::CharacterSelectionStale, LabelStyle::Warning)
+            }
+            None if candidate.is_some() && !self.selection.can_apply() => {
+                (Message::Active, LabelStyle::Success)
+            }
+            None if candidate.is_some() => (Message::CharacterApply, LabelStyle::Accent),
+            None => (Message::CharacterSelectionPrompt, LabelStyle::Secondary),
+        };
+        let mut status_text = i18n::text(self.locale, message).to_owned();
+        if self.selection.stale() && status.is_some() {
+            status_text.push_str(" · ");
+            status_text.push_str(i18n::text(self.locale, Message::CharacterSelectionStale));
+        }
+        let error = if operation_visible {
+            self.selection.operation_error()
+        } else {
+            None
+        }
+        .or_else(|| reported.and_then(|op| op.error.as_deref()))
+        .or(listing.error.as_deref());
+        if let Some(error) = error {
+            status_text = format!("⚠ {status_text} · {error}");
+        }
+        let status_label = add_label(
+            &self.footer,
+            &bounded(&status_text, 75),
+            NSRect::new(NSPoint::new(inset, 42.0), NSSize::new(available, 34.0)),
+            if error.is_some() {
+                LabelStyle::Error
+            } else {
+                style
+            },
+            2,
+            self.mtm,
+        );
+        let tooltip = match (
+            operation_visible
+                .then(|| self.selection.operation_id())
+                .flatten(),
+            operation_visible && self.selection.operation_rejected(),
+        ) {
+            (Some(id), true) => format!(
+                "{status_text} · {id} · {}",
+                i18n::text(self.locale, Message::CharacterOperationNotSubmitted)
+            ),
+            (Some(id), false) => format!("{status_text} · {id}"),
+            (None, _) => status_text.clone(),
+        };
+        set_tooltip(&status_label, &tooltip);
+        set_accessibility_label(&status_label, &tooltip);
+
+        let button_width = ((available - 8.0) / 2.0).max(1.0);
+        let apply = action_button(
+            i18n::text(self.locale, Message::CharacterApply),
+            NSRect::new(
+                NSPoint::new(inset, 80.0),
+                NSSize::new(button_width, BUTTON_HEIGHT),
+            ),
+            sel!(packApply:),
+            &self.target,
+            self.mtm,
+            true,
+        );
+        apply.setEnabled(self.selection.can_apply() && !self.busy);
+        set_tooltip(&apply, i18n::text(self.locale, Message::CharacterApply));
+        self.footer.addSubview(&apply);
+
+        let cancel = action_button(
+            i18n::text(self.locale, Message::CharacterCancelSelection),
+            NSRect::new(
+                NSPoint::new(inset + button_width + 8.0, 80.0),
+                NSSize::new(button_width, BUTTON_HEIGHT),
+            ),
+            sel!(packCancelSelection:),
+            &self.target,
+            self.mtm,
+            false,
+        );
+        cancel.setEnabled(candidate.is_some() && !self.busy);
+        set_tooltip(
+            &cancel,
+            i18n::text(self.locale, Message::CharacterCancelSelection),
+        );
+        self.footer.addSubview(&cancel);
     }
 
     fn remove_document_subviews(&self) {
@@ -1092,7 +1466,12 @@ fn action_button(
 ) -> Retained<NSButton> {
     let title_str = NSString::from_str(title);
     let button = unsafe {
-        NSButton::buttonWithTitle_target_action(&title_str, Some(target.as_ref()), Some(action), mtm)
+        NSButton::buttonWithTitle_target_action(
+            &title_str,
+            Some(target.as_ref()),
+            Some(action),
+            mtm,
+        )
     };
     button.setFrame(frame);
     button.setControlSize(NSControlSize::Small);
@@ -1103,6 +1482,7 @@ fn action_button(
     };
     button.setFont(Some(&font));
     button.setBezelStyle(NSBezelStyle::AccessoryBarAction);
+    button.setBordered(true);
     let color = if primary {
         accent_color()
     } else {
@@ -1158,6 +1538,7 @@ fn popup_button(
 fn pack_menu(
     pack: &crate::character_types::PackRecord,
     generation: u64,
+    busy: bool,
     locale: UiLocale,
     target: &MenuTarget,
     mtm: MainThreadMarker,
@@ -1180,6 +1561,7 @@ fn pack_menu(
         target,
         mtm,
     );
+    update.setEnabled(!busy);
     menu.addItem(&update);
 
     if !pack.revisions.is_empty() {
@@ -1198,6 +1580,7 @@ fn pack_menu(
                 target,
                 mtm,
             );
+            restore.setEnabled(!busy);
             restore_menu.addItem(&restore);
         }
         let restore_item = item(i18n::text(locale, Message::RestoreRevision), None, mtm);
@@ -1226,6 +1609,7 @@ fn pack_menu(
         target,
         mtm,
     );
+    remove.setEnabled(!busy);
     menu.addItem(&remove);
 
     menu
@@ -1291,6 +1675,13 @@ fn set_accessibility_label(view: &NSView, label: &str) {
     let label = NSString::from_str(label);
     unsafe {
         let _: () = msg_send![view, setAccessibilityLabel: Some(&*label)];
+    }
+}
+
+fn set_tooltip(view: &NSView, value: &str) {
+    let value = NSString::from_str(value);
+    unsafe {
+        let _: () = msg_send![view, setToolTip: Some(&*value)];
     }
 }
 
