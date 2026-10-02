@@ -4,7 +4,7 @@
   "owner": "hanbong5938",
   "ownershipConfirmation": "아니 그거 내가 만든거잖아 https://github.com/hanbong5938/shared-world-canon/ 여기서 따운거아냐?",
   "deploymentRequest": "1개만 기본으로 해서 배포해줘",
-  "scope": "Cropped ten-pose Rubelia as the only bundled Herdr Desktop Pet default and release deployment",
+  "scope": "Owner-approved replacement of ten complete source-derived Rubelia poses as the sole bundled default; native validation and rendered review required before builtin cutover",
   "sourceRegistry": {
     "repository": "https://github.com/hanbong5938/shared-world-canon",
     "commit": "70756fab286e83b01605c5755c2a465e8438d344",
@@ -25,7 +25,21 @@
     "nonInfringementGuarantee": false,
     "trademarkClearanceGuarantee": false
   },
-  "adaptation": "Local Qwen own-pose face/expression edits, SeeThrough decomposition, DAEMONLET/native rig assembly and upper-thigh alpha cropping; complete records are in source-record.json",
+  "adaptation": "User-approved crispanime original waiting drawing plus nine new whole-pose local Qwen-Image-2.1 drawings; pose-local ISNet/PyMatting matte, SeeThrough decomposition, own-expression Qwen edits, DAEMONLET semantic layers and native 1024 rig conversion. No old pixels or post-export alpha crop.",
   "modelLicenseRecord": "QWEN_RESEARCH_LICENSE.txt describes the Qwen model materials used during authoring; it is retained separately from source-owner artwork approval",
-  "repositoryVisibility": "Existing private release repository visibility is unchanged"
+  "repositoryVisibility": "Public GitHub source and release distribution authorized on 2026-10-02; no installed-user profile replacement requested",
+  "releaseAuthorization": {
+    "date": "2026-10-02",
+    "userStatement": "커밋 푸쉬 배포 릴리스 해봐",
+    "repository": "https://github.com/hanbong5938/herdr-desktop-pet",
+    "release": "v0.1.5",
+    "scope": "Commit, push and publicly release the approved Rubelia builtin artwork, rig and native app; retain owner/source/model notices",
+    "newModelLicenseGranted": false
+  },
+  "newIllustrationApproval": {
+    "userStatement": "좋아 이러면 기본팩 교체 목표로 해서 진행해",
+    "sha256": "27eb42899c58501f7e57e4f9281d80084368e5532eda858503bafb4c1f9f3b3d",
+    "source": "/Users/han/workspace/idea-wardrobe-reconstruction/experiments/wardrobe-reconstruction/runs/rubelia-anime-redraw-20261001/rounds/close-anime2-fresh/qwen-raw.png",
+    "role": "Approved new drawing and outfit/style authority; not an assignment of Qwen model rights"
+  }
 }

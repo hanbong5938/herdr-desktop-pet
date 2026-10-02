@@ -12,31 +12,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -45,27 +45,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -74,27 +74,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -217,31 +217,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -250,27 +250,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -279,27 +279,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -422,31 +422,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -455,27 +455,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -484,27 +484,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -627,31 +627,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -660,27 +660,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -689,27 +689,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -834,31 +834,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -867,27 +867,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -896,27 +896,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1026,7 +1026,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.403125,
+            "y": 0.40859375
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 1800,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 3600,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "body_tap": {
       "duration_ms": 3600,
@@ -1039,31 +1069,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1072,27 +1102,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1101,27 +1131,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1231,7 +1261,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.403125,
+            "y": 0.40859375
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 1800,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 3600,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "pet": {
       "duration_ms": 3600,
@@ -1244,31 +1304,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1277,27 +1337,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1306,27 +1366,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1436,7 +1496,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.403125,
+            "y": 0.40859375
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 1800,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 3600,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "completion_observed": {
       "duration_ms": 3600,
@@ -1449,31 +1539,31 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 350,
-              "value": -0.045
+              "value": -0.02925
             },
             {
               "at_ms": 1070,
-              "value": 0.23
+              "value": 0.1495
             },
             {
               "at_ms": 1650,
-              "value": 0.13
+              "value": 0.0845
             },
             {
               "at_ms": 2340,
-              "value": -0.06
+              "value": -0.039
             },
             {
               "at_ms": 3050,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1482,27 +1572,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 320,
-              "value": -0.035
+              "value": -0.02275
             },
             {
               "at_ms": 980,
-              "value": 0.12
+              "value": 0.078
             },
             {
               "at_ms": 1570,
-              "value": 0.085
+              "value": 0.05525
             },
             {
               "at_ms": 2410,
-              "value": -0.04
+              "value": -0.026
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1511,27 +1601,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 520,
-              "value": 0.035
+              "value": 0.02275
             },
             {
               "at_ms": 1270,
-              "value": -0.105
+              "value": -0.06825
             },
             {
               "at_ms": 1920,
-              "value": 0.055
+              "value": 0.03575
             },
             {
               "at_ms": 2740,
-              "value": -0.025
+              "value": -0.01625
             },
             {
               "at_ms": 3600,
-              "value": 0
+              "value": 0.0
             }
           ]
         },

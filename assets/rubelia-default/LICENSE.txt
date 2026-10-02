@@ -1,3 +1,15 @@
+Rubelia artwork — owner-authorized Herdr Desktop Pet default distribution.
+The approved 2026-10-02 drawing and nine locally authored independent poses replace
+the earlier cropped ten-pose adaptation. The original identity and owner authorization
+continue to be disclosed in owner-approval.json. The owner did not grant a Qwen model
+license: original Qwen research license terms are retained verbatim in
+QWEN_RESEARCH_LICENSE.txt. Software MIT terms do not relicense character artwork.
+This notice grants no unrelated third-party artwork rights and makes no exclusive
+copyright, non-infringement or trademark guarantee. Public Herdr Desktop Pet source
+and release distribution is owner-authorized; see owner-approval.json.
+
+Historical owner distribution notice (preserved verbatim, referring to the previous
+cropped adaptation; its cropping description does NOT apply to this new pack):
 Rubelia artwork — owner-authorized Herdr Desktop Pet distribution
 
 Rubelia is the workspace owner's character from

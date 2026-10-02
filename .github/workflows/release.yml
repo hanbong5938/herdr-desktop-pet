@@ -135,6 +135,7 @@ jobs:
 
             - The only bundled character is Rubelia (`rubelia-at12-multi-pose`), a rig with ten independent upper-thigh poses.
             - Rubelia originates from shared-world-canon and is deployed with the owner's authorization; AI/model-use provenance and license records are included in the app.
+            - The owner-approved 2026-10-02 illustration supplies the current style: approved waiting artwork plus nine newly drawn, independently layered local Qwen poses, retaining `default@0`.
             - Release bundles are ad-hoc signed, not Developer ID signed or notarized.
           files: |
             ${{ env.HERDR_PET_ASSET_NAME }}

@@ -15,7 +15,7 @@ python3 tools/character-pack.py --help
 
 In a bundled application, use
 `Contents/Resources/creator/character-pack.py`. The bundled creator uses its
-sibling `Contents/Resources/default` (the cropped ten-pose Rubelia rig template).
+sibling `Contents/Resources/default` (the bundled ten-pose Rubelia rig template).
 For PNG authoring in a packaged app, supply an external PNG template with
 `--templates-root PATH`. In a source checkout the rig creator uses
 `assets/rubelia-default`. Optional Aurora and Coding Cat templates live in the
@@ -395,7 +395,7 @@ records. Put the honest rights notice and complete license text in payloads;
 
 ### Legacy v4 Rubelia wardrobe authoring (character repository)
 
-The packaged default remains the cropped ten-pose Rubelia v5 rig in
+The bundled default is the ten-pose Rubelia v5 rig in
 `assets/rubelia-default`. It is not part of the optional character catalog.
 Optional wardrobe packs, Aurora, Coding Cat, their source layers, and their
 character-specific generators live in `herdr-characters`. See that repository's

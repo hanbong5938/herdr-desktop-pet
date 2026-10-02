@@ -12,27 +12,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -41,27 +41,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -187,7 +187,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.390234375,
+            "y": 0.359765625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 900,
+                "value": -3.2
+              },
+              {
+                "at_ms": 1800,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "running": {
       "duration_ms": 1800,
@@ -200,27 +230,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -229,27 +259,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -388,27 +418,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -417,27 +447,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -563,7 +593,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.390234375,
+            "y": 0.359765625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 900,
+                "value": -3.2
+              },
+              {
+                "at_ms": 1800,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "unknown": {
       "duration_ms": 1800,
@@ -576,27 +636,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -605,27 +665,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -766,27 +826,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 55,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 138,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 239,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 331,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 460,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -795,27 +855,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 55,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 138,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 239,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 331,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 460,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -941,7 +1001,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.390234375,
+            "y": 0.359765625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 230,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 460,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "body_tap": {
       "duration_ms": 1800,
@@ -954,27 +1044,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -983,27 +1073,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1129,7 +1219,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.390234375,
+            "y": 0.359765625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 900,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 1800,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "pet": {
       "duration_ms": 1800,
@@ -1142,27 +1262,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1171,27 +1291,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1317,7 +1437,37 @@
           ]
         }
       },
-      "layers": {}
+      "layers": {
+        "handwear_1": {
+          "origin": {
+            "x": 0.390234375,
+            "y": 0.359765625
+          },
+          "influence": {
+            "axisX": 1,
+            "axisY": 0,
+            "start": -2,
+            "end": -1
+          },
+          "translateY": {
+            "interpolation": "smoothstep",
+            "keys": [
+              {
+                "at_ms": 0,
+                "value": 0
+              },
+              {
+                "at_ms": 900,
+                "value": -9.600000000000001
+              },
+              {
+                "at_ms": 1800,
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
     },
     "completion_observed": {
       "duration_ms": 1800,
@@ -1330,27 +1480,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": -0.078
+              "value": -0.0507
             },
             {
               "at_ms": 540,
-              "value": 0.234
+              "value": 0.1521
             },
             {
               "at_ms": 936,
-              "value": -0.104
+              "value": -0.0676
             },
             {
               "at_ms": 1296,
-              "value": 0.039
+              "value": 0.02535
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
@@ -1359,27 +1509,27 @@
           "keys": [
             {
               "at_ms": 0,
-              "value": 0
+              "value": 0.0
             },
             {
               "at_ms": 216,
-              "value": 0.104
+              "value": 0.0676
             },
             {
               "at_ms": 540,
-              "value": -0.416
+              "value": -0.2704
             },
             {
               "at_ms": 936,
-              "value": 0.169
+              "value": 0.10985
             },
             {
               "at_ms": 1296,
-              "value": -0.052
+              "value": -0.0338
             },
             {
               "at_ms": 1800,
-              "value": 0
+              "value": 0.0
             }
           ]
         },
