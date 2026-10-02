@@ -221,7 +221,10 @@ impl PackService {
     }
 
     /// Replace any pending lookup with this identity (one bounded slot).
-    /// Repeated requests for a pending or cached identity are coalesced.
+    /// Repeated requests for a pending, in-flight, or successfully cached
+    /// identity are coalesced; a cached failure for the same identity is
+    /// retried. Callers request only on identity change or explicit retry, so
+    /// the worker cannot spin on a persistent error.
     pub(crate) fn request_dialogue_metadata(
         &self,
         reference: CharacterRef,
@@ -246,7 +249,7 @@ impl PackService {
             || state
                 .result
                 .as_ref()
-                .is_some_and(|(cached, _)| cached == &key)
+                .is_some_and(|(cached, result)| cached == &key && result.is_ok())
         {
             return Ok(());
         }
@@ -636,7 +639,7 @@ fn worker_loop(weak: Weak<PackService>) {
                 operation.error =
                     Some("pack worker aborted; registry commit outcome unknown".to_owned());
             });
-            lock_unpoisoned(&service.state).active_cancel = None;
+            service.clear_active_cancel();
         }
     }
 }
@@ -670,7 +673,7 @@ impl PackService {
                 operation.state = CANCELED.to_owned();
                 operation.error = Some("pack service shut down before execution".to_owned());
             });
-            lock_unpoisoned(&self.state).active_cancel = None;
+            self.clear_active_cancel();
             return;
         }
 
@@ -696,7 +699,7 @@ impl PackService {
                 }
             });
         }
-        lock_unpoisoned(&self.state).active_cancel = None;
+        self.clear_active_cancel();
     }
 
     fn execute_transaction(
@@ -903,6 +906,14 @@ impl PackService {
                 entry.operation.error = entry.operation.error.take().map(bound_diagnostic);
             }
         }
+        ui::wake();
+    }
+
+    /// Release pack-mutation admission and notify the UI. This must follow the
+    /// operation's final publication: wakes from earlier updates may observe
+    /// admission still held, and nothing else would re-render the menu.
+    fn clear_active_cancel(&self) {
+        lock_unpoisoned(&self.state).active_cancel = None;
         ui::wake();
     }
 
@@ -1188,6 +1199,77 @@ mod tests {
                 .state,
             ACCEPTED
         );
+    }
+
+    #[test]
+    fn final_ui_wake_observes_released_admission_after_canceled_execute() {
+        let service = ready_service();
+        service.submit(request("canceled")).unwrap();
+        let item = lock_unpoisoned(&service.queue).pop_front().unwrap();
+        item.cancel.store(true, Ordering::Release);
+        let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        {
+            let service = Arc::clone(&service);
+            let observed = std::rc::Rc::clone(&observed);
+            ui::WAKE_OBSERVER.with(|observer| {
+                *observer.borrow_mut() = Some(Box::new(move || {
+                    observed.borrow_mut().push(service.ui_mutation_busy());
+                }));
+            });
+        }
+        service.execute(item);
+        ui::WAKE_OBSERVER.with(|observer| observer.borrow_mut().take());
+
+        assert_eq!(service.cached_status("canceled").unwrap().state, CANCELED);
+        assert_eq!(observed.borrow().last(), Some(&false));
+        assert!(!service.ui_mutation_busy());
+    }
+
+    #[test]
+    fn failed_dialogue_metadata_is_requeued_while_success_stays_coalesced() {
+        let service = ready_service();
+        *lock_unpoisoned(&service.cache) = Some(PackListing {
+            generation: 7,
+            selected: CharacterRef::builtin(),
+            active: None,
+            override_active: false,
+            packs: Vec::new(),
+            error: None,
+        });
+        let key = MetadataKey {
+            reference: CharacterRef::builtin(),
+            generation: 7,
+        };
+        lock_unpoisoned(&service.metadata).result = Some((
+            key.clone(),
+            Err("Busy: character store is locked".to_owned()),
+        ));
+
+        service
+            .request_dialogue_metadata(CharacterRef::builtin(), 7)
+            .unwrap();
+        {
+            let state = lock_unpoisoned(&service.metadata);
+            assert_eq!(state.pending.as_ref(), Some(&key));
+            assert!(state.result.is_none());
+        }
+        assert!(service
+            .cached_dialogue_metadata(&CharacterRef::builtin(), 7)
+            .is_none());
+
+        {
+            let mut state = lock_unpoisoned(&service.metadata);
+            state.pending = None;
+            state.result = Some((key, Ok(DialogueMetadata { metadata: None })));
+        }
+        service
+            .request_dialogue_metadata(CharacterRef::builtin(), 7)
+            .unwrap();
+        assert!(lock_unpoisoned(&service.metadata).pending.is_none());
+        assert!(matches!(
+            service.cached_dialogue_metadata(&CharacterRef::builtin(), 7),
+            Some(Ok(_))
+        ));
     }
 
     #[test]

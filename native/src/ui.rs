@@ -696,7 +696,6 @@ struct Ui {
     reply_container: Retained<NSView>,
     composer_scroll: Retained<NSScrollView>,
     composer_view: Retained<ComposerView>,
-    composer_target: Retained<NSTextField>,
     composer_status: Retained<NSTextField>,
     composer_send: Retained<NSButton>,
     prompt_sender: PromptSender,
@@ -1407,6 +1406,10 @@ define_class!(
                 ui.update_dialogue_choices(&listing);
                 ui.menu_panel.hide();
                 ui.dialogue_editor.show();
+                if !ui.editor_ready && ui.editor_error.is_some() {
+                    // Reopening is an explicit retry of a failed load (e.g. store Busy).
+                    ui.editor_cached_choice = None;
+                }
                 ui.sync_dialogue_editor_content();
             });
         }
@@ -1822,7 +1825,18 @@ fn stop_application(mtm: MainThreadMarker) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WAKE_OBSERVER: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
 pub fn wake() {
+    #[cfg(test)]
+    WAKE_OBSERVER.with(|observer| {
+        if let Some(observer) = observer.borrow().as_ref() {
+            observer();
+        }
+    });
     if WAKE_PENDING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -2762,14 +2776,6 @@ impl Ui {
             )]
         };
         reply_container.addSubview(&composer_scroll);
-        let composer_target = NSTextField::labelWithString(&NSString::from_str(""), mtm);
-        composer_target.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_SECONDARY_FONT_SIZE)));
-        composer_target.setTextColor(Some(&muted));
-        composer_target.setUsesSingleLineMode(true);
-        composer_target.setMaximumNumberOfLines(1);
-        composer_target.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        set_accessibility_identifier(&composer_target, "pet-message-target");
-        composer_target.setHidden(true);
         let composer_status = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         composer_status.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_SECONDARY_FONT_SIZE)));
         composer_status.setTextColor(Some(&muted));
@@ -2845,7 +2851,6 @@ impl Ui {
             reply_container,
             composer_scroll,
             composer_view,
-            composer_target,
             composer_status,
             composer_send,
             prompt_sender,
@@ -3037,8 +3042,6 @@ impl Ui {
             .setBackgroundColor(&reply_input_color(palette));
         self.composer_view
             .setTextColor(Some(&bubble_color(palette.text, 1.0)));
-        self.composer_target
-            .setTextColor(Some(&bubble_color(palette.muted, 1.0)));
         self.composer_status
             .setTextColor(Some(&bubble_color(palette.muted, 1.0)));
         let primary = bubble_color(palette.text, 1.0);
@@ -4005,15 +4008,6 @@ impl Ui {
             self.composer_view.setString(&NSString::from_str(draft));
             self.composer_key = next_key.clone();
         }
-        let target = selected
-            .as_ref()
-            .map(|(_, title)| format!("{} {title}", text(self.locale, Message::ComposerTarget)))
-            .unwrap_or_else(|| text(self.locale, Message::ComposerSelectSession).to_owned());
-        self.composer_target
-            .setStringValue(&NSString::from_str(&target));
-        set_accessibility_label(&self.composer_target, &target);
-        self.composer_target
-            .setToolTip(Some(&NSString::from_str(&target)));
         let available = next_key.as_ref().map(|key| {
             self.shared
                 .lock()
@@ -5797,7 +5791,6 @@ impl Ui {
                 self.message_scroll.setHidden(true);
                 self.cards.view().setHidden(true);
                 self.composer_scroll.setHidden(true);
-                self.composer_target.setHidden(true);
                 self.composer_status.setHidden(true);
                 self.composer_send.setHidden(true);
                 let footer_width = self
