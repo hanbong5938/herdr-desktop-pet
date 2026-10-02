@@ -15,6 +15,30 @@ use std::time::{Duration, Instant};
 
 const MAX_MASK_STORAGE_BYTES: u64 = 16 * 1024 * 1024;
 
+mod preparation_limits {
+    include!(env!("HERDR_RIG_LIMITS_RS"));
+}
+
+pub const SURFACE_PREPARATION_TIMEOUT: Duration =
+    Duration::from_secs(preparation_limits::DECODE_SECONDS);
+// A v5 catalog prepares the ten distinct semantic bindings, not unused models.
+pub const MAX_PREPARATION_TIMEOUT: Duration = rig_preparation_timeout(10);
+
+const fn rig_preparation_timeout(model_count: usize) -> Duration {
+    let batches = model_count.div_ceil(preparation_limits::CATALOG_DECODE_WORKERS);
+    // Account for queued decode waves, then initial renderer/geometry setup.
+    Duration::from_secs(preparation_limits::DECODE_SECONDS * (batches as u64 + 1))
+}
+
+pub fn preparation_timeout(assets: &ValidatedCharacter) -> Duration {
+    match assets {
+        ValidatedCharacter::Png(_) => SURFACE_PREPARATION_TIMEOUT,
+        ValidatedCharacter::Rig(rig) => {
+            rig_preparation_timeout(rig.bindings.as_ref().map_or(1, |bindings| bindings.len()))
+        }
+    }
+}
+
 /// Main-thread-owned native image and hit-test resources for one frame.
 ///
 /// `NSImage` is retained together with the alpha mask produced while loading
@@ -621,8 +645,9 @@ pub fn prepare(
     mtm: MainThreadMarker,
 ) -> Result<PreparedCharacter, String> {
     let cancel = AtomicBool::new(false);
+    let timeout = preparation_timeout(&assets);
     let mut builder = PrepareBuilder::new(assets, token, mtm)?;
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + timeout;
     loop {
         if Instant::now() >= deadline {
             cancel.store(true, Ordering::Release);
@@ -762,6 +787,13 @@ fn mask_storage_bytes(width: u32, height: u32) -> Result<u64, String> {
 mod tests {
     use super::*;
     use crate::alpha::rgba_alpha_index;
+
+    #[test]
+    fn ten_pose_catalog_preserves_time_for_a_queued_decode_wave() {
+        let decode = Duration::from_secs(preparation_limits::DECODE_SECONDS);
+        let elapsed = decode * 2;
+        assert!(rig_preparation_timeout(10).saturating_sub(elapsed) >= decode);
+    }
 
     #[test]
     fn display_union_includes_frames_only_used_by_other_phases_and_reactions() {

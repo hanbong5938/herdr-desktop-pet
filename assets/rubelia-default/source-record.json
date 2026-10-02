@@ -82,7 +82,7 @@
   },
   "pipeline": "Approved raw waiting + nine independent Qwen-Image-2.1 BF16 complete illustrations; ISNet/PyMatting; SeeThrough; own-pose Qwen expression; DAEMONLET 0.8.0; native layered 1024 conversion",
   "licenseBoundary": "Owner approvals apply to Rubelia identity and approved default use, not a new Qwen license or rights to unrelated characters; Qwen research license retained verbatim.",
-  "publication": "Owner authorized commit, push and public GitHub v0.1.5 source/app release on 2026-10-02; installed-user profile replacement not requested. See owner-approval.json releaseAuthorization.",
+  "publication": "Owner authorized commit, push and public GitHub source/app release on 2026-10-02; corrected release v0.1.6 follows failed v0.1.5 packaging. Installed-user profile replacement not requested. See owner-approval.json releaseAuthorization.",
   "noPostExportAlphaCrop": true,
   "poses": {
     "waiting": {

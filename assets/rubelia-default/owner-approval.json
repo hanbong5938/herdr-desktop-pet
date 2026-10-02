@@ -32,7 +32,8 @@
     "date": "2026-10-02",
     "userStatement": "커밋 푸쉬 배포 릴리스 해봐",
     "repository": "https://github.com/hanbong5938/herdr-desktop-pet",
-    "release": "v0.1.5",
+    "release": "v0.1.6",
+    "failedReleaseCandidate": "v0.1.5: native catalog preparation exceeded the incorrectly shared single-decode timeout; no release assets published",
     "scope": "Commit, push and publicly release the approved Rubelia builtin artwork, rig and native app; retain owner/source/model notices",
     "newModelLicenseGranted": false
   },

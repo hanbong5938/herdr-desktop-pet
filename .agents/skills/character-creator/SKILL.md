@@ -300,8 +300,11 @@ python3 tools/character-pack.py rig \
 ```
 
 The native host prepares all bound CPU scenes before reporting catalog readiness,
-using at most four decoder workers, the 30-second decode deadline, and the
+using at most four decoder workers, a 30-second deadline per decoder, and the
 `catalogDecodedBytes` aggregate RGBA quota in `native/rig/limits.json` (64 MiB).
+The catalog deadline covers all queued worker batches; Rust preparation also
+allows one renderer-setup interval. CLI and AppKit waits include these stages
+rather than truncating a multi-pose catalog to one decoder's deadline.
 Model entry uploads an already prepared scene rather than re-decoding its PSD.
 Motion restarts on model entry. Legacy v4 base/alternate behavior is unchanged.
 

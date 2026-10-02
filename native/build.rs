@@ -54,6 +54,10 @@ fn main() {
         });
     assert!(status.success(), "native rig build failed with {status}");
     let output = manifest_dir.join("target/rig-native").join(profile);
+    println!(
+        "cargo:rustc-env=HERDR_RIG_LIMITS_RS={}",
+        output.join("Resources/rig/RigLimits.rs").display()
+    );
     let dylib = output.join("libherdr_rig.dylib");
     let worker = output.join("rig-decode-worker");
     println!("cargo:rustc-link-search=native={}", output.display());
