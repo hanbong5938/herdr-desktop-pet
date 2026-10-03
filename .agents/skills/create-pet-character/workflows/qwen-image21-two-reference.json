@@ -1,0 +1,146 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "own-pose-face-crop.png"
+    }
+  },
+  "10": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "1",
+        0
+      ],
+      "alpha": [
+        "1",
+        1
+      ]
+    }
+  },
+  "2": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_2.1_bf16.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "3": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_bf16.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "TextEncodeQwenImage21",
+    "inputs": {
+      "clip": [
+        "3",
+        0
+      ],
+      "prompt": "<image1> is a close crop of this pose. <image2> is the face identity reference only; never copy its outfit, background or props. Describe the edit here.",
+      "negative_prompt": "",
+      "vae": [
+        "4",
+        0
+      ],
+      "resolution": 768,
+      "images.image_1": [
+        "10",
+        0
+      ],
+      "images.image_2": [
+        "11",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "QwenImage21Cache",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "device": "auto",
+      "dtype": "default"
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "6",
+        0
+      ],
+      "positive": [
+        "5",
+        0
+      ],
+      "negative": [
+        "5",
+        1
+      ],
+      "latent_image": [
+        "5",
+        2
+      ],
+      "seed": 1,
+      "steps": 25,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "4",
+        0
+      ]
+    }
+  },
+  "19": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ],
+      "filename_prefix": "create-pet-character/example"
+    }
+  },
+  "9": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "identity-face-crop.png"
+    }
+  },
+  "11": {
+    "class_type": "JoinImageWithAlpha",
+    "inputs": {
+      "image": [
+        "9",
+        0
+      ],
+      "alpha": [
+        "9",
+        1
+      ]
+    }
+  }
+}

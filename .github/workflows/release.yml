@@ -149,9 +149,9 @@ jobs:
 
             - The only bundled character is Rubelia (`rubelia-at12-multi-pose`), a rig with ten independent upper-thigh poses.
             - Rubelia originates from shared-world-canon and is deployed with the owner's authorization; AI/model-use provenance and license records are included in the app.
-            - The owner-approved 2026-10-02 illustration supplies the current style: approved waiting artwork plus nine newly drawn, independently layered local Qwen poses, retaining `default@0`.
-            - Catalog preparation allows all bounded decoder batches plus renderer setup; individual decoder deadlines and resource quotas remain enforced.
-            - The character menu re-enables after pack operations finish or age out of the status cache, failed dialogue loads stay visible while typing and retry when the editor is reopened, and session card titles stay stable during IME composition.
+            - v0.1.9 rebuilds the ten-pose default from the approved illustration with a local Qwen face-only correction guided by Rubelia's five-fold portrait; the other nine poses inherit that corrected authority and `default@0` is retained.
+            - The repository includes the MIT-preserving DAEMONLET character-production skill fork for local Qwen-Image-2.1 and See-through, with recorded dependency/model-license boundaries.
+            - Known artwork limitations: some downcast poses differ slightly from the waiting face, and small opaque white fragments can remain between hair strands.
             - Release bundles are ad-hoc signed, not Developer ID signed or notarized.
           files: |
             ${{ env.HERDR_PET_ASSET_NAME }}

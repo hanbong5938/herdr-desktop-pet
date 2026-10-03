@@ -37,6 +37,14 @@
     "scope": "Commit, push and publicly release the approved Rubelia builtin artwork, rig and native app; retain owner/source/model notices",
     "newModelLicenseGranted": false
   },
+  "currentReleaseAuthorization": {
+    "date": "2026-10-03",
+    "userStatement": "라는데 여기 적용해서 릴리즈 해봐",
+    "repository": "https://github.com/hanbong5938/herdr-desktop-pet",
+    "release": "v0.1.9",
+    "scope": "Apply the completed five-fold-face Rubelia default here and release it publicly; this is separate from the 2026-10-02 private generation request",
+    "newModelLicenseGranted": false
+  },
   "newIllustrationApproval": {
     "userStatement": "좋아 이러면 기본팩 교체 목표로 해서 진행해",
     "sha256": "27eb42899c58501f7e57e4f9281d80084368e5532eda858503bafb4c1f9f3b3d",
