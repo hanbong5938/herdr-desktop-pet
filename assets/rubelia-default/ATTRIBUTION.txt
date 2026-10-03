@@ -1,3 +1,10 @@
+Rubelia — herdr v5 ten-model pack staged from run "rubelia-fivefold-face-20261002".
+Authority illustration SHA256 4d0aa41b5ade3be06d05c319d8a88e1fb19fb2c712abf186fc2aec9baf0fa043 is the exact "waiting" pose and the outfit/body/style authority. Identity reference SHA256 ae544cd96241e5b05bbba01033e64e38e532f0e90d72c047a26affc1e4040b36 supplied face identity only.
+Every other pose is a complete illustration generated for this run by local image editing; each pose has its own matte, See-through layer decomposition, own expression edit, source-layered PSD and native rig conversion. No reference-pack pose pixels and no post-export alpha crop are used.
+Recorded model files: isnet-anime.onnx, qwen3vl_8b_bf16.safetensors, qwen_image_2.1_bf16.safetensors, qwen_image_2.1_vae_bf16.safetensors.
+source-record.json records the exact file chain and hashes. This notice makes no claim about native review, publication or licenses beyond the files named in manifest.json.
+
+Reference pack "rubelia-at12-multi-pose" ATTRIBUTION.txt (preserved verbatim, SHA256 e64d56a1753768b74f04f7729baf134cd449b6c40fa2883a5c76508faf9952d8; its pose, hash and review statements describe that reference pack, not this staged pack):
 Rubelia is the owner's character. Original shared-world-canon identity: commit 70756fab286e83b01605c5755c2a465e8438d344, SHA256 0b7d6a9c9bd7bef534f2eab5973d56a10793becb3f2f0fa242e41750763e0eae.
 The 2026-10-02 user-approved crispanime illustration SHA256 27eb42899c58501f7e57e4f9281d80084368e5532eda858503bafb4c1f9f3b3d is the new waiting drawing and visual authority; nine other complete poses were newly drawn locally with Qwen-Image-2.1, not made by transplanting an old body/face. Each pose has its own ISNet/PyMatting matte, SeeThrough semantic decomposition, own Qwen expression edit, DAEMONLET source-layered PSD and native 1024 motion/rig conversion. No post-export alpha crop.
 Earlier bundled pose/style provenance is retained in source-record.json only as historical reference; no rights to unrelated Asuna artwork are asserted. Model-material license and owner approval are separate. No public publication or installed-pack update is asserted.

@@ -52,20 +52,18 @@
   },
   "source": {
     "method": "image-generated",
-    "description": "User-approved crispanime original waiting drawing and nine genuinely new local Qwen complete pose drawings; independent own-source decomposition, expression, native rig and motion. No prior-pose art transplant, no post-export cropping; source-record.json records the exact chain.",
+    "description": "Rubelia: identity-corrected run authority illustration as the waiting pose plus complete pose illustrations generated in this run from the authority and its head crop; per-pose matte, See-through decomposition, own expression sheet features, native rig and motion. source-record.json records the exact chain.",
     "urls": [
-      "source-record.json",
-      "https://huggingface.co/Qwen/Qwen-Image-2.1",
-      "https://github.com/ddol2ya/DAEMONLET"
+      "source-record.json"
     ],
-    "provider": "Local Qwen-Image-2.1 on MPS; local ISNet/PyMatting and SeeThrough",
-    "model": "Qwen-Image-2.1 BF16 and SeeThrough tag_v3"
+    "provider": "private local ComfyUI Qwen-Image-2.1 BF16",
+    "model": "isnet-anime.onnx, qwen3vl_8b_bf16.safetensors, qwen_image_2.1_bf16.safetensors, qwen_image_2.1_vae_bf16.safetensors"
   },
   "payloads": [
     {
       "path": "ATTRIBUTION.txt",
-      "size": 954,
-      "sha256": "e64d56a1753768b74f04f7729baf134cd449b6c40fa2883a5c76508faf9952d8",
+      "size": 2164,
+      "sha256": "f9c0188c5b5d68f5a16c787bb21bcf7835f8e8ff92f69d212eb884e07abe488a",
       "kind": "attribution"
     },
     {
@@ -76,8 +74,8 @@
     },
     {
       "path": "NOTICE.txt",
-      "size": 848,
-      "sha256": "15f38294b944eca50046356ff2d85f760f3ece87ac9107a0884dd5987094125b",
+      "size": 2053,
+      "sha256": "33b3fa8497e204b5abe3e42895f09739539748887efd9be29d0f1897d0398003",
       "kind": "attribution"
     },
     {
@@ -88,134 +86,134 @@
     },
     {
       "path": "bored-motion.json",
-      "size": 29012,
-      "sha256": "674b9e61db110fbf8c66e51e93bc8179f5e9bc01dbf4e0e65df03a8ab00cd826",
+      "size": 29138,
+      "sha256": "05c1acfff0c48103aaea36ddc223366421757f90aa28a906c81d565990dee1dc",
       "kind": "motion"
     },
     {
       "path": "bored-overrides.json",
-      "size": 12457,
-      "sha256": "0a933a063ced85e85803d32d5c681adfd51db35d972db01f33f058691d0c0010",
+      "size": 12483,
+      "sha256": "ef9b6fccc3a2deacd5c665214a41ca1bbf372904eef231d5f270361dde48b012",
       "kind": "overrides"
     },
     {
       "path": "bored.psd",
-      "size": 2462483,
-      "sha256": "20734bff0235e6d0c652d41fb1a27c97876fbf8c5333c5d83f694ff4c19a7bca",
+      "size": 2563250,
+      "sha256": "063ceeda47073178e07c6ecf288b535b7c80b6ee908d2fc222f2f941b17ff3c8",
       "kind": "psd"
     },
     {
       "path": "cancelled-motion.json",
-      "size": 35138,
-      "sha256": "8cfb14218bbf74d5760218f852a3cb49083a6a61ee72219a797661070ee39bd2",
+      "size": 35160,
+      "sha256": "7315f1ee4914ef0a26d44ed555b9ed4edf01c9caddb828efc51e8ad5aa080162",
       "kind": "motion"
     },
     {
       "path": "cancelled-overrides.json",
-      "size": 12494,
-      "sha256": "4e66600d958f70fd2da2f34851e23860e7b898746acea939ffbb9c15072d95ab",
+      "size": 12546,
+      "sha256": "14dda4a65a5e9fbaacfe9abe634896320e9f88099c6232ffffce14600da28e70",
       "kind": "overrides"
     },
     {
       "path": "cancelled.psd",
-      "size": 2142594,
-      "sha256": "d88134e00052816a162f16b9b4f807ca2f0b381ac7ef72f5606d41a397d5a305",
+      "size": 2526012,
+      "sha256": "30fe05f27396c41beab2046d4c31ed6f54f43b52b3896a18c9ea22b85c0e0a3d",
       "kind": "psd"
     },
     {
       "path": "disconnected-motion.json",
-      "size": 47754,
-      "sha256": "4e251deccfffb76f1f49708bcbcd060eafdad639b7a072fd4064181604f78122",
+      "size": 47898,
+      "sha256": "781a4b8793d1c562c721f8a62c961fb9759d79315d0085fa34cad1934988b590",
       "kind": "motion"
     },
     {
       "path": "disconnected-overrides.json",
-      "size": 12413,
-      "sha256": "26c8f390d71e11641c95b05c577d44032b8436a048786e8029d2c78a666ef0f0",
+      "size": 12448,
+      "sha256": "6b53b53852027527bb78f47f18ef8e9053cc4f394d5cd9e47f558263ed61eef7",
       "kind": "overrides"
     },
     {
       "path": "disconnected.psd",
-      "size": 2104375,
-      "sha256": "0e5a699cd6204224dbf9f3292aca532381950939d32a432d98d52f86d59f2f5b",
+      "size": 2454078,
+      "sha256": "e9ac70fe8287ca3e1ee4661b05a09af9dcce91c69e02c8d1b9ece2302f3f4775",
       "kind": "psd"
     },
     {
       "path": "failed-motion.json",
-      "size": 35692,
-      "sha256": "bd290686864c86ab333620f773e6cae3aa1839183cf01ea845d1f536b5c762cc",
+      "size": 35818,
+      "sha256": "21524f50e46669957451aaffe34663faaaf4d395a7c493809134d7a1d0053b24",
       "kind": "motion"
     },
     {
       "path": "failed-overrides.json",
-      "size": 12468,
-      "sha256": "fd8a46054d5128566b527420a65d12d62177490b5e40e114005afc7f754c4cee",
+      "size": 12481,
+      "sha256": "7e5424c72666d434369d608c0fe1da520920656b4cccfd4ef349e3359e6f40d3",
       "kind": "overrides"
     },
     {
       "path": "failed.psd",
-      "size": 2597948,
-      "sha256": "236a3dd6035a2c98e806395ce7e429f52876d9ae5920332b5baa557bbfde0035",
+      "size": 2630846,
+      "sha256": "e4291e819bea5ac870ae382cfb33e527300f924ff17fb623482d9d017272df83",
       "kind": "psd"
     },
     {
       "path": "happy-motion.json",
-      "size": 36830,
-      "sha256": "597eaa01f8651e213e317d1813e873b6270eb77c9ce5f07c949aea209a6f20f6",
+      "size": 36967,
+      "sha256": "55b065709de6f7cd79df2a97b348a57197deaafcc26b99fa14fa7a8dd04d18f5",
       "kind": "motion"
     },
     {
       "path": "happy-overrides.json",
-      "size": 12460,
-      "sha256": "318637a8ed48c788f0fb3a5a967cc4db1c92e2cb1a7c1cd0bbed9c0f8d0df0aa",
+      "size": 12475,
+      "sha256": "ce094ba3bc4bbbb5e691ab714c70cb349f1a4abb2b071a44b93deca1b1d81673",
       "kind": "overrides"
     },
     {
       "path": "happy.psd",
-      "size": 2464472,
-      "sha256": "b82f1223d805b482cc8aa006821db8691da5d16bfaa3d5462ba804904e38df69",
+      "size": 2478802,
+      "sha256": "14814a2e61325f640afa4150063d622b99012d4dc89bbf330a201b64ea340eaa",
       "kind": "psd"
     },
     {
       "path": "head-pet-motion.json",
-      "size": 46906,
-      "sha256": "b8a30af8e294521565d0530b5574a0da9f01ba9d9ca963f9fe84961e52bc8cc1",
+      "size": 47021,
+      "sha256": "1d2fa98a68a2e8fc211d70bcbad92b98b81afd136e5dd1b52777afd988f8b2c5",
       "kind": "motion"
     },
     {
       "path": "head-pet-overrides.json",
-      "size": 12450,
-      "sha256": "66bd0e0e7bafcda370199c70634e84662240b5096187b1267e2f08505707f17c",
+      "size": 12486,
+      "sha256": "230eb67ba393c4812f6adc81855bf0ce49182eb09ec7dc9a1e8bb84fba4fcbad",
       "kind": "overrides"
     },
     {
       "path": "head-pet.psd",
-      "size": 2457440,
-      "sha256": "841a2313b40637d439ee7b616ff4e7d781985354af16104e05f488c00293ab93",
+      "size": 2450010,
+      "sha256": "e4f622afc8dd22c7df85b8ff6e5175680a305b0bf7a2c5691da2cbe8d7507a0f",
       "kind": "psd"
     },
     {
       "path": "head-tap-motion.json",
-      "size": 34678,
-      "sha256": "afbfaf9e1edecbf0946ad227aad01cb0ba513407fa066dc97c11c7879d55e106",
+      "size": 34753,
+      "sha256": "de04d9de82ed3c8a0b059e1867b8ce0656ad486d9e55763622b42b59f2bfae0a",
       "kind": "motion"
     },
     {
       "path": "head-tap-overrides.json",
-      "size": 12476,
-      "sha256": "70fb6765f2ef034d8634e182eef3c68552aac31ded490081d44e9507874ea3d5",
+      "size": 12408,
+      "sha256": "83cae4d5c101d32c2af2634fcaa533d55b292d8fe6a01d32e64292902d387fd3",
       "kind": "overrides"
     },
     {
       "path": "head-tap.psd",
-      "size": 2733223,
-      "sha256": "4d94a8325c1ce247266cd47dc335859edc9e04cad504dd771d734052b891eccb",
+      "size": 2425822,
+      "sha256": "ef11b69ea4789ccdcb5315f634d800c93bf7f14447925b021ea3af9e6a909b61",
       "kind": "psd"
     },
     {
       "path": "owner-approval.json",
-      "size": 3307,
-      "sha256": "be6bd67e1fc510fc7dd2ed0f5eed6e1eb297d075ad3f5023a0c209daf191c721",
+      "size": 3736,
+      "sha256": "ee66b8eeac1d189f6bbab021204126aaaee3d2dd99ba28c86c85a3acfb94cee1",
       "kind": "source"
     },
     {
@@ -226,62 +224,62 @@
     },
     {
       "path": "source-record.json",
-      "size": 1067873,
-      "sha256": "6a7d515b9ca6097eda92adf4229508f2485f4631c5bdcb16b28878199fe5348f",
+      "size": 828891,
+      "sha256": "1396657784ae1b1ac45354b9f3a9d53a6d7ec06c2fa03974cd9120121b2f3182",
       "kind": "source"
     },
     {
       "path": "torso-tap-motion.json",
-      "size": 39267,
-      "sha256": "0b47afd9e339a07ab016893f6970b062e2ed1e9072587d71f2496ebc7a56cca3",
+      "size": 39404,
+      "sha256": "744dcb2aaf423800560ea313e796980b46beacd704aafed0817b64012ebc00b2",
       "kind": "motion"
     },
     {
       "path": "torso-tap-overrides.json",
-      "size": 12429,
-      "sha256": "f33debe0a3218dd95ac3425053b9cc8a88202e4013f6d41b29d247521d6a4a8a",
+      "size": 12529,
+      "sha256": "a40392a4cc2f325383239c87c8da6f7c9f12b30a0536a4158971b88e315ba52a",
       "kind": "overrides"
     },
     {
       "path": "torso-tap.psd",
-      "size": 2331763,
-      "sha256": "5e04bcef51a07a8d0637489633ddd1cc31ecd7b009be29054a1fbb34bd1a9160",
+      "size": 2577139,
+      "sha256": "640b983b74fd80fc406459349dbb331c3caf3698e9f68984c191ba6a69cf3ffb",
       "kind": "psd"
     },
     {
       "path": "waiting-motion.json",
-      "size": 31201,
-      "sha256": "2ad653ac976885e4c9990d1babf119846fcd270279a4bd776f5667874392c4cc",
+      "size": 31329,
+      "sha256": "7125418fedb280c73bd75337eeb5203b4f582aaf8fa35cc2d9da872cce3bf69d",
       "kind": "motion"
     },
     {
       "path": "waiting-overrides.json",
-      "size": 12485,
-      "sha256": "39bf7ac079290a3ee80c88dcf38eb7b320fa0be222e10cb653301c08c6f5ca9a",
+      "size": 12498,
+      "sha256": "e057529a0f964e0269b0cc02f1b9d4a34450256677add4e79f7c3a99140630aa",
       "kind": "overrides"
     },
     {
       "path": "waiting.psd",
-      "size": 2617093,
-      "sha256": "2de893b7071cad60f4a1b255bcda20be4ac48bed5b603936c55034230a8f7ca4",
+      "size": 2614829,
+      "sha256": "742724be6b732f16fd2c8f20b9ba70d8cf6e7d6ea51cc05ed31c5f5828f09d4e",
       "kind": "psd"
     },
     {
       "path": "writing-motion.json",
-      "size": 33946,
-      "sha256": "3f0a5bc88ee44abb5ce42390af789b0720e39a501183d24f9ab532e4dc2f63a7",
+      "size": 34055,
+      "sha256": "06acfe71b7b58188bcd7798a3f291f1871ed2630f4d640fe93e69a6403960074",
       "kind": "motion"
     },
     {
       "path": "writing-overrides.json",
-      "size": 12443,
-      "sha256": "990001f2d809dcae585055a730b5f8d71d259ff335025d792f3bce268cecf556",
+      "size": 12465,
+      "sha256": "93fe038922f85e6dfc51c783130d0d370122986c5ba25b007df8ebb0a9246936",
       "kind": "overrides"
     },
     {
       "path": "writing.psd",
-      "size": 2541288,
-      "sha256": "2e36b96ea9e62653899569df9ab364312deab2480123de3496bebb70a2543d90",
+      "size": 2442362,
+      "sha256": "1b358dfdccbf6a782f146696c18c5f7cd9e1e4c40879f57f8303abc824f1ed63",
       "kind": "psd"
     }
   ]

@@ -1,4 +1,4 @@
-Herdr Desktop Pet 0.1.8; character menu, dialogue editor and card fixes
+Herdr Desktop Pet 0.1.9; local-Qwen skill fork and five-fold-face default
 =======================================================================
 
 Requirements and distribution
@@ -10,8 +10,8 @@ Requirements and distribution
   actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
   implement client.attached. A manifest minimum version alone does not prove
   compatibility: inspect plugin-link warnings and verify subscription.
-- Release 0.1.6 includes lifecycle settings, editable dialogue, status
-  indicators, inline-card replies, and the approved new Rubelia default.
+- Release 0.1.9 includes lifecycle settings, editable dialogue, status
+  indicators, inline-card replies, and the five-fold-face Rubelia default.
   Use bash scripts/install.sh --source to build local changes.
   Link against the running patched host (PATCHED_HERDR from the integration
   guide, not an installed herdr on PATH):
@@ -21,7 +21,7 @@ Requirements and distribution
   start once or wait for a subsequent shell/terminal attach with auto_start on.
   See integrations/herdr/README.md for a separate disposable patched-host
   XDG profile; do not replace an installed host or assume stable PATH is patched.
-- Release v0.1.6 ships the approved new Rubelia ten-pose default.
+- Release v0.1.9 ships the regenerated Rubelia ten-pose default.
   The prebuilt installer verifies checksum, archive layout/types, arm64,
   signature and default model. An optionless install (the manifest [[build]])
   downloads the pinned prebuilt anonymously with curl and falls back to a
@@ -157,6 +157,21 @@ Observation sources
   in a terminal. The pet does not run interactive setup or use Local as a
   fallback for remote errors. Remote sources are observation-only; prompts
   are never sent through machine forwarding.
+
+v0.1.9 release notes (no new Herdr host release)
+- Added the DAEMONLET create-pet-character fork for source-checkout authoring
+  with local Qwen-Image-2.1 and See-through. MIT LICENSE and pinned upstream
+  provenance are retained; external engines and model weights are not bundled.
+- Regenerated the ten-model default from the approved illustration with a
+  five-fold portrait-guided face-only correction (selected seed 2026100502).
+  Waiting uses that authority; the other nine independent poses inherit it.
+  Default identity, outfit and framing are retained; thumbnail is replaced.
+- Preserve original generation request, source hashes, model terms and old
+  approvals; record the 2026-10-03 public-release request separately.
+- Known art limitations: writing/failed/bored have slightly downcast eyes;
+  small opaque white fragments remain between some hair strands.
+- Manifest version 0.1.9 pins this app release. min_herdr_version
+  0.9.3 remains the patch baseline.
 
 v0.1.8 release notes (no new Herdr host release)
 - A finished pack operation whose status ages out of the bounded service

@@ -243,6 +243,13 @@ Bindings name all ten semantic poses exactly: `waiting`, `writing`, `failed`,
 `head-pet`. Every binding references a different declared model. Each model's
 motion uses its own artistic ID; all model canvases match the manifest.
 
+To produce all ten poses from one approved illustration with a private local
+ComfyUI Qwen-Image-2.1 and See-through, use the source checkout's
+[create-pet-character](https://github.com/hanbong5938/herdr-desktop-pet/blob/main/.agents/skills/create-pet-character/SKILL.md)
+skill in `.agents/skills/create-pet-character/`. It builds each model through this
+adapter and stages the v5 pack for the native checks below. This production skill,
+its external engines and model weights are not included in the app bundle.
+
 Convert a selected immutable DAEMONLET source round with an explicit per-model
 motion profile; the adapter never assigns a gesture to a native slot by itself:
 
