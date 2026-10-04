@@ -1,5 +1,18 @@
-Herdr Desktop Pet 0.1.9; local-Qwen skill fork and five-fold-face default
+Herdr Desktop Pet 0.1.10; native white-background pocket correction
 =======================================================================
+
+v0.1.10: native white-background pocket correction
+- Remove reviewed hair-gap background and white-contaminated boundary pixels in
+  all ten own-pose PSDs, including writing's bent-arm gap and head-tap's hair loop.
+- Two cancelled forearm-boundary background fragments require a separately
+  reviewed one-pixel matte; skin interior, face, clothes, expressions and motion
+  remain unchanged. No spatial warp, layer re-bbox or new artwork painting.
+- Preserve immutable source inputs, per-layer trimaps/alpha and replay plans;
+  bind source RGBA to the frozen PSD and retain background-repair.json in the pack.
+- Derived-pack cutover checks the recorded immediate parent without rewriting
+  historical motion-reference provenance, and refuses a stale parent before swap.
+- Release v0.1.10 ships these corrections; published v0.1.9 downloads are retained
+  unchanged. Default@0 and existing imported character selections are preserved.
 
 Requirements and distribution
 - Apple Silicon macOS 13+. Local observation supports Herdr 0.9.0+;
@@ -10,7 +23,7 @@ Requirements and distribution
   actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
   implement client.attached. A manifest minimum version alone does not prove
   compatibility: inspect plugin-link warnings and verify subscription.
-- Release 0.1.9 includes lifecycle settings, editable dialogue, status
+- Release 0.1.10 includes lifecycle settings, editable dialogue, status
   indicators, inline-card replies, and the five-fold-face Rubelia default.
   Use bash scripts/install.sh --source to build local changes.
   Link against the running patched host (PATCHED_HERDR from the integration
@@ -21,7 +34,7 @@ Requirements and distribution
   start once or wait for a subsequent shell/terminal attach with auto_start on.
   See integrations/herdr/README.md for a separate disposable patched-host
   XDG profile; do not replace an installed host or assume stable PATH is patched.
-- Release v0.1.9 ships the regenerated Rubelia ten-pose default.
+- Release v0.1.10 ships the corrected Rubelia ten-pose default.
   The prebuilt installer verifies checksum, archive layout/types, arm64,
   signature and default model. An optionless install (the manifest [[build]])
   downloads the pinned prebuilt anonymously with curl and falls back to a

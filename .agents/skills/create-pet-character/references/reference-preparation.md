@@ -88,6 +88,36 @@ composites and `matting.json` (source, model and environment hashes,
 `backgroundPocketSuppression`, `status: pending_visual_review`). Details, and how a
 rejected matte is superseded, are in [production.md](production.md#3-matte).
 
+Fully opaque background and white-contaminated resampling rims can survive that
+partial-alpha rule. Inspect the exported native PSD too; do not globally key white,
+because clothes, skin highlights and eyes must survive.
+
+For reviewed white-background hair gaps, record a pose-local plan with `version: 1`,
+the frozen PSD's `inputSha256`, `minimumChannel`, `maximumChroma`,
+`pockets` (`layer`, integer canvas `seed`) and a measured `unknownBandPixels` (1–12).
+Run `scripts/refine-hair-pockets.py --original-run RUN --pose POSE --plan PLAN.json
+--output NEW_DIR` with the existing NumPy/Pillow/SciPy/PyMatting environment.
+It preserves source-layer hashes, trimaps, estimated alpha and corrected rasters,
+and writes `NEW_DIR/plan.json` for `node tools/repair-hair-pockets.mjs INPUT.psd
+NEW_DIR/plan.json OUTPUT.psd REPORT.json`. Outputs must be new; preserve the inputs.
+
+The PSD repair binds the matte to the decoded source-layer RGBA, forbids added
+alpha and verifies unchanged layer metadata and every non-selected RGBA pixel.
+If decomposition stored a hair-gap background fragment in `handwear-l` or
+`handwear-r`, compare the original pose and native layers first, then explicitly
+opt that layer into `handBoundaryLayers` and use its own reviewed boundary plan.
+This exception requires a source-bound matte; it does not authorize garment or
+face edits. Never reuse Rubelia's seeds, colour thresholds or uncertain band on
+another pose without review. This solver assumes a white generation background.
+
+Store the repair report as an attribution payload, reference its hash from the
+source record, regenerate the pack inventory, and repeat native validation plus
+light/dark neutral and animated previews before cutover.
+For a derived correction, also record the immediate parent's manifest hash as
+`source-record.json` → `backgroundRepair.previousManifestSha256`. The existing
+cutover command verifies that parent and its full inventory, backs it up and
+keeps the historical motion-reference provenance unchanged.
+
 This replaces green-screen keying: upstream DAEMONLET
 `scripts/characters/finish-source-models.py:24` requested parts on uniform
 `#00FF00`, and `scripts/characters/lib/assemble_finish_art.py:5-44`

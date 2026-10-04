@@ -98,8 +98,8 @@
     },
     {
       "path": "bored.psd",
-      "size": 2563250,
-      "sha256": "063ceeda47073178e07c6ecf288b535b7c80b6ee908d2fc222f2f941b17ff3c8",
+      "size": 2565157,
+      "sha256": "2729afa81e75fef4713553ea6d1cfb7442b2645d9b8472f9444322fb2ab6d951",
       "kind": "psd"
     },
     {
@@ -116,8 +116,8 @@
     },
     {
       "path": "cancelled.psd",
-      "size": 2526012,
-      "sha256": "30fe05f27396c41beab2046d4c31ed6f54f43b52b3896a18c9ea22b85c0e0a3d",
+      "size": 2528306,
+      "sha256": "38d0241cf8f88e4d305a30c627b24b5ec7738a9c0b4382762ded5e70cee7a800",
       "kind": "psd"
     },
     {
@@ -134,8 +134,8 @@
     },
     {
       "path": "disconnected.psd",
-      "size": 2454078,
-      "sha256": "e9ac70fe8287ca3e1ee4661b05a09af9dcce91c69e02c8d1b9ece2302f3f4775",
+      "size": 2455955,
+      "sha256": "16cc14deb5bbd6caf90a086a9e352d63dced54f817be99c8e3e787742c390ab9",
       "kind": "psd"
     },
     {
@@ -152,8 +152,8 @@
     },
     {
       "path": "failed.psd",
-      "size": 2630846,
-      "sha256": "e4291e819bea5ac870ae382cfb33e527300f924ff17fb623482d9d017272df83",
+      "size": 2632010,
+      "sha256": "7a250ce08838cc3da534da6ce2915670878819141ce75c658f8c4296a3f0a68b",
       "kind": "psd"
     },
     {
@@ -170,8 +170,8 @@
     },
     {
       "path": "happy.psd",
-      "size": 2478802,
-      "sha256": "14814a2e61325f640afa4150063d622b99012d4dc89bbf330a201b64ea340eaa",
+      "size": 2480395,
+      "sha256": "acc2dcbb3a5db130cf74407fc02ea05742c78261022778881ddc6d00e13502d7",
       "kind": "psd"
     },
     {
@@ -188,8 +188,8 @@
     },
     {
       "path": "head-pet.psd",
-      "size": 2450010,
-      "sha256": "e4f622afc8dd22c7df85b8ff6e5175680a305b0bf7a2c5691da2cbe8d7507a0f",
+      "size": 2450967,
+      "sha256": "b6423de514160f39a5c961e342111660aadcde74fc0e5b6f374cba2ffca049ec",
       "kind": "psd"
     },
     {
@@ -206,14 +206,14 @@
     },
     {
       "path": "head-tap.psd",
-      "size": 2425822,
-      "sha256": "ef11b69ea4789ccdcb5315f634d800c93bf7f14447925b021ea3af9e6a909b61",
+      "size": 2426027,
+      "sha256": "54510199c5f4205abef5dce29450338b126af69857b8ce33a6006288cdc4e32d",
       "kind": "psd"
     },
     {
       "path": "owner-approval.json",
-      "size": 3736,
-      "sha256": "ee66b8eeac1d189f6bbab021204126aaaee3d2dd99ba28c86c85a3acfb94cee1",
+      "size": 4204,
+      "sha256": "181e599c5d77b5da7a62f21246df8c038ab7202633736c9bca5eedd8bbedf2bd",
       "kind": "source"
     },
     {
@@ -224,8 +224,8 @@
     },
     {
       "path": "source-record.json",
-      "size": 828891,
-      "sha256": "1396657784ae1b1ac45354b9f3a9d53a6d7ec06c2fa03974cd9120121b2f3182",
+      "size": 830246,
+      "sha256": "9e0c19e794b6199e800010dec900d74b352d42f10492bb26be1595ba50fbca56",
       "kind": "source"
     },
     {
@@ -242,8 +242,8 @@
     },
     {
       "path": "torso-tap.psd",
-      "size": 2577139,
-      "sha256": "640b983b74fd80fc406459349dbb331c3caf3698e9f68984c191ba6a69cf3ffb",
+      "size": 2578716,
+      "sha256": "97c9e582b6ed5081ce891d7571b0b69a687e6e359732805c6837c822f1451ac3",
       "kind": "psd"
     },
     {
@@ -260,8 +260,8 @@
     },
     {
       "path": "waiting.psd",
-      "size": 2614829,
-      "sha256": "742724be6b732f16fd2c8f20b9ba70d8cf6e7d6ea51cc05ed31c5f5828f09d4e",
+      "size": 2616500,
+      "sha256": "cda05f25af0ce3ccbebdfe410f7c9462f8c943ec7dbc331ca11345aafa9a88e4",
       "kind": "psd"
     },
     {
@@ -278,9 +278,15 @@
     },
     {
       "path": "writing.psd",
-      "size": 2442362,
-      "sha256": "1b358dfdccbf6a782f146696c18c5f7cd9e1e4c40879f57f8303abc824f1ed63",
+      "size": 2442692,
+      "sha256": "0e6ef214151786185c45e2369a952b908c2548fef53a7d61f71bfdb4c277acf3",
       "kind": "psd"
+    },
+    {
+      "path": "background-repair.json",
+      "size": 1511380,
+      "sha256": "8ed6ca856296fb17d3be4b53b61d3f27e7b659519f2e621d2bda6e8b30c6d1cb",
+      "kind": "attribution"
     }
   ]
 }

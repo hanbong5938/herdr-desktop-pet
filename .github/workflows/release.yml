@@ -83,6 +83,9 @@ jobs:
       - name: Check TypeScript packaging scripts
         run: bun run check
 
+      - name: Test rig decoding and background pocket repair
+        run: bun test tools/repair-hair-pockets.test.ts web/rig
+
       - name: Check native crate
         run: cargo check --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
 
@@ -149,9 +152,10 @@ jobs:
 
             - The only bundled character is Rubelia (`rubelia-at12-multi-pose`), a rig with ten independent upper-thigh poses.
             - Rubelia originates from shared-world-canon and is deployed with the owner's authorization; AI/model-use provenance and license records are included in the app.
-            - v0.1.9 rebuilds the ten-pose default from the approved illustration with a local Qwen face-only correction guided by Rubelia's five-fold portrait; the other nine poses inherit that corrected authority and `default@0` is retained.
+            - v0.1.10 removes reviewed white-background hair pockets and contaminated rims across the ten-pose default, including the bent-arm gap, without changing the face, clothes, skin interior, expressions or motion.
             - The repository includes the MIT-preserving DAEMONLET character-production skill fork for local Qwen-Image-2.1 and See-through, with recorded dependency/model-license boundaries.
-            - Known artwork limitations: some downcast poses differ slightly from the waiting face, and small opaque white fragments can remain between hair strands.
+            - Source-bound mattes and repair provenance are included; the native character-production skill supports reviewed post-export correction and guarded parent-pack cutover.
+            - Known artwork limitation: some downcast poses differ slightly from the waiting face.
             - Release bundles are ad-hoc signed, not Developer ID signed or notarized.
           files: |
             ${{ env.HERDR_PET_ASSET_NAME }}

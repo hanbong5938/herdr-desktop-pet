@@ -57,6 +57,16 @@ Modified:
   servers (`--seethrough-url`, `--qwen-url`); package checks only with
   `--comfy-root`; no NVIDIA-only assumption.
 
+Added after native background-artifact review:
+
+- `scripts/refine-hair-pockets.py` — source-bound closed-form matting for explicitly
+  reviewed white-background hair gaps and opt-in hand-boundary fragments; retains
+  per-layer trimap/alpha evidence. Applies through the repository's
+  `tools/repair-hair-pockets.mjs`, not through a renderer workaround.
+- `scripts/assemble-pack.py` — derived background corrections may record their
+  immediate parent manifest separately from the original motion reference;
+  cutover still checks the parent inventory and verifies its backup before swap.
+
 Removed (Daemonlet-only; herdr has no equivalent payload or flow):
 
 - `agents/openai.yaml` (Codex agent metadata)

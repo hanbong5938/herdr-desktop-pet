@@ -217,8 +217,8 @@ tools; none hard-code paths or character names. Relative paths resolve against R
 
 Run commands from the repository root with `SKILL=.agents/skills/create-pet-character`
 (`python3 "$SKILL/scripts/<script>" …`) using the pipeline Python (Python 3.9+,
-numpy, Pillow), except `prepare-sources.py matte`, which runs with the matting
-environment's Python. Every script refuses to overwrite raw outputs, attempts,
+numpy, Pillow), except `prepare-sources.py matte` and `refine-hair-pockets.py`,
+which run with the matting environment's Python. Every script refuses to overwrite raw outputs, attempts,
 provenance or reviewed geometry, and requires an idle ComfyUI queue before
 submitting.
 
@@ -228,6 +228,7 @@ submitting.
 | `identity-correct.py` | `--run RUN [--seed N] [--resolution 768] [--feather PX]` |
 | `generate-sources.py` | `poses --run RUN [--poses all\|a,b]` ; `expressions --run RUN [--poses …] [--supersede-rejected]` |
 | `prepare-sources.py` | `matte --run RUN [--poses …]` (run with matting-env python) ; `decompose --run RUN [--poses …]` |
+| `refine-hair-pockets.py` | `--original-run RUN --pose POSE --plan REVIEWED_PLAN.json --output NEW_DIR` (matting-env Python; optional source-bound post-export correction per [subject alpha](references/reference-preparation.md#subject-alpha)) |
 | `build-rigs.py` | `geometry --run RUN --poses …` ; `build --run RUN --poses … --round R1` |
 | `review-native.py` | `--native BIN --path PACK --output NEW_DIR` |
 | `assemble-pack.py` | `stage --run RUN [--output DIR]` ; `cutover --run RUN --pack DIR --builtin REPO/assets/rubelia-default --native BIN` ; `thumbnail --run RUN --capture PNG --output PNG [--size WxH] [--replace]` (`--replace` is required when the output exists, e.g. the bundled thumbnail) |
@@ -246,6 +247,9 @@ Order (each step's output is reviewed before the next):
 7. `build-rigs.py build` → source round `poses/<pose>/R1/` and `native-models/<pose>/`
    (a rebuild after regeneration needs a new round name, e.g. `R2`).
 8. `assemble-pack.py stage` → staged herdr v5 pack (`pack/` by default).
+   If exported models retain opaque hair-gap background or white rims, use the
+   reviewed post-export repair to make a separate candidate, record the repair
+   payloads and regenerate its inventory before proceeding.
 9. Native validation and preview per [character-creator](../character-creator/SKILL.md),
    then `review-native.py` → `reviews/<name>/`.
 10. Only when replacing the bundled default: `assemble-pack.py cutover`, then

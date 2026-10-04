@@ -16627,12 +16627,32 @@
     }
   },
   "currentReleaseAuthorization": {
-    "date": "2026-10-03",
-    "userStatement": "라는데 여기 적용해서 릴리즈 해봐",
+    "date": "2026-10-04",
+    "userStatement": "커밋 릴리즈 해줘",
     "repository": "https://github.com/hanbong5938/herdr-desktop-pet",
-    "release": "v0.1.9",
-    "scope": "Public release of this completed five-fold-face Rubelia builtin in the Herdr Desktop Pet repository; separate from the preserved 2026-10-02 local generation-only request",
+    "release": "v0.1.10",
+    "scope": "Commit and publicly release the corrected Rubelia builtin with the reviewed white-background hair-gap and bent-arm repairs; preserve the original generation, identity and model-rights records",
     "ownerApprovalRecord": "owner-approval.json",
     "newModelLicenseGranted": false
+  },
+  "previousReleaseAuthorizations": [
+    {
+      "date": "2026-10-03",
+      "userStatement": "라는데 여기 적용해서 릴리즈 해봐",
+      "repository": "https://github.com/hanbong5938/herdr-desktop-pet",
+      "release": "v0.1.9",
+      "scope": "Public release of this completed five-fold-face Rubelia builtin in the Herdr Desktop Pet repository; separate from the preserved 2026-10-02 local generation-only request",
+      "ownerApprovalRecord": "owner-approval.json",
+      "newModelLicenseGranted": false
+    }
+  ],
+  "backgroundRepair": {
+    "record": "background-repair.json",
+    "sha256": "8ed6ca856296fb17d3be4b53b61d3f27e7b659519f2e621d2bda6e8b30c6d1cb",
+    "date": "2026-10-03",
+    "scope": "Reviewed hair-gap white background and two forearm-boundary background flecks only; original generation and identity records retained unchanged; clothes, skin interior, face, expressions and motion untouched",
+    "previousManifestSha256": "ff671f390ebcb3691c9f7a008d243f4b7bb7fde78c3d2df1405ced145b33f4b7",
+    "originalManifestSha256": "3f7ea1b673e18a0aac7fec9535ed8de2ba8995265f303a5f127f6def988792ed",
+    "lineage": "Source-bound mattes derive from the immutable original pack; this cutover seals the already-applied corrected working pack with explicit parent provenance. Historical motion-reference provenance is unchanged."
   }
 }

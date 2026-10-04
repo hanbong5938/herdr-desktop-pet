@@ -506,11 +506,13 @@ def cutover(run: Run, pack: Path, builtin: Path, native: Path) -> dict[str, Any]
     record = load(pack / SOURCE_RECORD)
     require(record.get('approval', {}).get('authority', {}).get('sha256') == run.authority['sha256'],
             'Staged pack does not belong to this run authority')
-    # The builtin need not BE tools.motionReference (that may be a private copy);
-    # it must be byte-identical to the reference the stage was assembled from:
-    # same manifest bytes, and every file matching that manifest's payload inventory.
-    require(sha256_file(builtin / 'manifest.json') == record['motionReference']['manifestSha256'],
-            'Builtin manifest differs from the motionReference manifest recorded at stage time; refuse cutover')
+    # Authoring stages replace their motion-reference pack. A reviewed post-export
+    # background repair instead replaces the immediate parent pack; retain the
+    # historical motion-reference record without rewriting its provenance.
+    parent_hash = record.get('backgroundRepair', {}).get(
+        'previousManifestSha256', record['motionReference']['manifestSha256'])
+    require(sha256_file(builtin / 'manifest.json') == parent_hash,
+            'Builtin manifest differs from the recorded parent manifest; refuse cutover')
     old_manifest = load(builtin / 'manifest.json')
     reference_inventory = {item['path']: item for item in old_manifest['payloads']}
     expected = {'manifest.json', *reference_inventory}

@@ -322,6 +322,14 @@ its own verified rights records. Pack rules, preview and packaging are in
 [character-creator](../../character-creator/SKILL.md) (`tools/character-pack.py
 validate`, `preview`, `review`, `package`; native `pack preview --pose <id>`).
 
+Inspect the exported PSDs for fully opaque background pockets and contaminated
+resampling rims as well as the source mattes. If either survives, keep the staged
+pack immutable and make a separate corrected candidate using the source-bound
+[native pocket repair](reference-preparation.md#subject-alpha), its own pose-local
+reviewed plans and report payloads. Regenerate that candidate's inventory and
+repeat native review before cutover; a successful source matte alone is not proof
+that the final rig has clean gaps.
+
 `review-native.py` writes `review.json`, per-pose neutral, hit-region and
 clip-timeline captures (entry, middle, near-expiry, low-blink, mouth and head-angle
 keys), unforced phase and reaction captures, and light/dark contact sheets into a
