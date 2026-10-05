@@ -1,5 +1,17 @@
-Herdr Desktop Pet 0.1.10; native white-background pocket correction
-=======================================================================
+Herdr Desktop Pet 0.1.11; native bubble close menu
+===================================================
+
+v0.1.11: native bubble close menu
+- Right-click or Control-click the bubble background or a session card header
+  to open the localized Close Bubble Window / 대화창 닫기 native menu. Closing
+  hides only the bubble; it leaves the character, app and Herdr session running.
+- Preserve card selection and reply drafts when the menu is canceled or the
+  bubble is hidden. Text fields retain their native editing menus; buttons,
+  dropdowns and scrollbars retain their native interactions.
+- Disable closing during IME composition and recheck composition when the
+  action runs. Reopen via Bubble → Bubble visible / 말풍선 → 말풍선 표시 여부.
+  Closing persists existing bubble visibility; drafts remain in memory only
+  for this app run and do not survive restart.
 
 v0.1.10: native white-background pocket correction
 - Remove reviewed hair-gap background and white-contaminated boundary pixels in
@@ -23,8 +35,9 @@ Requirements and distribution
   actual host release advertising that hook. Stock Herdr 0.9.0/0.9.3 do not
   implement client.attached. A manifest minimum version alone does not prove
   compatibility: inspect plugin-link warnings and verify subscription.
-- Release 0.1.10 includes lifecycle settings, editable dialogue, status
-  indicators, inline-card replies, and the five-fold-face Rubelia default.
+- Release 0.1.11 includes the native bubble close menu, lifecycle settings,
+  editable dialogue, status indicators, inline-card replies, and the
+  five-fold-face Rubelia default.
   Use bash scripts/install.sh --source to build local changes.
   Link against the running patched host (PATCHED_HERDR from the integration
   guide, not an installed herdr on PATH):
@@ -34,7 +47,7 @@ Requirements and distribution
   start once or wait for a subsequent shell/terminal attach with auto_start on.
   See integrations/herdr/README.md for a separate disposable patched-host
   XDG profile; do not replace an installed host or assume stable PATH is patched.
-- Release v0.1.10 ships the corrected Rubelia ten-pose default.
+- Release v0.1.11 ships the corrected Rubelia ten-pose default and bubble menu.
   The prebuilt installer verifies checksum, archive layout/types, arm64,
   signature and default model. An optionless install (the manifest [[build]])
   downloads the pinned prebuilt anonymously with curl and falls back to a

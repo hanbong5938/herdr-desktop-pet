@@ -52,8 +52,8 @@ use objc2_app_kit::{
     NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition,
     NSEvent, NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType,
     NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSModalPanelRunLoopMode,
-    NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
+    NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSModalPanelRunLoopMode, NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
     NSParagraphStyleAttributeName, NSPopUpButton, NSRunningApplication, NSScreen, NSScrollView,
     NSScrollerStyle, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment, NSTextContainer,
     NSTextField, NSTextStorage, NSTextView, NSTrackingArea, NSTrackingAreaOptions,
@@ -1005,8 +1005,8 @@ define_class!(
 
 define_class!(
     // SAFETY:
-    // - BubblePanel is main-thread-only and forwards all non-Escape key events
-    //   to NSPanel's responder chain.
+    // - BubblePanel is main-thread-only and forwards unhandled pointer events
+    //   and all non-Escape key events to NSPanel's responder chain.
     #[unsafe(super = NSPanel)]
     #[thread_kind = MainThreadOnly]
     #[name = "OMPetBubblePanel"]
@@ -1024,6 +1024,17 @@ define_class!(
         #[unsafe(method(canBecomeMainWindow))]
         fn can_become_main_window(&self) -> bool {
             false
+        }
+
+        #[unsafe(method(sendEvent:))]
+        fn send_event(&self, event: &NSEvent) {
+            let context_click = event.r#type() == NSEventType::RightMouseDown
+                || (event.r#type() == NSEventType::LeftMouseDown
+                    && event.modifierFlags().contains(NSEventModifierFlags::Control));
+            if context_click && self.show_bubble_context_menu(event) {
+                return;
+            }
+            let _: () = unsafe { msg_send![super(self), sendEvent: event] };
         }
 
         #[unsafe(method(keyDown:))]
@@ -1061,6 +1072,49 @@ impl BubblePanel {
                 unsafe { msg_send![*responder, isKindOfClass: ComposerView::class()] };
             is_editor && unsafe { msg_send![*responder, hasMarkedText] }
         })
+    }
+    fn show_bubble_context_menu(&self, event: &NSEvent) -> bool {
+        let Some(root) = self.contentView() else {
+            return false;
+        };
+        let location = event.locationInWindow();
+        let Some(hit) = root.hitTest(location) else {
+            return false;
+        };
+        if hit.downcast_ref::<BubbleView>().is_none()
+            && !crate::session_cards::is_card_header_hit(&hit, location)
+        {
+            return false;
+        }
+        // Copy only the state needed for this invocation. Menu tracking can
+        // synchronously invoke the target, so no UI RefCell borrow may survive.
+        let Some((locale, composing, target, mtm)) = UI.with(|cell| {
+            let slot = cell.try_borrow().ok()?;
+            let ui = slot.as_ref()?;
+            Some((
+                ui.locale,
+                ui.composer_marked(),
+                ui._menu_target.clone(),
+                ui.mtm,
+            ))
+        }) else {
+            return false;
+        };
+        let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
+        menu.setAutoenablesItems(false);
+        let close = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(text(locale, Message::CloseBubbleWindow)),
+                Some(sel!(closeBubbleWindow:)),
+                &NSString::from_str(""),
+            )
+        };
+        unsafe { close.setTarget(Some(target.as_ref())) };
+        close.setEnabled(!composing);
+        menu.addItem(&close);
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &root);
+        true
     }
 }
 
@@ -1226,6 +1280,18 @@ define_class!(
         #[unsafe(method(hideBubble:))]
         fn hide_bubble(&self, _sender: Option<&AnyObject>) {
             with_ui_action("hide_bubble");
+        }
+
+        #[unsafe(method(closeBubbleWindow:))]
+        fn close_bubble_window(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| {
+                if ui.composer_marked() {
+                    return;
+                }
+                if ui.apply_control("hide_bubble").is_err() {
+                    ui.refresh();
+                }
+            });
         }
         #[unsafe(method(expandBubble:))]
         fn expand_bubble(&self, _sender: Option<&AnyObject>) {
