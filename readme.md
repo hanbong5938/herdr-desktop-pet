@@ -47,7 +47,7 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | Pinned prebuilt v0.1.10 (downloaded by the plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
+| App | Pinned prebuilt v0.1.11 (downloaded by the plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
 
@@ -60,7 +60,7 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to the manifest `version` (v0.1.10) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl` rather than a browser or cask download, it carries no quarantine attribute and macOS shows no Gatekeeper prompt. Client-attach auto-start still requires the supplied host patch: run these commands with the patched Herdr host described above.
+Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to the manifest `version` (v0.1.11) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl` rather than a browser or cask download, no quarantine attribute is set and macOS shows no Gatekeeper prompt. Client-attach auto-start still needs the supplied host patch: run these commands against the patched Herdr host described above.
 
 The repository is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing.
 
@@ -102,6 +102,12 @@ bash scripts/install.sh --source
 
 The installer installs pinned JavaScript dependencies, builds the Rust executable, packages the native rig runtime and creator resources, and validates the app. Linking/enabling on an already-running server does not itself launch the pet: invoke `start` once, or wait for a subsequent successful shell/terminal client attach when `auto_start` is on. Server startup also runs automatic `ensure`. Inspect link warnings: an unknown `client.attached` hook means the host lacks the required patch. Herdr plugin actions require a running, enabled host; direct native settings commands below work without one.
 
+**v0.1.11 adds a native bubble context menu:** right-click or Control-click
+the bubble background or a card header and choose **Close Bubble Window** to
+hide only the bubble. The character, app, Herdr session, selected card, and
+reply drafts remain; closing saves bubble visibility, while drafts persist
+only in memory for this app run. **Close Bubble Window** is disabled during IME composition and rechecked when chosen.
+
 **v0.1.10 fixes the reviewed white-background pockets and contaminated hair/arm
 boundaries in the ten-pose default.** Face, clothes, skin interior, expressions,
 motion, `default@0`, and existing imported character selections are preserved.
@@ -123,8 +129,11 @@ The older **v0.1.4 prebuilt message composer** differs from v0.1.6 inline replie
 | Expanded bubble session card (`--source` only) | Open a one-line reply beneath the selected local agent session; switching cards waits for active IME composition to end, while remote cards show read-only feedback |
 | Inline reply (`--source` only) | Enter, Command+Enter, or Send submits to the selected local session; IME composition does not submit |
 | Escape in the reply / click outside the bubble (`--source` only) | Escape cancels active IME composition first; otherwise either folds only the reply field. Inside-bubble clicks do not automatically fold it; outside clicks do not fold during composition |
+| Right-click / Control-click the bubble background or a card header | Open **Close Bubble Window**; choosing it hides only the bubble, not the character, app, or Herdr session |
 | Full-window click-through | Pass clicks through both the pet and bubble windows, disabling their interaction |
 | Alpha click-through | Pass clicks through transparent artwork regions |
+
+The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Close Bubble Window** is disabled during active IME composition; finish composition and open the menu again to close. Reopen from **Bubble → Bubble visible** in the menu-bar panel. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
 
 The menu panel uses native dropdowns for bubble theme and UI language. Choose **System** to follow the system language, or select Korean or English explicitly. Theme and language selections are saved when changed; custom bubble colors keep their **Apply colors** action.
 

@@ -152,6 +152,7 @@ jobs:
 
             - The only bundled character is Rubelia (`rubelia-at12-multi-pose`), a rig with ten independent upper-thigh poses.
             - Rubelia originates from shared-world-canon and is deployed with the owner's authorization; AI/model-use provenance and license records are included in the app.
+            - v0.1.11 adds a localized Close Bubble Window option to the native context menu when right-clicking (or Control-clicking) the bubble background or card header. It hides only the bubble, saves its visibility, and leaves the app, session, drafts, and native menus and controls intact; the option is disabled during IME composition.
             - v0.1.10 removes reviewed white-background hair pockets and contaminated rims across the ten-pose default, including the bent-arm gap, without changing the face, clothes, skin interior, expressions or motion.
             - The repository includes the MIT-preserving DAEMONLET character-production skill fork for local Qwen-Image-2.1 and See-through, with recorded dependency/model-license boundaries.
             - Source-bound mattes and repair provenance are included; the native character-production skill supports reviewed post-export correction and guarded parent-pack cutover.
