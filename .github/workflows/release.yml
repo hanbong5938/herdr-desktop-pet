@@ -32,25 +32,20 @@ jobs:
           cache: npm
           cache-dependency-path: web/rig/package-lock.json
 
-      - name: Validate release tag and repository metadata
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+
+      - name: Validate release tag, versions, and reviewed notes
         shell: bash
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "error: release tags must be v<semver> (got $tag)" >&2
-            exit 1
-          fi
+          bun scripts/release-docs.ts check "$tag" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$RUNNER_TEMP/herdr-release-notes.md"
           version="${tag#v}"
-          package_version="$(node -e 'const p=require("./package.json"); process.stdout.write(String(p.version ?? ""))')"
-          if [[ "$package_version" != "$version" ]]; then
-            echo "error: tag $tag does not match package version $package_version" >&2
-            exit 1
-          fi
-          if [[ ! "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-            echo "error: GitHub supplied an invalid repository name: ${GITHUB_REPOSITORY}" >&2
-            exit 1
-          fi
           {
             echo "HERDR_PET_REPOSITORY=${GITHUB_REPOSITORY}"
             echo "HERDR_PET_VERSION=${version}"
@@ -61,11 +56,6 @@ jobs:
       - name: Install native rig JavaScript dependencies
         working-directory: web/rig
         run: npm ci
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: "1.4.2"
 
       - name: Install Rust stable toolchain
         shell: bash
@@ -83,8 +73,8 @@ jobs:
       - name: Check TypeScript packaging scripts
         run: bun run check
 
-      - name: Test rig decoding and background pocket repair
-        run: bun test tools/repair-hair-pockets.test.ts web/rig
+      - name: Test release docs, Wiki rendering, rig decoding and background pocket repair
+        run: bun test scripts/release-docs.test.ts scripts/wiki-docs.test.ts tools/repair-hair-pockets.test.ts web/rig
 
       - name: Check native crate
         run: cargo check --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
@@ -146,19 +136,21 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           fail_on_unmatched_files: true
-          body: |
-            Herdr Desktop Pet ${{ github.ref_name }} for Apple Silicon macOS 13+ (arm64).
-
-            - The only bundled character is Rubelia (`rubelia-at12-multi-pose`), a rig with ten independent upper-thigh poses.
-            - Rubelia originates from shared-world-canon and is deployed with the owner's authorization; AI/model-use provenance and license records are included in the app.
-            - v0.1.11 adds a localized Close Bubble Window option to the native context menu when right-clicking (or Control-clicking) the bubble background or card header. It hides only the bubble, saves its visibility, and leaves the app, session, drafts, and native menus and controls intact; the option is disabled during IME composition.
-            - v0.1.10 removes reviewed white-background hair pockets and contaminated rims across the ten-pose default, including the bent-arm gap, without changing the face, clothes, skin interior, expressions or motion.
-            - The repository includes the MIT-preserving DAEMONLET character-production skill fork for local Qwen-Image-2.1 and See-through, with recorded dependency/model-license boundaries.
-            - Source-bound mattes and repair provenance are included; the native character-production skill supports reviewed post-export correction and guarded parent-pack cutover.
-            - Known artwork limitation: some downcast poses differ slightly from the waiting face.
-            - Release bundles are ad-hoc signed, not Developer ID signed or notarized.
+          body_path: ${{ runner.temp }}/herdr-release-notes.md
+          prerelease: false
           files: |
             ${{ env.HERDR_PET_ASSET_NAME }}
             ${{ env.HERDR_PET_ASSET_NAME }}.sha256
             SHA256SUMS
+
+  wiki_sync:
+    needs: release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/wiki.yml
+    with:
+      required_release: ${{ github.ref_name }}
+    secrets:
+      WIKI_PUBLISH_TOKEN: ${{ secrets.WIKI_PUBLISH_TOKEN }}
