@@ -1,0 +1,150 @@
+name: Sync reviewed documentation to Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/releases/**"
+      - "docs/migrations/**"
+      - "scripts/wiki-docs.ts"
+      - "scripts/release-docs.ts"
+      - "scripts/publish-wiki.sh"
+      - ".github/workflows/wiki.yml"
+      - "readme.md"
+      - "readme.ko.md"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional published, complete stable release tag to require (blank for Wiki-only sync)"
+        required: false
+        default: ""
+        type: string
+  workflow_call:
+    inputs:
+      required_release:
+        description: "Published, complete stable release tag required before any Wiki push"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      WIKI_PUBLISH_TOKEN:
+        description: "Dedicated credential able to push this repository's initialized Wiki"
+        # May instead be supplied by the protected wiki-publishing environment.
+        # A missing credential fails clearly inside the publish step.
+        required: false
+
+permissions:
+  contents: read
+
+# One shared queue for push, manual repair and reusable release calls. Never
+# cancel a running publication or race two managed-tree commits in this repo.
+concurrency:
+  group: wiki-publication-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Render and publish Wiki
+    runs-on: ubuntu-24.04
+    env:
+      REQUIRED_RELEASE: ${{ inputs.required_release || inputs.tag || '' }}
+    steps:
+      - name: Resolve current reviewed default branch
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
+          git check-ref-format "refs/heads/$branch"
+          if [[ "$GITHUB_EVENT_NAME" != push && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+            echo "error: Wiki publication accepts only default-branch push/manual runs or a release-tag push caller, never pull-request code" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/$branch" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != push || -z "$REQUIRED_RELEASE" || "$GITHUB_REF" != "refs/tags/$REQUIRED_RELEASE" ]]; then
+              echo "error: run this workflow from the default branch, or call it after publishing the matching release tag" >&2
+              exit 1
+            fi
+          fi
+          encoded_branch="$(BRANCH="$branch" node -p 'encodeURIComponent(process.env.BRANCH)')"
+          metadata="$(gh api "repos/$GITHUB_REPOSITORY/branches/$encoded_branch")"
+          sha="$(printf '%s' "$metadata" | jq -r '.commit.sha')"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          {
+            echo "branch=$branch"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out immutable current default-branch source and all tags
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+
+      - name: Render complete reviewed Wiki before publishing
+        id: render
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          output="$RUNNER_TEMP/rendered-wiki-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          args=(--root "$GITHUB_WORKSPACE" --output "$output" --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_SHA")
+          if [[ -n "$REQUIRED_RELEASE" ]]; then
+            args+=(--require-release "$REQUIRED_RELEASE")
+          fi
+          bun scripts/wiki-docs.ts "${args[@]}"
+          echo "directory=$output" >> "$GITHUB_OUTPUT"
+
+      - name: Publish only managed Wiki files
+        env:
+          # This credential is available only to the publication process, never
+          # checkout, API catalog reads or rendering. No credential-bearing URL.
+          WIKI_PUBLISH_TOKEN: ${{ secrets.WIKI_PUBLISH_TOKEN }}
+          SOURCE_DIRECTORY: ${{ steps.render.outputs.directory }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set +x
+          set -euo pipefail
+          bash scripts/publish-wiki.sh --source-dir "$SOURCE_DIRECTORY" \
+            --repository "$GITHUB_REPOSITORY" --source-ref "$SOURCE_SHA"
+
+      - name: Explain Wiki-only repair after a published release
+        if: failure() && env.REQUIRED_RELEASE != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Confirm the Release independently: a failed requirement may have
+          # rejected an unpublished tag, so do not falsely claim it shipped.
+          encoded_tag="$(TAG="$REQUIRED_RELEASE" node -p 'encodeURIComponent(process.env.TAG)')"
+          if record="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$encoded_tag" 2>/dev/null)" && \
+             [[ "$(printf '%s' "$record" | jq -r '.draft == false and .published_at != null')" == true ]]; then
+            release_url="$(printf '%s' "$record" | jq -r '.html_url')"
+            {
+              echo '## Release published, but Wiki synchronization failed'
+              echo
+              printf 'The [GitHub Release](%s) remains published. This job did not alter its tag, assets, body, or app version.\n\n' "$release_url"
+              printf 'Inspect the failing step, repair Wiki setup/credentials or canonical documentation, then run [the Wiki-only repair workflow](https://github.com/%s/actions/workflows/wiki.yml) with tag `%s`. Do not rerun the binary release job to repair the Wiki.\n' "$GITHUB_REPOSITORY" "$REQUIRED_RELEASE"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo '## Wiki synchronization failed'
+              echo
+              printf 'A published Release for `%s` could not be confirmed; no Wiki publication succeeded. Inspect the failed step and the [Wiki-only repair workflow](https://github.com/%s/actions/workflows/wiki.yml).\n' "$REQUIRED_RELEASE" "$GITHUB_REPOSITORY"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
