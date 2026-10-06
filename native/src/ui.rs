@@ -28,7 +28,9 @@ use crate::i18n::{
 use crate::interaction::{GestureAction, Interaction, Point, RegionPolicy};
 use crate::lifecycle::{LifecycleSetting, Paths};
 use crate::menu_panel::MenuPanel;
-use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, Preferences};
+use crate::preferences::{
+    BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarMode, Preferences,
+};
 use crate::session_cards::{minimum_selectable_height, SessionCards};
 use crate::session_view::{SessionKey, SessionStatusSummary};
 use crate::sources::ObservationPreferences;
@@ -153,6 +155,10 @@ const BUBBLE_CARDS_MAX_HEIGHT: f64 = 180.0;
 const COMPOSER_REPLY_HEIGHT: f64 = 48.0;
 const COMPOSER_INPUT_HEIGHT: f64 = 22.0;
 const COMPOSER_STATUS_HEIGHT: f64 = 18.0;
+
+fn menu_bar_visible(scene: &Scene, mode: MenuBarMode) -> bool {
+    !scene.shutdown && (mode == MenuBarMode::Always || scene.needs_recovery_entry())
+}
 
 #[derive(Clone, Copy)]
 struct ExpandedSpacing {
@@ -768,8 +774,8 @@ struct Ui {
     bubble_fade: Option<BubbleFade>,
     reduced_motion: bool,
     _status_item: Retained<NSStatusItem>,
-    recovery_menu: Retained<NSMenu>,
-    recovery_menu_tracking: bool,
+    status_menu: Retained<NSMenu>,
+    status_menu_tracking: bool,
     context_anchor: Option<NSRect>,
     settings_anchor: Option<NSRect>,
     _menu_target: Retained<MenuTarget>,
@@ -1390,6 +1396,22 @@ define_class!(
             with_ui_action("scale_down");
         }
 
+        #[unsafe(method(setMenuBarMode:))]
+        fn set_menu_bar_mode(&self, sender: Option<&AnyObject>) {
+            let Some(popup) = sender.and_then(|sender| sender.downcast_ref::<NSPopUpButton>()) else {
+                return;
+            };
+            let Some(item) = popup.selectedItem() else {
+                return;
+            };
+            let mode = match item.tag() {
+                0 => MenuBarMode::Always,
+                1 => MenuBarMode::RecoveryOnly,
+                _ => return,
+            };
+            with_ui_mut(|ui| ui.set_menu_bar_mode(mode));
+        }
+
         #[unsafe(method(toggleLifecycleAutoStart:))]
         fn toggle_lifecycle_auto_start(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| ui.save_lifecycle_setting(LifecycleSetting::AutoStart));
@@ -1511,8 +1533,8 @@ define_class!(
             });
         }
 
-        #[unsafe(method(showRecoveryMenu:))]
-        fn show_recovery_menu(&self, _sender: Option<&AnyObject>) {
+        #[unsafe(method(showStatusMenu:))]
+        fn show_status_menu(&self, _sender: Option<&AnyObject>) {
             let Some((menu, button, event)) = with_ui_read(|ui| {
                 let button = ui._status_item.button(ui.mtm)?;
                 let event = NSApplication::sharedApplication(ui.mtm)
@@ -1536,13 +1558,16 @@ define_class!(
                             })
                         })
                     });
-                Some((ui.recovery_menu.clone(), button, event))
+                Some((ui.status_menu.clone(), button, event))
             }).flatten() else { return };
             if let Some(settings) = menu.itemAtIndex(1) {
                 settings.setEnabled(!with_ui_read(|ui| ui.composer_marked()).unwrap_or(true));
             }
             with_ui_mut(|ui| {
-                ui.recovery_menu_tracking = true;
+                if let Ok(state) = ui.shared.lock() {
+                    ui.sync_recover_item(&state.scene());
+                }
+                ui.status_menu_tracking = true;
                 ui.context_anchor = status_button_rect(&button);
             });
             if let Some(event) = event {
@@ -1557,10 +1582,9 @@ define_class!(
                 );
             }
             with_ui_mut(|ui| {
-                ui.recovery_menu_tracking = false;
+                ui.status_menu_tracking = false;
                 if let Ok(state) = ui.shared.lock() {
-                    let needed = state.scene().needs_recovery_entry();
-                    ui.sync_recovery_entry(needed);
+                    ui.sync_status_menu(&state.scene());
                 }
             });
         }
@@ -3127,12 +3151,13 @@ impl Ui {
         let mut menu_panel = MenuPanel::new(&menu_target, character_menu.view(), locale, mtm);
         menu_panel.set_bubble_appearance(bubble_appearance);
         menu_panel.set_show_status_indicators(prefs.show_status_indicators());
+        menu_panel.set_menu_bar_mode(prefs.menu_bar_mode());
         let status_bar = NSStatusBar::systemStatusBar();
         let status_item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
-        let recovery_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
-        recovery_menu.setAutoenablesItems(false);
+        let status_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
+        status_menu.setAutoenablesItems(false);
         add_context_item(
-            &recovery_menu,
+            &status_menu,
             mtm,
             &menu_target,
             locale,
@@ -3141,7 +3166,7 @@ impl Ui {
             true,
         );
         add_context_item(
-            &recovery_menu,
+            &status_menu,
             mtm,
             &menu_target,
             locale,
@@ -3149,9 +3174,9 @@ impl Ui {
             sel!(openContextSettings:),
             true,
         );
-        recovery_menu.addItem(&NSMenuItem::separatorItem(mtm));
+        status_menu.addItem(&NSMenuItem::separatorItem(mtm));
         add_context_item(
-            &recovery_menu,
+            &status_menu,
             mtm,
             &menu_target,
             locale,
@@ -3159,25 +3184,27 @@ impl Ui {
             sel!(quit:),
             true,
         );
+        if let Some(recover) = status_menu.itemAtIndex(0) {
+            let needed = scene.needs_recovery_entry();
+            recover.setHidden(!needed);
+            recover.setEnabled(needed);
+        }
         if let Some(button) = status_item.button(mtm) {
             if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str("arrow.uturn.backward.circle"),
-                Some(&NSString::from_str(text(
-                    locale,
-                    Message::RecoveryMenuTitle,
-                ))),
+                &NSString::from_str("pawprint.fill"),
+                Some(&NSString::from_str(text(locale, Message::MenuBarMenuTitle))),
             ) {
                 image.setTemplate(true);
                 button.setImage(Some(&image));
             }
             unsafe {
                 button.setTarget(Some(menu_target.as_ref()));
-                button.setAction(Some(sel!(showRecoveryMenu:)));
+                button.setAction(Some(sel!(showStatusMenu:)));
             }
-            set_accessibility_label(&button, text(locale, Message::RecoveryMenuTitle));
-            set_accessibility_identifier(&button, "pet-recovery-menu");
+            set_accessibility_label(&button, text(locale, Message::MenuBarMenuTitle));
+            set_accessibility_identifier(&button, "herdr-pet-menu");
         }
-        status_item.setVisible(scene.needs_recovery_entry());
+        status_item.setVisible(menu_bar_visible(&scene, prefs.menu_bar_mode()));
 
         let window_delegate = WindowDelegate::new(mtm);
         panel.setDelegate(Some(ProtocolObject::from_ref(&*window_delegate)));
@@ -3293,8 +3320,8 @@ impl Ui {
             bubble_fade: None,
             reduced_motion,
             _status_item: status_item,
-            recovery_menu,
-            recovery_menu_tracking: false,
+            status_menu,
+            status_menu_tracking: false,
             context_anchor: None,
             settings_anchor: None,
             _menu_target: menu_target,
@@ -3321,6 +3348,24 @@ impl Ui {
         ui.refresh();
         Ok(ui)
     }
+    fn set_menu_bar_mode(&mut self, mode: MenuBarMode) {
+        if mode != self.prefs.menu_bar_mode() {
+            if let Err(error) = self.prefs.save_menu_bar_mode(mode) {
+                self.menu_panel
+                    .set_menu_bar_mode(self.prefs.menu_bar_mode());
+                self.queue_bubble_appearance_error(Message::MenuBarModeSaveFailure, &error);
+                return;
+            }
+        }
+        self.menu_panel
+            .set_menu_bar_mode(self.prefs.menu_bar_mode());
+        if let Ok(state) = self.shared.lock() {
+            self.sync_status_menu(&state.scene());
+        } else {
+            self.sync_status_menu(&self.last_scene);
+        }
+    }
+
     fn set_show_status_indicators(&mut self, enabled: bool) {
         if enabled == self.prefs.show_status_indicators() {
             self.menu_panel.set_show_status_indicators(enabled);
@@ -3524,14 +3569,14 @@ impl Ui {
             .setTitle(&NSString::from_str(text(locale, Message::ComposerSend)));
         set_accessibility_label(&self.composer_view, text(locale, Message::ComposerInput));
         if let Some(button) = self._status_item.button(self.mtm) {
-            set_accessibility_label(&button, text(locale, Message::RecoveryMenuTitle));
+            set_accessibility_label(&button, text(locale, Message::MenuBarMenuTitle));
         }
         for (index, title) in [
             (0, Message::RecoverCharacterInteraction),
             (1, Message::ContextSettings),
             (3, Message::MenuQuit),
         ] {
-            if let Some(item) = self.recovery_menu.itemAtIndex(index) {
+            if let Some(item) = self.status_menu.itemAtIndex(index) {
                 item.setTitle(&NSString::from_str(text(locale, title)));
             }
         }
@@ -4076,6 +4121,7 @@ impl Ui {
             if let Ok(state) = self.shared.lock() {
                 self.menu_panel.sync(
                     &scene,
+                    self.prefs.menu_bar_mode(),
                     self.prefs.language(),
                     &status,
                     state.lifecycle_settings(),
@@ -4653,8 +4699,8 @@ impl Ui {
                 let _ = self.prefs.save();
             }
             self.hide_bubble_panel();
+            self.sync_status_menu(&scene);
             self.last_scene = scene;
-            self.sync_recovery_entry(false);
             self.did_present = true;
             stop_application(self.mtm);
             return;
@@ -4683,9 +4729,8 @@ impl Ui {
         } else if bubble_changed {
             let _ = self.prefs.save();
         }
-        let needed = scene.needs_recovery_entry();
+        self.sync_status_menu(&scene);
         self.last_scene = scene.clone();
-        self.sync_recovery_entry(needed);
         self.did_present = true;
         self.render(&scene, completed, None);
     }
@@ -6679,9 +6724,26 @@ impl Ui {
         }
     }
 
-    fn sync_recovery_entry(&self, needed: bool) {
-        if !self.recovery_menu_tracking && self._status_item.isVisible() != needed {
-            self._status_item.setVisible(needed);
+    fn sync_status_menu(&self, scene: &Scene) {
+        if self.status_menu_tracking {
+            return;
+        }
+        self.sync_recover_item(scene);
+        let visible = menu_bar_visible(scene, self.prefs.menu_bar_mode());
+        if self._status_item.isVisible() != visible {
+            self._status_item.setVisible(visible);
+        }
+    }
+
+    fn sync_recover_item(&self, scene: &Scene) {
+        if let Some(recover) = self.status_menu.itemAtIndex(0) {
+            let needed = scene.needs_recovery_entry();
+            if recover.isHidden() == needed {
+                recover.setHidden(!needed);
+            }
+            if recover.isEnabled() != needed {
+                recover.setEnabled(needed);
+            }
         }
     }
 
@@ -7114,6 +7176,7 @@ impl Ui {
         self.shutdown();
         if let Ok(mut state) = self.shared.lock() {
             state.request_shutdown();
+            self.sync_status_menu(&state.scene());
         }
         stop_application(self.mtm);
     }
@@ -7882,6 +7945,109 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1.0e-9
+    }
+
+    #[test]
+    fn menu_bar_visibility_covers_interactive_and_recovery_surfaces_in_both_modes() {
+        for (character, bubble, passthrough, recovery_only) in [
+            (true, true, false, false),
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, false, true),
+            (true, true, true, true),
+            (true, false, true, true),
+            (false, true, true, true),
+            (false, false, true, true),
+        ] {
+            let mut state = AppState::new();
+            if !character {
+                state.apply_control("hide").unwrap();
+            }
+            if !bubble {
+                state.apply_control("hide_bubble").unwrap();
+            }
+            if passthrough {
+                state.apply_control("toggle_passthrough").unwrap();
+            }
+            for alpha in [false, true] {
+                if alpha {
+                    state.apply_control("alpha_passthrough").unwrap();
+                }
+                let scene = state.scene();
+                assert_eq!(
+                    (
+                        scene.visible,
+                        scene.bubble_visible,
+                        scene.passthrough,
+                        scene.alpha_passthrough
+                    ),
+                    (character, bubble, passthrough, alpha),
+                );
+                assert!(menu_bar_visible(&scene, MenuBarMode::Always));
+                assert_eq!(
+                    menu_bar_visible(&scene, MenuBarMode::RecoveryOnly),
+                    recovery_only,
+                    "character={character}, bubble={bubble}, passthrough={passthrough}, alpha={alpha}",
+                );
+            }
+            state.request_shutdown();
+            let scene = state.scene();
+            assert!(!menu_bar_visible(&scene, MenuBarMode::Always));
+            assert!(!menu_bar_visible(&scene, MenuBarMode::RecoveryOnly));
+        }
+    }
+
+    #[test]
+    fn menu_bar_mode_changes_do_not_mutate_scene_and_recovery_restores_conditional_visibility() {
+        let mut state = AppState::new();
+        assert!(state.set_scale(0.8));
+        state.apply_control("bubble_left").unwrap();
+        let original = state.scene();
+        assert!(menu_bar_visible(&original, MenuBarMode::Always));
+        assert!(!menu_bar_visible(&original, MenuBarMode::RecoveryOnly));
+        let after_mode_change = state.scene();
+        assert_eq!(
+            (
+                after_mode_change.visible,
+                after_mode_change.bubble_visible,
+                after_mode_change.passthrough,
+                after_mode_change.alpha_passthrough,
+                after_mode_change.bubble_placement,
+                after_mode_change.scale,
+                after_mode_change.reset_position_revision,
+            ),
+            (
+                original.visible,
+                original.bubble_visible,
+                original.passthrough,
+                original.alpha_passthrough,
+                original.bubble_placement,
+                original.scale,
+                original.reset_position_revision,
+            )
+        );
+
+        state.apply_control("hide").unwrap();
+        assert!(!menu_bar_visible(&state.scene(), MenuBarMode::RecoveryOnly));
+        state.apply_control("hide_bubble").unwrap();
+        assert!(menu_bar_visible(&state.scene(), MenuBarMode::RecoveryOnly));
+        state.recover_interaction();
+        let recovered = state.scene();
+        assert!(recovered.visible);
+        assert!(!recovered.bubble_visible);
+        assert!(!recovered.passthrough);
+        assert_eq!(recovered.bubble_placement, original.bubble_placement);
+        assert_eq!(recovered.scale, original.scale);
+        assert!(!menu_bar_visible(&recovered, MenuBarMode::RecoveryOnly));
+        assert!(menu_bar_visible(&recovered, MenuBarMode::Always));
+
+        state.apply_control("toggle_passthrough").unwrap();
+        assert!(menu_bar_visible(&state.scene(), MenuBarMode::RecoveryOnly));
+        state.recover_interaction();
+        assert!(!menu_bar_visible(&state.scene(), MenuBarMode::RecoveryOnly));
+        state.apply_control("alpha_passthrough").unwrap();
+        assert!(!menu_bar_visible(&state.scene(), MenuBarMode::RecoveryOnly));
+        assert!(menu_bar_visible(&state.scene(), MenuBarMode::Always));
     }
 
     #[test]

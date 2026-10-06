@@ -23,6 +23,14 @@ pub(crate) enum BubbleTheme {
     Custom,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MenuBarMode {
+    #[default]
+    Always,
+    RecoveryOnly,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BubbleColor(u8, u8, u8);
 
@@ -143,6 +151,7 @@ pub struct Preferences {
     alpha_passthrough: bool,
     bubble_visible: bool,
     show_status_indicators: bool,
+    menu_bar_mode: MenuBarMode,
     bubble_placement: BubblePlacement,
     scale: f64,
     position: Option<(f64, f64)>,
@@ -166,6 +175,8 @@ struct DiskPreferences {
     bubble_visible: bool,
     #[serde(default = "default_show_status_indicators")]
     show_status_indicators: bool,
+    #[serde(default)]
+    menu_bar_mode: MenuBarMode,
     #[serde(default)]
     bubble_placement: BubblePlacement,
     scale: f64,
@@ -202,6 +213,7 @@ impl Default for Preferences {
             alpha_passthrough: false,
             bubble_visible: true,
             show_status_indicators: true,
+            menu_bar_mode: MenuBarMode::default(),
             bubble_placement: BubblePlacement::default(),
             scale: DEFAULT_SCALE,
             position: None,
@@ -294,6 +306,7 @@ impl Preferences {
             alpha_passthrough: disk.alpha_passthrough,
             bubble_visible: disk.bubble_visible,
             show_status_indicators: disk.show_status_indicators,
+            menu_bar_mode: disk.menu_bar_mode,
             bubble_placement: disk.bubble_placement,
             scale: disk.scale,
             position: disk.position.map(|value| (value[0], value[1])),
@@ -387,6 +400,11 @@ impl Preferences {
         self.save_show_status_indicators_in_directory(enabled, &directory)
     }
 
+    pub(crate) fn save_menu_bar_mode(&mut self, mode: MenuBarMode) -> Result<(), String> {
+        let directory = preferences_directory()?;
+        self.save_menu_bar_mode_in_directory(mode, &directory)
+    }
+
     pub(crate) fn observation(&self) -> &ObservationPreferences {
         &self.observation
     }
@@ -409,6 +427,18 @@ impl Preferences {
         candidate.observation = preference;
         candidate.save_in_directory(directory)?;
         self.observation = candidate.observation;
+        Ok(())
+    }
+
+    fn save_menu_bar_mode_in_directory(
+        &mut self,
+        mode: MenuBarMode,
+        directory: &Path,
+    ) -> Result<(), String> {
+        let mut candidate = self.clone();
+        candidate.menu_bar_mode = mode;
+        candidate.save_in_directory(directory)?;
+        self.menu_bar_mode = mode;
         Ok(())
     }
 
@@ -468,6 +498,7 @@ impl Preferences {
             alpha_passthrough: self.alpha_passthrough,
             bubble_visible: self.bubble_visible,
             show_status_indicators: self.show_status_indicators,
+            menu_bar_mode: self.menu_bar_mode,
             bubble_placement: self.bubble_placement,
             scale: self.scale,
             position: self.position.map(|(x, y)| [x, y]),
@@ -538,6 +569,10 @@ impl Preferences {
 
     pub fn show_status_indicators(&self) -> bool {
         self.show_status_indicators
+    }
+
+    pub(crate) fn menu_bar_mode(&self) -> MenuBarMode {
+        self.menu_bar_mode
     }
 
     pub fn bubble_placement(&self) -> BubblePlacement {
@@ -699,6 +734,7 @@ mod tests {
             alpha_passthrough: false,
             bubble_visible: true,
             show_status_indicators: true,
+            menu_bar_mode: MenuBarMode::default(),
             bubble_placement: BubblePlacement::Above,
             scale: f64::NAN,
             position: Some((f64::INFINITY, 2.0)),
@@ -860,6 +896,123 @@ mod tests {
         assert_eq!(loaded.position(), Some((-12.5, 44.0)));
         assert!(loaded.position_is_legacy());
 
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn missing_menu_bar_mode_in_current_and_legacy_files_preserves_existing_settings() {
+        for legacy_file in [false, true] {
+            let directory = isolated_preferences_directory();
+            let path = directory.join(PREFERENCES_FILE);
+            let legacy = directory.join("legacy-preferences.json");
+            let source = if legacy_file { &legacy } else { &path };
+            fs::write(
+                source,
+                br#"{"visible":false,"passthrough":true,"bubble_visible":false,"scale":0.875,"position":[123.25,456.75],"future_setting":{"a":1}}"#,
+            )
+            .expect("preferences without a menu bar mode should be written");
+
+            let loaded = Preferences::load_in_directory(
+                &directory,
+                if legacy_file {
+                    Some(legacy.as_path())
+                } else {
+                    None
+                },
+                false,
+            )
+            .expect("current or legacy preferences should load");
+            assert_eq!(loaded.menu_bar_mode(), MenuBarMode::Always);
+            assert!(!loaded.visible());
+            assert!(loaded.passthrough());
+            assert!(!loaded.bubble_visible());
+            assert_eq!(loaded.scale(), 0.875);
+            assert_eq!(loaded.position(), Some((123.25, 456.75)));
+            assert!(loaded.position_is_legacy());
+            assert_eq!(loaded.extra["future_setting"], serde_json::json!({"a": 1}));
+
+            let mut loaded = loaded;
+            loaded
+                .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+                .expect("menu bar mode should save with previous settings");
+            let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(disk["menu_bar_mode"], "recovery_only");
+            assert_eq!(disk["future_setting"], serde_json::json!({"a": 1}));
+            let reloaded = Preferences::load_path(&path).expect("saved preferences should reload");
+            assert_eq!(reloaded.menu_bar_mode(), MenuBarMode::RecoveryOnly);
+            assert!(!reloaded.visible());
+            assert!(reloaded.passthrough());
+            assert!(!reloaded.bubble_visible());
+            assert_eq!(reloaded.position(), Some((123.25, 456.75)));
+            assert!(reloaded.position_is_legacy());
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn menu_bar_mode_survives_language_appearance_and_geometry_saves() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        assert_eq!(preferences.menu_bar_mode(), MenuBarMode::Always);
+        preferences.set_position(Some((42.0, 64.0)));
+        preferences.set_standalone_bubble_position(Some((-1250.25, -310.75)));
+        preferences
+            .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+            .expect("conditional mode should save");
+        let mut reloaded = Preferences::load_path(&path).expect("mode should reload");
+        assert_eq!(reloaded.menu_bar_mode(), MenuBarMode::RecoveryOnly);
+        reloaded
+            .save_language_in_directory(LanguagePreference::En, &directory)
+            .expect("language should save");
+        reloaded
+            .save_bubble_appearance_in_directory(
+                BubbleAppearance {
+                    theme: BubbleTheme::DustyRose,
+                    custom: BubbleAppearance::default().custom,
+                },
+                &directory,
+            )
+            .expect("appearance should save");
+        reloaded.set_position(None);
+        reloaded
+            .save_in_directory(&directory)
+            .expect("position reset should save");
+
+        let restarted = Preferences::load_path(&path).expect("other saves should reload");
+        assert_eq!(restarted.menu_bar_mode(), MenuBarMode::RecoveryOnly);
+        assert_eq!(restarted.language(), LanguagePreference::En);
+        assert_eq!(restarted.bubble_appearance().theme, BubbleTheme::DustyRose);
+        assert_eq!(restarted.position(), None);
+        assert_eq!(
+            restarted.standalone_bubble_position(),
+            Some((-1250.25, -310.75))
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_menu_bar_mode_save_keeps_memory_and_disk_unchanged() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        preferences
+            .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+            .expect("initial mode should save");
+        let before = fs::read(&path).expect("initial settings should be readable");
+        let blocked = directory.join("not-a-directory");
+        fs::write(&blocked, b"sentinel").expect("blocking file should be written");
+
+        preferences
+            .save_menu_bar_mode_in_directory(MenuBarMode::Always, &blocked)
+            .expect_err("save through a file path should fail");
+        assert_eq!(preferences.menu_bar_mode(), MenuBarMode::RecoveryOnly);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&blocked).unwrap(), b"sentinel");
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().menu_bar_mode(),
+            MenuBarMode::RecoveryOnly
+        );
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -1141,6 +1294,7 @@ mod tests {
             alpha_passthrough: valid.alpha_passthrough,
             bubble_visible: valid.bubble_visible,
             show_status_indicators: valid.show_status_indicators,
+            menu_bar_mode: valid.menu_bar_mode,
             bubble_placement: valid.bubble_placement,
             scale: valid.scale,
             position: None,
@@ -1574,9 +1728,10 @@ mod tests {
 
     #[test]
     fn unusable_preferences_are_quarantined_only_for_the_daemon() {
-        let fixtures: [&[u8]; 3] = [
+        let fixtures: [&[u8]; 4] = [
             b"{not json",
             br#"{"visible":true,"passthrough":false,"bubble_placement":"diagonal","scale":0.65,"position":null}"#,
+            br#"{"visible":true,"passthrough":false,"menu_bar_mode":"sometimes","scale":0.65,"position":null}"#,
             br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"dialogue_overrides":{"characters":{"forest":{"fr":{"phases":{"idle":"wrong locale"}}}}}}"#,
         ];
         for invalid in fixtures {
@@ -1608,6 +1763,7 @@ mod tests {
             let defaults = Preferences::default();
             assert_eq!(loaded.visible(), defaults.visible());
             assert_eq!(loaded.passthrough(), defaults.passthrough());
+            assert_eq!(loaded.menu_bar_mode(), defaults.menu_bar_mode());
             assert_eq!(loaded.bubble_placement(), defaults.bubble_placement());
             assert_eq!(loaded.scale(), defaults.scale());
             assert_eq!(loaded.position(), defaults.position());

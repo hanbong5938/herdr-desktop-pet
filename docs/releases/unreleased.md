@@ -2,17 +2,18 @@
 
 [Versions](README.md) · [0.1 line](0.1.md) · [Versioning and compatibility](policy.md) · [Upgrade guidance](../migrations/unreleased.md) · [한국어 업그레이드 안내](../migrations/unreleased.ko.md)
 
-**Two different source authorities are documented here.** The repository documentation and publishing tools are on `main`. The four native feature groups below are implemented only in local `worktree/rapid-harbor-d2a6` at `bf23ced1649fd0074aec8736644c8f02aa0c492b`; they are **unmerged and absent from `main` and the public v0.1.11 binary**. The app version remains **0.1.11**; no next release version, release date, or native-preview download is assigned. A source commit or Wiki publication does not publish a binary release.
+**Distinct source authorities are documented here.** The repository documentation and publishing tools are on `main`. The four native feature groups below are implemented only in local `worktree/rapid-harbor-d2a6` at `bf23ced1649fd0074aec8736644c8f02aa0c492b`; they are **unmerged and absent from `main` and the public v0.1.11 binary**. The selectable menu-bar mode described separately below is a **current working-copy addition**, not a feature attributed to that historical commit or to the public binary. The app version remains **0.1.11**; no next release version, release date, or native-preview download is assigned. A source commit or Wiki publication does not publish a binary release.
 
 | Source | What it provides |
 | --- | --- |
 | Public v0.1.11 binary | Published baseline; none of the four pending native groups |
 | `main` source | Baseline native implementation plus repository documentation and publishing tools; none of the four pending native groups |
 | Local `worktree/rapid-harbor-d2a6` at `bf23ced1649fd0074aec8736644c8f02aa0c492b` | The four implemented but unmerged native groups; guidance only for users who already possess this checkout |
+| Current local working copy of `worktree/rapid-harbor-d2a6` | The four pending groups plus the separately added selectable menu-bar mode; neither is available from `main` or the public binary |
 
 `bash scripts/install.sh --source` builds the checkout you already have; running it on `main` does **not** install these native previews. The local branch name and commit identify the implementation, not a guaranteed public remote branch, fetchable commit, or download. Follow the bilingual root [English](../../readme.md) / [Korean](../../readme.ko.md) guides for baseline installation and runtime commands. Use the [pending-checkout upgrade guidance](../migrations/unreleased.md) only for that local implementation.
 
-All four pending native groups from the original pending-source record are retained below, separately from the main-branch documentation/tools change. The next four sections describe the identified **local checkout only**, not current `main` behavior or shipped binary features.
+All four pending native groups from the original pending-source record are retained below, separately from the main-branch documentation/tools change. The four historically identified group sections describe the **local checkout only**, not current `main` behavior or shipped binary features. The historical conditional-rescue policy in the second group is superseded **only in the current working copy** by the separately labeled menu-bar mode section after it.
 
 ## Compact observation settings
 
@@ -24,8 +25,14 @@ All four pending native groups from the original pending-source record are retai
 ## Contextual settings and conditional rescue
 
 - Right-click or Control-click the character, bubble background, or card header for **Settings…** in the same full three-tab panel. **Close Bubble Window** remains bubble-only. Native text/control menus remain intact. Disable **Settings…** and **Close Bubble Window** in the bubble menu while IME marked text is active, and recheck composition when either action runs.
-- A small menu-bar rescue icon appears **only** when both windows are hidden or full-window passthrough is on, including after restart and while Settings is open. Normal both-visible, character-only, and interactive bubble-only states use no menu-bar slot. A standalone bubble can show the character through its own menu.
+- In the original `bf23ced` implementation, a small menu-bar rescue icon appeared **only** when both windows were hidden or full-window passthrough was on, including after restart and while Settings was open. Normal both-visible, character-only, and interactive bubble-only states used no menu-bar slot. A standalone bubble could show the character through its own menu. This describes historical provenance, not the current working-copy default.
 - Alpha pointer polling alone never toggles the rescue icon. **Show and Enable Character / 캐릭터 표시·조작 복구** shows the character and turns off full-window passthrough without changing bubble visibility or alpha passthrough. The rescue menu also offers **Settings…** and **Quit**.
+
+## Current working-copy addition: selectable menu-bar icon
+
+- The single pawprint status icon identifies **Herdr Desktop Pet**. A new native **Menu bar icon / 메뉴 막대 아이콘** setting in the existing three-tab Settings panel offers **Always show / 항상 표시** (`always`) and **Only when recovery is needed / 복구가 필요할 때만 표시** (`recovery_only`). Missing `menu_bar_mode` in `preferences.json` defaults to Always, including existing profiles from the original checkout; no profile recreation is needed. An explicit RecoveryOnly choice persists across restart and unrelated preference saves.
+- Always displays the icon while the app runs. RecoveryOnly displays it only when both character and bubble are hidden **or** full-window passthrough is on; interactive standalone bubble alone is not a trigger, nor is alpha pointer passthrough alone. Both modes offer **Settings… / 설정…** and **Quit / 종료**; **Show and Enable Character / 캐릭터 표시·조작 복구** appears only while recovery is needed. Recovery shows the character and clears full-window passthrough, preserving bubble visibility and alpha passthrough. With Always the icon stays; with RecoveryOnly it disappears after the recovery menu closes when no longer needed.
+- A successful selection changes only the menu-bar mode; it does not change character/bubble visibility, full-window or alpha passthrough, placement, drafts, or lifecycle. A failed save leaves the prior selected mode and live icon behavior in place. Existing unknown/unrelated preferences are preserved. This is not a new CLI mode command, hotkey, badge, onboarding flow, version, or release.
 
 ## Independent character and bubble visibility
 
@@ -69,7 +76,7 @@ This page assigns neither an app release nor a host release, changes neither cha
 
 ## 한국어: 로컬 미병합 소스 변경과 안전 사항
 
-문서·게시 도구는 `main`에 있지만 아래 네이티브 네 묶음은 로컬 `worktree/rapid-harbor-d2a6`의 `bf23ced1649fd0074aec8736644c8f02aa0c492b`에만 구현된 **미병합 변경**이며 `main`이나 공개 v0.1.11 바이너리에 없습니다. `main`에서 `bash scripts/install.sh --source`를 실행해도 이 기능을 얻을 수 없습니다. 명령은 이미 가지고 있는 체크아웃만 빌드하며 이 로컬 브랜치·커밋을 공개 원격에서 가져올 수 있다는 보장은 없습니다. 앱 버전은 0.1.11로 유지하며 다음 버전·배포 날짜·다운로드는 지정하지 않습니다. 해당 로컬 구현을 이미 가지고 있다면 [한국어 미병합 업그레이드 안내](../migrations/unreleased.ko.md)를, 기준 앱 설치·실행에는 [루트 안내](../../readme.ko.md)를 따르세요. 다음 네 절은 이 로컬 구현에만 적용됩니다.
+문서·게시 도구는 `main`에 있지만 아래 네이티브 네 묶음은 로컬 `worktree/rapid-harbor-d2a6`의 `bf23ced1649fd0074aec8736644c8f02aa0c492b`에만 구현된 **미병합 변경**이며 `main`이나 공개 v0.1.11 바이너리에 없습니다. 이 문서의 메뉴 막대 모드 선택은 그 과거 커밋이 아닌 **현재 작업본에 별도로 추가된 기능**이며 공개 바이너리에도 없습니다. `main`에서 `bash scripts/install.sh --source`를 실행해도 이 기능을 얻을 수 없습니다. 명령은 이미 가지고 있는 체크아웃만 빌드하며 이 로컬 브랜치·커밋을 공개 원격에서 가져올 수 있다는 보장은 없습니다. 앱 버전은 0.1.11로 유지하며 다음 버전·배포 날짜·다운로드는 지정하지 않습니다. 해당 로컬 구현을 이미 가지고 있다면 [한국어 미병합 업그레이드 안내](../migrations/unreleased.ko.md)를, 기준 앱 설치·실행에는 [루트 안내](../../readme.ko.md)를 따르세요. 네 묶음의 원래 기록과 현재 작업본의 별도 추가 기능을 아래에서 구분합니다.
 
 ### 관찰 설정 정리
 
@@ -80,8 +87,14 @@ This page assigns neither an app release nor a host release, changes neither cha
 ### 문맥 설정과 조건부 복구 메뉴
 
 - 캐릭터, 대화창 배경, 카드 헤더의 우클릭/Control-click으로 같은 전체 3탭 **Settings…** 패널을 엽니다. 대화창 닫기는 대화창만 숨기며 텍스트·컨트롤의 원래 메뉴는 보존합니다. 대화창 메뉴의 **Settings…**와 **Close Bubble Window**는 IME 조합 중 비활성화하고 실행 시에도 조합 상태를 다시 확인합니다.
-- 메뉴 막대 복구 아이콘은 **두 창이 모두 숨겨졌거나 전체 창 클릭 통과가 켜졌을 때만** 나타나며, 재시작 후와 설정 창이 열려 있을 때도 같습니다. 두 창 표시, 캐릭터만 표시, 조작 가능한 대화창만 표시하는 상태는 메뉴 막대 공간을 쓰지 않습니다. 독립 대화창의 메뉴로 캐릭터를 다시 표시할 수 있습니다.
+- 원래 `bf23ced` 구현의 메뉴 막대 복구 아이콘은 **두 창이 모두 숨겨졌거나 전체 창 클릭 통과가 켜졌을 때만** 나타났으며, 재시작 후와 설정 창이 열려 있을 때도 같았습니다. 두 창 표시, 캐릭터만 표시, 조작 가능한 대화창만 표시하는 상태는 메뉴 막대 공간을 쓰지 않았습니다. 독립 대화창의 메뉴로 캐릭터를 다시 표시할 수 있었습니다. 현재 작업본의 기본값은 아래의 항상 표시입니다.
 - 알파 포인터 폴링만으로 아이콘을 켜거나 끄지 않습니다. **캐릭터 표시·조작 복구**는 캐릭터를 표시하고 전체 클릭 통과를 끄지만 대화창 표시 여부와 알파 클릭 통과는 바꾸지 않습니다. 메뉴에는 설정과 종료도 있습니다.
+
+### 현재 작업본 추가 기능: 메뉴 막대 아이콘 선택
+
+- 기존 `bf23ced` 기록의 위 조건부 복구 정책은 역사적 근거이며, 지금 작업본의 기본 동작이 아닙니다. **Herdr Desktop Pet** 발바닥 상태 아이콘 하나를 사용합니다. 기존 3탭 설정 패널의 **메뉴 막대 아이콘 / Menu bar icon**에서 **항상 표시 / Always show** (`always`) 또는 **복구가 필요할 때만 표시 / Only when recovery is needed** (`recovery_only`)를 선택합니다. 기존 프로필에서 `preferences.json`의 `menu_bar_mode`가 없어도 항상 표시가 기본이며 프로필 재생성은 필요 없습니다. 명시적으로 선택한 복구 시에만 표시는 재시작과 다른 설정 저장 후에도 유지됩니다.
+- 항상 표시는 앱 실행 중 아이콘을 유지합니다. 복구 시에만 표시는 캐릭터·대화창이 **모두 숨겨졌거나** 전체 창 클릭 통과가 켜졌을 때만 아이콘을 표시합니다. 조작 가능한 독립 대화창만 있거나 투명 영역 클릭 통과만 켜진 상태는 조건이 아닙니다. 두 모드 모두 메뉴에 **설정… / Settings…**과 **종료 / Quit**가 있고 복구가 필요할 때만 **캐릭터 표시·조작 복구 / Show and Enable Character**를 추가합니다. 복구는 캐릭터를 표시하고 전체 클릭 통과를 끄되 대화창 표시 여부·투명 영역 클릭 통과는 유지합니다. 항상 표시 모드는 아이콘을 유지하고 복구 시에만 표시는 메뉴를 닫은 뒤 복구 조건이 사라지면 아이콘을 제거합니다.
+- 선택 저장이 성공하면 메뉴 막대 모드만 바꾸며 창 표시·전체/투명 영역 클릭 통과·위치·초안·실행 관리는 바꾸지 않습니다. 저장 실패 시 이전 선택과 아이콘 동작을 유지하고 모르는 키·무관한 설정도 보존합니다. 이는 새 CLI 모드 명령·단축키·배지·첫 실행 안내·버전·릴리스가 아닙니다.
 
 ### 캐릭터·대화창 표시 독립
 

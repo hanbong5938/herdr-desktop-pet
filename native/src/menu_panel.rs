@@ -2,7 +2,7 @@ use crate::bubble::BubblePlacement;
 use crate::i18n::{text, LanguagePreference, Message, UiLocale};
 use crate::lifecycle::LifecycleSettings;
 use crate::lifecycle_settings_ui::{LifecycleSettingsCard, CARD_HEIGHT};
-use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme};
+use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarMode};
 use crate::sources::{MachineStatus, ObservationPreferences, SourceCatalog};
 use crate::state::Scene;
 use crate::ui::MenuTarget;
@@ -31,6 +31,10 @@ const FOOTER_HEIGHT: f64 = 50.0;
 const CHARACTER_CONTENT_HEIGHT: f64 = 404.0;
 const BUBBLE_CONTENT_HEIGHT: f64 = 578.0;
 const SETTINGS_BASE_HEIGHT: f64 = 308.0 + CARD_HEIGHT + 14.0;
+const MENU_BAR_CARD_TOP: f64 = 300.0;
+const MENU_BAR_CARD_GAP: f64 = 8.0;
+const MENU_BAR_HELP_TOP: f64 = 64.0;
+const MENU_BAR_CARD_BOTTOM: f64 = 14.0;
 const MIN_SCALE: f64 = 0.35;
 const MAX_SCALE: f64 = 1.25;
 
@@ -380,6 +384,10 @@ pub(crate) struct MenuPanel {
     scale_up: Retained<NSButton>,
     language_label: Retained<NSTextField>,
     language_popup: Retained<NSPopUpButton>,
+    menu_bar_card: Retained<MenuPanelCard>,
+    menu_bar_label: Retained<NSTextField>,
+    menu_bar_popup: Retained<NSPopUpButton>,
+    menu_bar_help: Retained<NSTextField>,
     lifecycle_card: LifecycleSettingsCard,
     observation_card: Retained<MenuPanelCard>,
     observation_title: Retained<NSTextField>,
@@ -876,6 +884,37 @@ impl MenuPanel {
         language_card.addSubview(&language_label);
         language_card.addSubview(&language_popup);
         settings_tab.addSubview(&language_card);
+        let menu_bar_card = MenuPanelCard::new(NSRect::default(), mtm);
+        set_accessibility_element(&*menu_bar_card, false);
+        let menu_bar_label = label(
+            text(locale, Message::MenuBarIcon),
+            12.5,
+            true,
+            primary(),
+            mtm,
+        );
+        let menu_bar_popup = make_selection_popup(
+            &[
+                (Message::MenuBarAlways, 0),
+                (Message::MenuBarRecoveryOnly, 1),
+            ],
+            locale,
+            target,
+            sel!(setMenuBarMode:),
+            mtm,
+        );
+        let menu_bar_help = label(
+            text(locale, Message::MenuBarModeHelp),
+            10.0,
+            false,
+            secondary(),
+            mtm,
+        );
+        menu_bar_help.setMaximumNumberOfLines(0);
+        menu_bar_card.addSubview(&menu_bar_label);
+        menu_bar_card.addSubview(&menu_bar_popup);
+        menu_bar_card.addSubview(&menu_bar_help);
+        settings_tab.addSubview(&menu_bar_card);
         let observation_card = MenuPanelCard::new(NSRect::default(), mtm);
         set_accessibility_element(&*observation_card, false);
         let observation_title = label(
@@ -1022,6 +1061,10 @@ impl MenuPanel {
             scale_up,
             language_label,
             language_popup,
+            menu_bar_card,
+            menu_bar_label,
+            menu_bar_popup,
+            menu_bar_help,
             lifecycle_card,
             observation_card,
             observation_title,
@@ -1045,6 +1088,7 @@ impl MenuPanel {
             quit,
             selected_tab: 0,
         };
+        panel.set_menu_bar_mode(MenuBarMode::Always);
         panel.select_tab(0);
         panel.update_color_swatches();
         panel.set_locale(locale);
@@ -1142,6 +1186,7 @@ impl MenuPanel {
     pub(crate) fn sync(
         &mut self,
         scene: &Scene,
+        menu_bar_mode: MenuBarMode,
         language: LanguagePreference,
         status: &str,
         lifecycle: LifecycleSettings,
@@ -1210,6 +1255,7 @@ impl MenuPanel {
         self.scale_up.setEnabled(scale < MAX_SCALE - f64::EPSILON);
 
         self.set_language_preference(language);
+        self.set_menu_bar_mode(menu_bar_mode);
         self.status.setStringValue(&NSString::from_str(status));
         self.lifecycle_card.sync(lifecycle);
         self.sync_observation(observation, catalog);
@@ -1224,6 +1270,13 @@ impl MenuPanel {
             LanguagePreference::En => 2,
         };
         self.language_popup.selectItemWithTag(tag);
+    }
+
+    pub(crate) fn set_menu_bar_mode(&self, mode: MenuBarMode) {
+        self.menu_bar_popup.selectItemWithTag(match mode {
+            MenuBarMode::Always => 0,
+            MenuBarMode::RecoveryOnly => 1,
+        });
     }
 
     pub(crate) fn revert_observation_controls(&mut self) {
@@ -1712,6 +1765,33 @@ impl MenuPanel {
                 locale,
                 Message::FollowSystemSettings,
             ))));
+        self.menu_bar_label
+            .setStringValue(&NSString::from_str(text(locale, Message::MenuBarIcon)));
+        set_accessibility_label(&*self.menu_bar_label, text(locale, Message::MenuBarIcon));
+        self.menu_bar_help
+            .setStringValue(&NSString::from_str(text(locale, Message::MenuBarModeHelp)));
+        localize_popup_items(
+            &self.menu_bar_popup,
+            locale,
+            &[
+                (Message::MenuBarAlways, 0),
+                (Message::MenuBarRecoveryOnly, 1),
+            ],
+        );
+        set_accessibility_label(&self.menu_bar_popup, text(locale, Message::MenuBarIcon));
+        set_accessibility_label(&*self.menu_bar_help, text(locale, Message::MenuBarModeHelp));
+        set_tooltip(&self.menu_bar_popup, text(locale, Message::MenuBarModeHelp));
+        for tag in [0, 1] {
+            self.menu_bar_popup
+                .menu()
+                .expect("menu bar mode popup menu")
+                .itemWithTag(tag)
+                .expect("menu bar mode item")
+                .setToolTip(Some(&NSString::from_str(text(
+                    locale,
+                    Message::MenuBarModeHelp,
+                ))));
+        }
         self.locale = locale;
         self.observation_catalog = None;
         self.observation_title
@@ -2188,7 +2268,16 @@ impl MenuPanel {
     }
 
     fn settings_height(&self, card_width: f64) -> f64 {
-        SETTINGS_BASE_HEIGHT + self.observation_height(card_width)
+        settings_content_height(
+            self.menu_bar_card_height(card_width),
+            self.observation_height(card_width),
+        )
+    }
+
+    fn menu_bar_card_height(&self, card_width: f64) -> f64 {
+        MENU_BAR_HELP_TOP
+            + measured_label_height(&self.menu_bar_help, (card_width - 28.0).max(1.0)).max(16.0)
+            + MENU_BAR_CARD_BOTTOM
     }
 
     fn layout_settings(&self, card_width: f64) {
@@ -2269,13 +2358,36 @@ impl MenuPanel {
             NSPoint::new(14.0, 30.0),
             NSSize::new((card_width - 28.0).max(1.0), 26.0),
         ));
+        let menu_bar_height = self.menu_bar_card_height(card_width);
+        self.menu_bar_card.setFrame(NSRect::new(
+            NSPoint::new(8.0, MENU_BAR_CARD_TOP),
+            NSSize::new(card_width, menu_bar_height),
+        ));
+        self.menu_bar_label.setFrame(NSRect::new(
+            NSPoint::new(14.0, 8.0),
+            NSSize::new((card_width - 28.0).max(1.0), 18.0),
+        ));
+        self.menu_bar_popup.setFrame(NSRect::new(
+            NSPoint::new(14.0, 30.0),
+            NSSize::new((card_width - 28.0).max(1.0), 26.0),
+        ));
+        self.menu_bar_help.setFrame(NSRect::new(
+            NSPoint::new(14.0, MENU_BAR_HELP_TOP),
+            NSSize::new(
+                (card_width - 28.0).max(1.0),
+                menu_bar_height - MENU_BAR_HELP_TOP - MENU_BAR_CARD_BOTTOM,
+            ),
+        ));
         let observation_height = self.layout_observation(card_width, true);
         self.observation_card.setFrame(NSRect::new(
-            NSPoint::new(8.0, 300.0),
+            NSPoint::new(8.0, MENU_BAR_CARD_TOP + menu_bar_height + MENU_BAR_CARD_GAP),
             NSSize::new(card_width, observation_height),
         ));
         self.lifecycle_card.layout(NSRect::new(
-            NSPoint::new(8.0, 308.0 + observation_height),
+            NSPoint::new(
+                8.0,
+                MENU_BAR_CARD_TOP + menu_bar_height + MENU_BAR_CARD_GAP * 2.0 + observation_height,
+            ),
             NSSize::new(card_width, CARD_HEIGHT),
         ));
     }
@@ -2437,6 +2549,10 @@ impl MenuPanel {
         y += 27.0;
         y + 14.0
     }
+}
+
+fn settings_content_height(menu_bar_height: f64, observation_height: f64) -> f64 {
+    SETTINGS_BASE_HEIGHT + MENU_BAR_CARD_GAP + menu_bar_height + observation_height
 }
 
 fn measured_label_height(field: &NSTextField, width: f64) -> f64 {
@@ -2799,5 +2915,25 @@ fn placement_index(placement: BubblePlacement) -> usize {
         BubblePlacement::Below => 2,
         BubblePlacement::Left => 3,
         BubblePlacement::Right => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_document_keeps_wrapped_menu_bar_help_and_lifecycle_scrollable() {
+        for (help_height, observation_height) in [(16.0, 200.0), (44.0, 310.0), (100.0, 500.0)] {
+            let menu_bar_height = MENU_BAR_HELP_TOP + help_height + MENU_BAR_CARD_BOTTOM;
+            let observation_top = MENU_BAR_CARD_TOP + menu_bar_height + MENU_BAR_CARD_GAP;
+            let lifecycle_top = observation_top + observation_height + MENU_BAR_CARD_GAP;
+            let document_height = settings_content_height(menu_bar_height, observation_height);
+
+            assert!(observation_top >= MENU_BAR_CARD_TOP + menu_bar_height);
+            assert!(lifecycle_top >= observation_top + observation_height);
+            assert!(document_height >= lifecycle_top + CARD_HEIGHT + 14.0);
+            assert!(document_height > 240.0); // A short panel must expose the rest via scrolling.
+        }
     }
 }
