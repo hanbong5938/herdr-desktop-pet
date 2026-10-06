@@ -5,7 +5,7 @@ use crate::herdr_protocol::{
 };
 use crate::lifecycle::LifecycleSettings;
 use crate::session::OutcomeObservation;
-use crate::session_view::SessionKey;
+use crate::session_view::{SessionKey, WorktreeRemoveTarget, WorktreeRemoveTargetError};
 use crate::state::{AppState, SessionStatusUpdate, SourceCounts};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ const WORKER_TICK: Duration = Duration::from_millis(100);
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(650);
 const DISCONNECTION_GRACE: Duration = Duration::from_secs(30);
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(3);
+const WORKTREE_REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 static PROMPT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -237,6 +238,218 @@ fn send_prompt(
                     != Some(target.pane_id.as_str())
             {
                 return Err(PromptError::UnknownDelivery);
+            }
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WorktreeRemoveError {
+    Busy,
+    Offline,
+    ReadOnly,
+    StaleTarget,
+    NotLinkedWorktree,
+    Unsupported,
+    UnknownDelivery,
+    Rejected { code: String, message: String },
+    Other(String),
+}
+
+impl From<WorktreeRemoveTargetError> for WorktreeRemoveError {
+    fn from(error: WorktreeRemoveTargetError) -> Self {
+        match error {
+            WorktreeRemoveTargetError::ReadOnly => Self::ReadOnly,
+            WorktreeRemoveTargetError::Offline => Self::Offline,
+            WorktreeRemoveTargetError::Stale => Self::StaleTarget,
+            WorktreeRemoveTargetError::NotLinkedWorktree => Self::NotLinkedWorktree,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct WorktreeRemoveResult {
+    pub(crate) target: WorktreeRemoveTarget,
+    pub(crate) result: Result<(), WorktreeRemoveError>,
+}
+
+/// A confirmed, frozen target is handed to a one-shot worker. The watcher
+/// remains the sole publisher of subsequent authoritative observations.
+pub(crate) struct WorktreeRemoveSender {
+    shared: Arc<Mutex<AppState>>,
+    pending: Option<(Receiver<WorktreeRemoveResult>, WorktreeRemoveTarget)>,
+}
+
+impl WorktreeRemoveSender {
+    pub(crate) fn new(shared: Arc<Mutex<AppState>>) -> Self {
+        Self {
+            shared,
+            pending: None,
+        }
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub(crate) fn submit(
+        &mut self,
+        target: WorktreeRemoveTarget,
+    ) -> Result<(), WorktreeRemoveError> {
+        if self.is_pending() {
+            return Err(WorktreeRemoveError::Busy);
+        }
+        let current = self
+            .shared
+            .lock()
+            .map_err(|_| WorktreeRemoveError::Offline)?
+            .worktree_remove_target(&target.key)?;
+        if current != target {
+            return Err(WorktreeRemoveError::StaleTarget);
+        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let shared = Arc::clone(&self.shared);
+        let pending_target = target.clone();
+        thread::Builder::new()
+            .name("herdr-desktop-pet-worktree-remove".to_owned())
+            .spawn(move || {
+                let result = send_worktree_remove(&shared, &target);
+                let _ = tx.send(WorktreeRemoveResult { target, result });
+                wake_ui();
+            })
+            .map_err(|error| WorktreeRemoveError::Other(error.to_string()))?;
+        self.pending = Some((rx, pending_target));
+        Ok(())
+    }
+
+    pub(crate) fn try_result(&mut self) -> Option<WorktreeRemoveResult> {
+        let (receiver, _) = self.pending.as_ref()?;
+        match receiver.try_recv() {
+            Ok(result) => {
+                self.pending = None;
+                Some(result)
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                let (_, target) = self.pending.take()?;
+                Some(WorktreeRemoveResult {
+                    target,
+                    result: Err(WorktreeRemoveError::UnknownDelivery),
+                })
+            }
+        }
+    }
+}
+
+fn worktree_request_id() -> String {
+    format!(
+        "desktop-pet-worktree-remove-{}-{}",
+        std::process::id(),
+        PROMPT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn send_worktree_remove(
+    shared: &Arc<Mutex<AppState>>,
+    target: &WorktreeRemoveTarget,
+) -> Result<(), WorktreeRemoveError> {
+    let current = shared
+        .lock()
+        .map_err(|_| WorktreeRemoveError::Offline)?
+        .worktree_remove_target(&target.key)?;
+    if &current != target {
+        return Err(WorktreeRemoveError::StaleTarget);
+    }
+    let path = Path::new(&target.source);
+    if crate::socket::canonical_endpoint(path).map_err(|_| WorktreeRemoveError::StaleTarget)?
+        != path
+    {
+        return Err(WorktreeRemoveError::StaleTarget);
+    }
+    let snapshot = herdr_protocol::request(
+        path,
+        &worktree_request_id(),
+        "session.snapshot",
+        serde_json::json!({}),
+        REQUEST_TIMEOUT,
+    )
+    .and_then(herdr_protocol::parse_snapshot)
+    .map_err(|error| match error {
+        ProtocolError::Io(_) | ProtocolError::Timeout | ProtocolError::EmptyResponse => {
+            WorktreeRemoveError::Offline
+        }
+        _ => WorktreeRemoveError::StaleTarget,
+    })?;
+    if snapshot
+        .panes
+        .iter()
+        .filter(|pane| *pane == &target.pane_id)
+        .count()
+        != 1
+        || snapshot
+            .agents
+            .iter()
+            .filter(|agent| {
+                agent.terminal_id == target.key.terminal_id || agent.pane_id == target.pane_id
+            })
+            .count()
+            != 1
+        || !snapshot.agents.iter().any(|agent| {
+            agent.terminal_id == target.key.terminal_id
+                && agent.pane_id == target.pane_id
+                && agent.metadata.workspace_id.as_deref() == Some(target.workspace_id.as_str())
+                && agent.metadata.worktree.as_deref() == Some(target.worktree.as_ref())
+        })
+    {
+        return Err(WorktreeRemoveError::StaleTarget);
+    }
+    let current = shared
+        .lock()
+        .map_err(|_| WorktreeRemoveError::Offline)?
+        .worktree_remove_target(&target.key)?;
+    if &current != target {
+        return Err(WorktreeRemoveError::StaleTarget);
+    }
+    let response = herdr_protocol::request_with_delivery(
+        path,
+        &worktree_request_id(),
+        "worktree.remove",
+        serde_json::json!({ "workspace_id": target.workspace_id, "force": false }),
+        WORKTREE_REMOVE_TIMEOUT,
+    )
+    .map_err(|(error, attempted)| {
+        if attempted {
+            WorktreeRemoveError::UnknownDelivery
+        } else {
+            match error {
+                ProtocolError::Io(_) | ProtocolError::Timeout => WorktreeRemoveError::Offline,
+                other => WorktreeRemoveError::Other(other.to_string()),
+            }
+        }
+    })?;
+    match response {
+        herdr_protocol::Response::Error { code, message } => Err(
+            if matches!(
+                code.as_str(),
+                "unsupported_method" | "method_not_found" | "unknown_method"
+            ) {
+                WorktreeRemoveError::Unsupported
+            } else {
+                WorktreeRemoveError::Rejected { code, message }
+            },
+        ),
+        herdr_protocol::Response::Success { result } => {
+            if result.get("type").and_then(serde_json::Value::as_str) != Some("worktree_removed")
+                || result
+                    .get("workspace_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(target.workspace_id.as_str())
+                || result.get("path").and_then(serde_json::Value::as_str)
+                    != Some(target.worktree.checkout_path.as_str())
+                || result.get("forced").and_then(serde_json::Value::as_bool) != Some(false)
+            {
+                return Err(WorktreeRemoveError::UnknownDelivery);
             }
             Ok(())
         }

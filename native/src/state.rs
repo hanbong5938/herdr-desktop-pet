@@ -4,7 +4,7 @@ use crate::lifecycle::LifecycleSettings;
 use crate::session::{CompletionObservation, OutcomeObservation};
 use crate::session_view::{
     PromptTarget, PromptTargetError, SessionFilter, SessionKey, SessionSnapshot, SessionStore,
-    SessionView,
+    SessionView, WorktreeRemoveTarget, WorktreeRemoveTargetError,
 };
 use crate::sources::{remote_machine_id, remote_source, ObservationPreferences, SourceCatalog};
 use serde::{Deserialize, Serialize};
@@ -365,6 +365,28 @@ impl AppState {
             source.generation == key.generation && source.connected && source.coherent
         }) {
             return Err(PromptError::Offline);
+        }
+        Ok(target)
+    }
+
+    pub(crate) fn worktree_remove_target(
+        &self,
+        key: &SessionKey,
+    ) -> Result<WorktreeRemoveTarget, WorktreeRemoveTargetError> {
+        if self.shutdown {
+            return Err(WorktreeRemoveTargetError::Offline);
+        }
+        let target = self.session_store.worktree_remove_target(key)?;
+        if !self.includes_source(&target.source) {
+            return Err(WorktreeRemoveTargetError::Stale);
+        }
+        if !std::path::Path::new(&target.source).is_absolute() {
+            return Err(WorktreeRemoveTargetError::Stale);
+        }
+        if !self.sources.get(&target.source).is_some_and(|source| {
+            source.generation == key.generation && source.connected && source.coherent
+        }) {
+            return Err(WorktreeRemoveTargetError::Offline);
         }
         Ok(target)
     }
@@ -943,6 +965,82 @@ mod tests {
         assert!(state.prompt_available(&key).is_err());
         assert!(state.begin_source("local.sock".to_owned(), 2));
         assert_eq!(state.session_view_for_key(&key), None);
+    }
+
+    #[test]
+    fn worktree_target_requires_current_included_coherent_absolute_local_source() {
+        let mut state = AppState::new();
+        let source = "/private/local.sock";
+        let mut row = record("t", "p", AgentStatus::Working);
+        row.metadata.workspace_id = Some("w".into());
+        row.metadata.worktree = Some(std::sync::Arc::new(
+            crate::herdr_protocol::WorkspaceWorktreeInfo {
+                repo_key: "repo".into(),
+                repo_name: "Project".into(),
+                repo_root: "/repo".into(),
+                checkout_path: "/checkout".into(),
+                is_linked_worktree: true,
+                pane_count: 1,
+                tab_count: 1,
+            },
+        ));
+        connect(&mut state, source, 1);
+        let counts = SourceCounts {
+            sessions: 1,
+            working: 1,
+            ..SourceCounts::default()
+        };
+        assert!(state.publish_source_snapshot(source, 1, [&row], counts, &[], Instant::now()));
+        let key = state.session_snapshot(SessionFilter::All, None).rows[0]
+            .key
+            .clone();
+        assert_eq!(
+            state.worktree_remove_target(&key).unwrap().workspace_id,
+            "w"
+        );
+        state.apply_observation_preferences(policy(false, false, &[]));
+        assert_eq!(
+            state.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
+        state.apply_observation_preferences(policy(true, false, &[]));
+        assert!(state.update_source(source, 1, false, counts));
+        assert_eq!(
+            state.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Offline)
+        );
+        connect(&mut state, source, 2);
+        assert_eq!(
+            state.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
+        assert!(state.publish_source_snapshot(source, 2, [&row], counts, &[], Instant::now()));
+        let new_key = state.session_snapshot(SessionFilter::All, None).rows[0]
+            .key
+            .clone();
+        state.request_shutdown();
+        assert_eq!(
+            state.worktree_remove_target(&new_key),
+            Err(WorktreeRemoveTargetError::Offline)
+        );
+
+        let mut relative = AppState::new();
+        connect(&mut relative, "local.sock", 1);
+        assert!(relative.publish_source_snapshot(
+            "local.sock",
+            1,
+            [&row],
+            counts,
+            &[],
+            Instant::now()
+        ));
+        let relative_key = relative.session_snapshot(SessionFilter::All, None).rows[0]
+            .key
+            .clone();
+        assert_eq!(
+            relative.worktree_remove_target(&relative_key),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
     }
 
     #[test]

@@ -27,6 +27,7 @@ mod i18n;
 mod interaction;
 mod lifecycle;
 mod lifecycle_settings_ui;
+mod menu_bar_icon;
 mod menu_panel;
 mod pack_authoring;
 mod pose;

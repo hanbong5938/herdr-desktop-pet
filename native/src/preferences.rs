@@ -31,6 +31,11 @@ pub(crate) enum MenuBarMode {
     RecoveryOnly,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub(crate) struct MenuBarIconPreference {
+    pub(crate) asset: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BubbleColor(u8, u8, u8);
 
@@ -152,6 +157,7 @@ pub struct Preferences {
     bubble_visible: bool,
     show_status_indicators: bool,
     menu_bar_mode: MenuBarMode,
+    menu_bar_icon: Option<MenuBarIconPreference>,
     bubble_placement: BubblePlacement,
     scale: f64,
     position: Option<(f64, f64)>,
@@ -177,6 +183,8 @@ struct DiskPreferences {
     show_status_indicators: bool,
     #[serde(default)]
     menu_bar_mode: MenuBarMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    menu_bar_icon: Option<MenuBarIconPreference>,
     #[serde(default)]
     bubble_placement: BubblePlacement,
     scale: f64,
@@ -214,6 +222,7 @@ impl Default for Preferences {
             bubble_visible: true,
             show_status_indicators: true,
             menu_bar_mode: MenuBarMode::default(),
+            menu_bar_icon: None,
             bubble_placement: BubblePlacement::default(),
             scale: DEFAULT_SCALE,
             position: None,
@@ -307,6 +316,7 @@ impl Preferences {
             bubble_visible: disk.bubble_visible,
             show_status_indicators: disk.show_status_indicators,
             menu_bar_mode: disk.menu_bar_mode,
+            menu_bar_icon: disk.menu_bar_icon,
             bubble_placement: disk.bubble_placement,
             scale: disk.scale,
             position: disk.position.map(|value| (value[0], value[1])),
@@ -405,6 +415,14 @@ impl Preferences {
         self.save_menu_bar_mode_in_directory(mode, &directory)
     }
 
+    pub(crate) fn save_menu_bar_icon(
+        &mut self,
+        preference: Option<MenuBarIconPreference>,
+    ) -> Result<(), String> {
+        let directory = preferences_directory()?;
+        self.save_menu_bar_icon_in_directory(preference, &directory)
+    }
+
     pub(crate) fn observation(&self) -> &ObservationPreferences {
         &self.observation
     }
@@ -439,6 +457,32 @@ impl Preferences {
         candidate.menu_bar_mode = mode;
         candidate.save_in_directory(directory)?;
         self.menu_bar_mode = mode;
+        Ok(())
+    }
+
+    fn save_menu_bar_icon_in_directory(
+        &mut self,
+        preference: Option<MenuBarIconPreference>,
+        directory: &Path,
+    ) -> Result<(), String> {
+        if let Some(icon) = &preference {
+            crate::menu_bar_icon::validate_asset_name(&icon.asset)?;
+        }
+        let previous = self.menu_bar_icon.clone();
+        let mut candidate = self.clone();
+        candidate.menu_bar_icon = preference;
+        candidate.save_in_directory(directory)?;
+        self.menu_bar_icon = candidate.menu_bar_icon;
+        // The normal preference writer deliberately ignores directory sync errors.
+        // Only a separately confirmed directory sync permits unlinking the previous asset.
+        if let Some(previous) = previous.filter(|old| self.menu_bar_icon.as_ref() != Some(old)) {
+            if File::open(directory)
+                .and_then(|file| file.sync_all())
+                .is_ok()
+            {
+                crate::menu_bar_icon::cleanup_previous_in_directory(directory, &previous.asset);
+            }
+        }
         Ok(())
     }
 
@@ -499,6 +543,7 @@ impl Preferences {
             bubble_visible: self.bubble_visible,
             show_status_indicators: self.show_status_indicators,
             menu_bar_mode: self.menu_bar_mode,
+            menu_bar_icon: self.menu_bar_icon.clone(),
             bubble_placement: self.bubble_placement,
             scale: self.scale,
             position: self.position.map(|(x, y)| [x, y]),
@@ -573,6 +618,10 @@ impl Preferences {
 
     pub(crate) fn menu_bar_mode(&self) -> MenuBarMode {
         self.menu_bar_mode
+    }
+
+    pub(crate) fn menu_bar_icon(&self) -> Option<&MenuBarIconPreference> {
+        self.menu_bar_icon.as_ref()
     }
 
     pub fn bubble_placement(&self) -> BubblePlacement {
@@ -722,6 +771,7 @@ fn sync_directory(directory: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -737,6 +787,7 @@ mod tests {
             menu_bar_mode: MenuBarMode::default(),
             bubble_placement: BubblePlacement::Above,
             scale: f64::NAN,
+            menu_bar_icon: None,
             position: Some((f64::INFINITY, 2.0)),
             standalone_bubble_position: Some((f64::NAN, 3.0)),
             position_space: PositionSpace::LegacyCanvas,
@@ -947,6 +998,82 @@ mod tests {
             assert!(reloaded.position_is_legacy());
             let _ = fs::remove_dir_all(directory);
         }
+    }
+
+    #[test]
+    fn missing_and_null_icon_default_without_losing_current_or_legacy_settings() {
+        for legacy in [false, true] {
+            for field in ["", r#","menu_bar_icon":null"#] {
+                let directory = isolated_preferences_directory();
+                let current = directory.join(PREFERENCES_FILE);
+                let old = directory.join("old.json");
+                let source = if legacy { &old } else { &current };
+                fs::write(
+                    source,
+                    format!(r#"{{"visible":false,"passthrough":true,"scale":0.875,"position":null,"future_setting":{{"v":2}}{field}}}"#),
+                )
+                .unwrap();
+                let loaded = Preferences::load_in_directory(
+                    &directory,
+                    if legacy { Some(&old) } else { None },
+                    false,
+                )
+                .unwrap();
+                assert!(loaded.menu_bar_icon().is_none());
+                assert!(!loaded.visible());
+                assert!(loaded.passthrough());
+                assert_eq!(loaded.extra["future_setting"], serde_json::json!({"v": 2}));
+                let _ = fs::remove_dir_all(directory);
+            }
+        }
+    }
+
+    #[test]
+    fn icon_roundtrip_survives_other_saves_and_failed_reset_preserves_previous_asset() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let managed = directory.join("menu-bar-icons");
+        fs::create_dir(&managed).unwrap();
+        fs::set_permissions(&managed, fs::Permissions::from_mode(0o700)).unwrap();
+        let previous = MenuBarIconPreference {
+            asset: format!("icon-{}.png", "a".repeat(64)),
+        };
+        let old_path = managed.join(&previous.asset);
+        fs::write(&old_path, b"old asset").unwrap();
+        fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut prefs = Preferences::default();
+        prefs
+            .save_menu_bar_icon_in_directory(Some(previous.clone()), &directory)
+            .unwrap();
+        prefs
+            .save_language_in_directory(LanguagePreference::En, &directory)
+            .unwrap();
+        prefs
+            .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+            .unwrap();
+        let mut restarted = Preferences::load_path(&path).unwrap();
+        assert_eq!(restarted.menu_bar_icon(), Some(&previous));
+        let blocked = directory.join("not-a-directory");
+        fs::write(&blocked, b"sentinel").unwrap();
+        let before = fs::read(&path).unwrap();
+        restarted
+            .save_menu_bar_icon_in_directory(None, &blocked)
+            .unwrap_err();
+        assert_eq!(restarted.menu_bar_icon(), Some(&previous));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(old_path.exists());
+        restarted
+            .save_menu_bar_icon_in_directory(None, &directory)
+            .unwrap();
+        assert!(restarted.menu_bar_icon().is_none());
+        assert!(Preferences::load_path(&path)
+            .unwrap()
+            .menu_bar_icon()
+            .is_none());
+        assert!(!old_path.exists());
+        let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(disk.get("menu_bar_icon").is_none());
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -1295,6 +1422,7 @@ mod tests {
             bubble_visible: valid.bubble_visible,
             show_status_indicators: valid.show_status_indicators,
             menu_bar_mode: valid.menu_bar_mode,
+            menu_bar_icon: valid.menu_bar_icon.clone(),
             bubble_placement: valid.bubble_placement,
             scale: valid.scale,
             position: None,

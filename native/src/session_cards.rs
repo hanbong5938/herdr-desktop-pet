@@ -562,15 +562,14 @@ impl SessionCardView {
 }
 /// A row handles its header itself; its reply slot is native content and must
 /// keep AppKit's ordinary context-menu behavior.
-pub(crate) fn is_card_header_hit(hit: &NSView, window_point: NSPoint) -> bool {
-    let Some(row) = hit.downcast_ref::<SessionCardView>() else {
-        return false;
-    };
+pub(crate) fn card_header_key_at_hit(hit: &NSView, window_point: NSPoint) -> Option<SessionKey> {
+    let row = hit.downcast_ref::<SessionCardView>()?;
     let point = row.convertPoint_fromView(window_point, None);
-    point.y >= row.ivars().reply_height.get()
+    (point.y >= row.ivars().reply_height.get()
         && point.y <= row.bounds().size.height
         && point.x >= 0.0
-        && point.x <= row.bounds().size.width
+        && point.x <= row.bounds().size.width)
+        .then(|| row.key().clone())
 }
 
 struct ReplySlot {

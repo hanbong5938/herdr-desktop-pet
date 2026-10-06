@@ -19,20 +19,22 @@ use crate::control;
 use crate::dialogue::{effective_metadata, DialogueSlot, DialogueTarget};
 use crate::dialogue_editor::{DialogueChoice, DialogueEditor};
 use crate::display_geometry::{DisplayGeometry, BASE_HEIGHT, BASE_WIDTH};
-use crate::herdr::{PromptError, PromptSender};
+use crate::herdr::{PromptError, PromptSender, WorktreeRemoveError, WorktreeRemoveSender};
 use crate::i18n::{
     default_dialogue, disconnected_sources, language_save_failure, resolve_language,
-    status_indicator_summary, task_disclosure, task_status, text, LanguagePreference, Message,
-    TaskStatus, UiLocale,
+    status_indicator_summary, task_disclosure, task_status, text, worktree_remove_confirmation,
+    LanguagePreference, Message, TaskStatus, UiLocale,
 };
 use crate::interaction::{GestureAction, Interaction, Point, RegionPolicy};
 use crate::lifecycle::{LifecycleSetting, Paths};
+use crate::menu_bar_icon;
 use crate::menu_panel::MenuPanel;
 use crate::preferences::{
-    BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarMode, Preferences,
+    BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarIconPreference, MenuBarMode,
+    Preferences,
 };
-use crate::session_cards::{minimum_selectable_height, SessionCards};
-use crate::session_view::{SessionKey, SessionStatusSummary};
+use crate::session_cards::{card_header_key_at_hit, minimum_selectable_height, SessionCards};
+use crate::session_view::{SessionKey, SessionStatusSummary, WorktreeRemoveTarget};
 use crate::sources::ObservationPreferences;
 use crate::state::{AppState, Phase, Scene, MAX_SCALE, MIN_SCALE};
 use crate::status_indicator::{
@@ -47,24 +49,24 @@ use objc2::{
     MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAppearance, NSAppearanceNameAqua,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance, NSAppearanceNameAqua,
     NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBorderType, NSButton, NSCell, NSColor,
-    NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition,
-    NSEvent, NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType,
-    NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
-    NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem,
-    NSModalPanelRunLoopMode, NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
-    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
-    NSRunningApplication, NSScreen, NSScrollView, NSScrollerStyle, NSStatusBar, NSStatusItem,
-    NSSwitch, NSTextAlignment, NSTextContainer, NSTextField, NSTextStorage, NSTextView,
-    NSTrackingArea, NSTrackingAreaOptions, NSUserInterfaceItemIdentification,
-    NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
-    NSWindowStyleMask, NSWorkspace,
+    NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBorderType, NSButton, NSButtonCell, NSCell,
+    NSColor, NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections,
+    NSCursorFrameResizePosition, NSEvent, NSEventMask, NSEventModifierFlags,
+    NSEventTrackingRunLoopMode, NSEventType, NSFloatingWindowLevel, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView, NSLayoutManager,
+    NSLineBreakMode, NSMenu, NSMenuItem, NSModalPanelRunLoopMode, NSModalResponseOK,
+    NSMutableParagraphStyle, NSOpenPanel, NSPanel, NSParagraphStyleAttributeName, NSPasteboard,
+    NSPasteboardTypeString, NSPopUpButton, NSRunningApplication, NSScreen, NSScrollView,
+    NSScrollerStyle, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment, NSTextContainer,
+    NSTextField, NSTextStorage, NSTextView, NSTrackingArea, NSTrackingAreaOptions,
+    NSUserInterfaceItemIdentification, NSVariableStatusItemLength, NSView,
+    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
-    NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate, NSLocale,
+    NSArray, NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate, NSLocale,
     NSMutableAttributedString, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
     NSPoint, NSProcessInfo, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
     NSTimer,
@@ -378,6 +380,8 @@ struct BubbleLayout {
     primary: String,
     compact_primary: String,
     secondary: String,
+    feedback_summary: String,
+    feedback_summary_height: f64,
     full_message: String,
     overflow: bool,
     body_size: NSSize,
@@ -390,6 +394,8 @@ impl Default for BubbleLayout {
             primary: String::new(),
             compact_primary: String::new(),
             secondary: String::new(),
+            feedback_summary: String::new(),
+            feedback_summary_height: 0.0,
             full_message: String::new(),
             overflow: false,
             body_size: NSSize::new(BUBBLE_BODY_MIN_WIDTH, 120.0),
@@ -688,6 +694,112 @@ struct ComposerRenderStamp {
     live_revision: Option<u64>,
 }
 
+enum WorktreeFeedback {
+    Pending(WorktreeRemoveTarget),
+    Finished(WorktreeRemoveTarget, Result<(), WorktreeRemoveError>),
+}
+
+impl WorktreeFeedback {
+    fn compact_summary(&self, locale: UiLocale) -> &'static str {
+        let message = match self {
+            Self::Pending(_) => Message::WorktreeRemoving,
+            Self::Finished(_, Ok(())) => Message::WorktreeRemoved,
+            Self::Finished(_, Err(WorktreeRemoveError::UnknownDelivery)) => {
+                Message::WorktreeCompactUnknownDelivery
+            }
+            Self::Finished(_, Err(WorktreeRemoveError::Rejected { .. })) => {
+                Message::WorktreeCompactRejected
+            }
+            Self::Finished(_, Err(WorktreeRemoveError::Other(_))) => Message::WorktreeCompactFailed,
+            Self::Finished(_, Err(_)) => Message::WorktreeCompactUnavailable,
+        };
+        text(locale, message)
+    }
+
+    fn full_text(&self, locale: UiLocale) -> String {
+        let (target, message) = match self {
+            Self::Pending(target) => (target, text(locale, Message::WorktreeRemoving).to_owned()),
+            Self::Finished(target, Ok(())) => {
+                (target, text(locale, Message::WorktreeRemoved).to_owned())
+            }
+            Self::Finished(target, Err(error)) => (target, worktree_error_text(locale, error)),
+        };
+        format!(
+            "{} ({}): {message}",
+            worktree_display_name(target),
+            target.worktree.checkout_path
+        )
+    }
+}
+
+fn worktree_feedback_detail(
+    feedback: Option<&WorktreeFeedback>,
+    locale: UiLocale,
+    offline: &str,
+) -> String {
+    match feedback {
+        Some(feedback) if !offline.is_empty() => {
+            format!("{}\n{offline}", feedback.full_text(locale))
+        }
+        Some(feedback) => feedback.full_text(locale),
+        None => offline.to_owned(),
+    }
+}
+
+fn compact_worktree_secondary(summary: &str, offline: &str) -> String {
+    if summary.is_empty() {
+        offline.to_owned()
+    } else if offline.is_empty() {
+        summary.to_owned()
+    } else {
+        format!("{summary}\n{offline}")
+    }
+}
+
+fn worktree_menu_key(
+    header_key: Option<SessionKey>,
+    background: bool,
+    selected_key: Option<SessionKey>,
+) -> Option<SessionKey> {
+    if background {
+        selected_key
+    } else {
+        header_key
+    }
+}
+
+fn worktree_display_name(target: &WorktreeRemoveTarget) -> String {
+    let path = &target.worktree.checkout_path;
+    let checkout = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path);
+    format!("{} / {checkout}", target.worktree.repo_name)
+}
+
+fn worktree_error_text(locale: UiLocale, error: &WorktreeRemoveError) -> String {
+    let message = match error {
+        WorktreeRemoveError::Busy => Message::WorktreeBusy,
+        WorktreeRemoveError::Offline => Message::WorktreeOffline,
+        WorktreeRemoveError::ReadOnly => Message::WorktreeReadOnly,
+        WorktreeRemoveError::StaleTarget => Message::WorktreeStale,
+        WorktreeRemoveError::NotLinkedWorktree => Message::WorktreeNotLinked,
+        WorktreeRemoveError::Unsupported => Message::WorktreeUnsupported,
+        WorktreeRemoveError::UnknownDelivery => Message::WorktreeUnknownDelivery,
+        WorktreeRemoveError::Rejected { .. } => Message::WorktreeRejected,
+        WorktreeRemoveError::Other(_) => Message::WorktreeFailed,
+    };
+    match error {
+        WorktreeRemoveError::Rejected { code, message } => {
+            format!(
+                "{} ({code}: {message})",
+                text(locale, Message::WorktreeRejected)
+            )
+        }
+        WorktreeRemoveError::Other(detail) => format!("{}: {detail}", text(locale, message)),
+        _ => text(locale, message).to_owned(),
+    }
+}
 struct Ui {
     mtm: MainThreadMarker,
     shared: Arc<Mutex<AppState>>,
@@ -713,6 +825,9 @@ struct Ui {
     composer_status: Retained<NSTextField>,
     composer_send: Retained<NSButton>,
     prompt_sender: PromptSender,
+    worktree_sender: WorktreeRemoveSender,
+    worktree_confirming: bool,
+    worktree_feedback: Option<WorktreeFeedback>,
     composer_render_stamp: Option<ComposerRenderStamp>,
     composer_key: Option<SessionKey>,
     reply_open: bool,
@@ -775,6 +890,8 @@ struct Ui {
     reduced_motion: bool,
     _status_item: Retained<NSStatusItem>,
     status_menu: Retained<NSMenu>,
+    menu_bar_icon_image: Retained<NSImage>,
+    menu_bar_icon_busy: bool,
     status_menu_tracking: bool,
     context_anchor: Option<NSRect>,
     settings_anchor: Option<NSRect>,
@@ -1108,19 +1225,33 @@ impl BubblePanel {
         let Some(hit) = root.hitTest(location) else {
             return false;
         };
-        if hit.downcast_ref::<BubbleView>().is_none()
-            && !crate::session_cards::is_card_header_hit(&hit, location)
-        {
+        let is_background = hit.downcast_ref::<BubbleView>().is_some();
+        let header_key = card_header_key_at_hit(&hit, location);
+        if !is_background && header_key.is_none() {
             return false;
         }
         // Tracking invokes actions synchronously: snapshot and release the UI borrow first.
-        let Some((locale, visible, composing, target, mtm)) = with_ui_read(|ui| {
+        let Some((locale, visible, composing, target, mtm, worktree)) = with_ui_read(|ui| {
+            // Resolve only the card captured by this opening event, never a later selection.
+            let selected = if is_background {
+                ui.cards.selected_target().map(|(key, _)| key)
+            } else {
+                None
+            };
+            let key = worktree_menu_key(header_key, is_background, selected);
+            let worktree = key.and_then(|key| {
+                if ui.worktree_confirming || ui.worktree_sender.is_pending() {
+                    return None;
+                }
+                ui.shared.lock().ok()?.worktree_remove_target(&key).ok()
+            });
             (
                 ui.locale,
                 ui.last_scene.visible,
                 ui.composer_marked(),
                 ui._menu_target.clone(),
                 ui.mtm,
+                worktree,
             )
         }) else {
             return false;
@@ -1160,6 +1291,29 @@ impl BubblePanel {
             sel!(closeBubbleWindow:),
             !composing,
         );
+        if let Some(worktree) = worktree {
+            let title = format!(
+                "{} · {}",
+                text(locale, Message::WorktreeRemove),
+                worktree_display_name(&worktree)
+            );
+            let worktree_target = WorktreeMenuTarget::new(worktree, mtm);
+            let item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    &NSString::from_str(&title),
+                    Some(sel!(removeWorktree:)),
+                    &NSString::from_str(""),
+                )
+            };
+            unsafe { item.setTarget(Some(&*worktree_target)) };
+            item.setEnabled(!composing);
+            menu.addItem(&item);
+            // NSMenuItem does not own its target; keep it alive through synchronous tracking.
+            NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &root);
+            drop(worktree_target);
+            return true;
+        }
         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &root);
         true
     }
@@ -1280,6 +1434,38 @@ define_class!(
         }
     }
 );
+
+struct WorktreeMenuTargetIvars {
+    target: WorktreeRemoveTarget,
+}
+
+define_class!(
+    // SAFETY: Main-thread-only NSObject retains an immutable menu-opening descriptor.
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OMPetWorktreeMenuTarget"]
+    #[ivars = WorktreeMenuTargetIvars]
+    struct WorktreeMenuTarget;
+
+    unsafe impl NSObjectProtocol for WorktreeMenuTarget {}
+
+    impl WorktreeMenuTarget {
+        #[unsafe(method(removeWorktree:))]
+        fn remove_worktree(&self, _sender: Option<&AnyObject>) {
+            let target = self.ivars().target.clone();
+            // Tracking invokes this action inside a nested run loop. Confirm only after
+            // the menu has returned, without retaining any Ui borrow across the modal.
+            DispatchQueue::main().exec_async(move || begin_worktree_remove(target));
+        }
+    }
+);
+
+impl WorktreeMenuTarget {
+    fn new(target: WorktreeRemoveTarget, mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(WorktreeMenuTargetIvars { target });
+        unsafe { msg_send![super(this), init] }
+    }
+}
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements.
@@ -1410,6 +1596,16 @@ define_class!(
                 _ => return,
             };
             with_ui_mut(|ui| ui.set_menu_bar_mode(mode));
+        }
+
+        #[unsafe(method(chooseMenuBarIcon:))]
+        fn choose_menu_bar_icon(&self, _sender: Option<&AnyObject>) {
+            choose_menu_bar_icon();
+        }
+
+        #[unsafe(method(resetMenuBarIcon:))]
+        fn reset_menu_bar_icon(&self, _sender: Option<&AnyObject>) {
+            reset_menu_bar_icon();
         }
 
         #[unsafe(method(toggleLifecycleAutoStart:))]
@@ -2607,6 +2803,227 @@ where
     })
 }
 
+fn begin_worktree_remove(target: WorktreeRemoveTarget) {
+    let mut reserved = false;
+    with_ui_mut(|ui| {
+        if ui.worktree_confirming || ui.worktree_sender.is_pending() || ui.composer_marked() {
+            return;
+        }
+        if !ui.worktree_target_matches(&target) {
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(
+                target.clone(),
+                Err(WorktreeRemoveError::StaleTarget),
+            ));
+            return;
+        }
+        ui.worktree_confirming = true;
+        reserved = true;
+    });
+    if !reserved {
+        return;
+    }
+    let Some((mtm, locale, valid)) = with_ui_read(|ui| {
+        (
+            ui.mtm,
+            ui.locale,
+            !ui.composer_marked() && ui.worktree_target_matches(&target),
+        )
+    }) else {
+        with_ui_mut(|ui| ui.worktree_confirming = false);
+        return;
+    };
+    if !valid {
+        with_ui_mut(|ui| {
+            ui.worktree_confirming = false;
+            if !ui.composer_marked() {
+                ui.set_worktree_feedback(WorktreeFeedback::Finished(
+                    target.clone(),
+                    Err(WorktreeRemoveError::StaleTarget),
+                ));
+            }
+        });
+        return;
+    }
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(text(
+        locale,
+        Message::WorktreeRemoveConfirm,
+    )));
+    alert.setInformativeText(&NSString::from_str(&worktree_remove_confirmation(
+        locale,
+        &target.worktree.repo_name,
+        &target.worktree.checkout_path,
+        target.worktree.tab_count,
+        target.worktree.pane_count,
+    )));
+    let cancel = alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::Cancel)));
+    cancel.setKeyEquivalent(&NSString::from_str("\u{1b}"));
+    alert.addButtonWithTitle(&NSString::from_str(text(
+        locale,
+        Message::WorktreeRemoveAction,
+    )));
+    // Escape's key equivalent can displace AppKit's automatic first-button
+    // default. Assign the non-destructive Return/Enter default after layout.
+    alert.layout();
+    let Some(cell) = cancel
+        .cell()
+        .and_then(|cell| cell.downcast::<NSButtonCell>().ok())
+    else {
+        with_ui_mut(|ui| {
+            ui.worktree_confirming = false;
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(
+                target,
+                Err(WorktreeRemoveError::Other(
+                    text(locale, Message::WorktreeConfirmUnavailable).to_owned(),
+                )),
+            ));
+        });
+        return;
+    };
+    alert.window().setDefaultButtonCell(Some(&cell));
+    let answer = alert.runModal();
+    with_ui_mut(|ui| {
+        ui.worktree_confirming = false;
+        if answer != NSAlertSecondButtonReturn || ui.composer_marked() {
+            return;
+        }
+        if !ui.worktree_target_matches(&target) {
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(
+                target.clone(),
+                Err(WorktreeRemoveError::StaleTarget),
+            ));
+            return;
+        }
+        let feedback = match ui.worktree_sender.submit(target.clone()) {
+            Ok(()) => WorktreeFeedback::Pending(target),
+            Err(error) => WorktreeFeedback::Finished(target, Err(error)),
+        };
+        ui.set_worktree_feedback(feedback);
+    });
+}
+
+fn begin_menu_bar_icon_operation(
+    hide_settings: bool,
+) -> Option<(MainThreadMarker, UiLocale, Option<NSRect>)> {
+    let mut started = None;
+    with_ui_mut(|ui| {
+        if ui.menu_bar_icon_busy
+            || !ui.menu_panel.is_visible()
+            || !ui.menu_bar_icon_operation_allowed()
+        {
+            return;
+        }
+        ui.menu_bar_icon_busy = true;
+        ui.menu_panel.set_menu_bar_icon_busy(true);
+        let anchor = if hide_settings {
+            ui.settings_anchor
+        } else {
+            None
+        };
+        if hide_settings {
+            ui.menu_panel.hide();
+        }
+        started = Some((ui.mtm, ui.locale, anchor));
+    });
+    started
+}
+
+fn choose_menu_bar_icon() {
+    let Some((mtm, locale, anchor)) = begin_menu_bar_icon_operation(true) else {
+        return;
+    };
+    // No UI RefCell borrow is held across the modal loop or image decoding/publishing.
+    let result = match choose_menu_bar_icon_source(mtm, locale) {
+        Ok(Some(path)) => {
+            if with_ui_read(|ui| ui.menu_bar_icon_busy && ui.menu_bar_icon_operation_allowed())
+                != Some(true)
+            {
+                None
+            } else {
+                Some(
+                    menu_bar_icon::prepare_source(&path, mtm)
+                        .and_then(|prepared| {
+                            prepared.publish()?;
+                            Ok((prepared.preference, prepared.image))
+                        })
+                        .map_err(|error| (Message::MenuBarIconImportFailure, error)),
+                )
+            }
+        }
+        Ok(None) => None,
+        Err(error) => Some(Err((Message::MenuBarIconImportFailure, error))),
+    };
+    with_ui_mut(|ui| {
+        if !ui.menu_bar_icon_busy {
+            return;
+        }
+        if ui.menu_bar_icon_operation_allowed() {
+            if let Some(result) = result {
+                match result {
+                    Ok((preference, image)) => ui.commit_menu_bar_icon(preference, image),
+                    Err((summary, detail)) => ui.show_menu_bar_icon_error(summary, &detail),
+                }
+            }
+        }
+        ui.menu_bar_icon_busy = false;
+        ui.menu_panel.set_menu_bar_icon_busy(false);
+        if !ui.menu_bar_icon_shutdown() {
+            if let Some(anchor) = anchor {
+                ui.open_settings_at(anchor);
+            }
+        }
+    });
+}
+
+fn reset_menu_bar_icon() {
+    let Some((mtm, locale, _)) = begin_menu_bar_icon_operation(false) else {
+        return;
+    };
+    let image = menu_bar_icon::default_image(mtm, text(locale, Message::MenuBarMenuTitle));
+    with_ui_mut(|ui| {
+        if !ui.menu_bar_icon_busy {
+            return;
+        }
+        if ui.menu_bar_icon_operation_allowed() {
+            match image {
+                Ok(image) => ui.commit_default_menu_bar_icon(image),
+                Err(error) => {
+                    ui.show_menu_bar_icon_error(Message::MenuBarIconImportFailure, &error)
+                }
+            }
+        }
+        ui.menu_bar_icon_busy = false;
+        ui.menu_panel.set_menu_bar_icon_busy(false);
+    });
+}
+
+fn choose_menu_bar_icon_source(
+    mtm: MainThreadMarker,
+    locale: UiLocale,
+) -> Result<Option<PathBuf>, String> {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    // This file-extension filter is supported on the app's oldest macOS target;
+    // the decoder still validates the actual bytes and image limits.
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&NSArray::arrayWithObject(&*NSString::from_str("png"))));
+    panel.setTitle(Some(&NSString::from_str(text(
+        locale,
+        Message::MenuBarIconChoose,
+    ))));
+    panel.setPrompt(Some(&NSString::from_str(text(locale, Message::Choose))));
+    if panel.runModal() != NSModalResponseOK {
+        return Ok(None);
+    }
+    panel
+        .URL()
+        .and_then(|url| url.to_file_path())
+        .map(Some)
+        .ok_or_else(|| "the selected PNG has no local file path".to_owned())
+}
+
 fn pack_menu_context() -> Option<(MainThreadMarker, Arc<PackService>, UiLocale)> {
     with_ui_read(|ui| (ui.mtm, Arc::clone(&ui.packs), ui.locale))
 }
@@ -3152,6 +3569,22 @@ impl Ui {
         menu_panel.set_bubble_appearance(bubble_appearance);
         menu_panel.set_show_status_indicators(prefs.show_status_indicators());
         menu_panel.set_menu_bar_mode(prefs.menu_bar_mode());
+        let default_icon =
+            menu_bar_icon::default_image(mtm, text(locale, Message::MenuBarMenuTitle))?;
+        let (menu_bar_icon_image, icon_load_error) = match prefs.menu_bar_icon() {
+            Some(preference) => match menu_bar_icon::load_saved(preference, mtm) {
+                Ok(image) => (image, None),
+                Err(error) => (default_icon, Some(error)),
+            },
+            None => (default_icon, None),
+        };
+        menu_panel.set_menu_bar_icon(
+            &menu_bar_icon_image,
+            prefs.menu_bar_icon().is_some(),
+            icon_load_error
+                .as_deref()
+                .map(|error| (Message::MenuBarIconLoadFailure, error)),
+        );
         let status_bar = NSStatusBar::systemStatusBar();
         let status_item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
         let status_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
@@ -3190,13 +3623,7 @@ impl Ui {
             recover.setEnabled(needed);
         }
         if let Some(button) = status_item.button(mtm) {
-            if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str("pawprint.fill"),
-                Some(&NSString::from_str(text(locale, Message::MenuBarMenuTitle))),
-            ) {
-                image.setTemplate(true);
-                button.setImage(Some(&image));
-            }
+            button.setImage(Some(&menu_bar_icon_image));
             unsafe {
                 button.setTarget(Some(menu_target.as_ref()));
                 button.setAction(Some(sel!(showStatusMenu:)));
@@ -3216,6 +3643,7 @@ impl Ui {
         let mut playback = Playback::default();
         playback.reset_pack(Duration::ZERO, scene.phase);
         let prompt_sender = PromptSender::new(shared.clone());
+        let worktree_sender = WorktreeRemoveSender::new(shared.clone());
         let mut ui = Self {
             mtm,
             shared,
@@ -3241,6 +3669,9 @@ impl Ui {
             composer_status,
             composer_send,
             prompt_sender,
+            worktree_sender,
+            worktree_confirming: false,
+            worktree_feedback: None,
             composer_render_stamp: None,
             composer_key: None,
             reply_open: false,
@@ -3321,6 +3752,8 @@ impl Ui {
             reduced_motion,
             _status_item: status_item,
             status_menu,
+            menu_bar_icon_image,
+            menu_bar_icon_busy: false,
             status_menu_tracking: false,
             context_anchor: None,
             settings_anchor: None,
@@ -3348,6 +3781,54 @@ impl Ui {
         ui.refresh();
         Ok(ui)
     }
+    fn menu_bar_icon_shutdown(&self) -> bool {
+        self.shared
+            .lock()
+            .map_or(true, |state| state.scene().shutdown)
+    }
+
+    fn menu_bar_icon_operation_allowed(&self) -> bool {
+        !self.status_menu_tracking && !self.menu_bar_icon_shutdown()
+    }
+
+    fn show_menu_bar_icon_error(&mut self, summary: Message, detail: &str) {
+        self.menu_panel.set_menu_bar_icon(
+            &self.menu_bar_icon_image,
+            self.prefs.menu_bar_icon().is_some(),
+            Some((summary, detail)),
+        );
+    }
+
+    fn apply_menu_bar_icon(&mut self, image: Retained<NSImage>) {
+        if let Some(button) = self._status_item.button(self.mtm) {
+            button.setImage(Some(&image));
+        }
+        self.menu_panel
+            .set_menu_bar_icon(&image, self.prefs.menu_bar_icon().is_some(), None);
+        self.menu_bar_icon_image = image;
+    }
+
+    // Call only after the prepared asset has been published outside the UI borrow.
+    fn commit_menu_bar_icon(
+        &mut self,
+        preference: MenuBarIconPreference,
+        image: Retained<NSImage>,
+    ) {
+        if let Err(error) = self.prefs.save_menu_bar_icon(Some(preference)) {
+            self.show_menu_bar_icon_error(Message::MenuBarIconSaveFailure, &error);
+            return;
+        }
+        self.apply_menu_bar_icon(image);
+    }
+
+    fn commit_default_menu_bar_icon(&mut self, image: Retained<NSImage>) {
+        if let Err(error) = self.prefs.save_menu_bar_icon(None) {
+            self.show_menu_bar_icon_error(Message::MenuBarIconSaveFailure, &error);
+            return;
+        }
+        self.apply_menu_bar_icon(image);
+    }
+
     fn set_menu_bar_mode(&mut self, mode: MenuBarMode) {
         if mode != self.prefs.menu_bar_mode() {
             if let Err(error) = self.prefs.save_menu_bar_mode(mode) {
@@ -4505,6 +4986,26 @@ impl Ui {
         self.cards.detach_reply();
     }
 
+    fn worktree_target_matches(&self, target: &WorktreeRemoveTarget) -> bool {
+        self.shared.lock().is_ok_and(|state| {
+            state
+                .worktree_remove_target(&target.key)
+                .is_ok_and(|current| &current == target)
+        })
+    }
+
+    fn set_worktree_feedback(&mut self, feedback: WorktreeFeedback) {
+        self.worktree_feedback = Some(feedback);
+        self.bubble_content_dirty = true;
+        wake();
+    }
+
+    fn poll_worktree(&mut self) {
+        if let Some(result) = self.worktree_sender.try_result() {
+            self.set_worktree_feedback(WorktreeFeedback::Finished(result.target, result.result));
+        }
+    }
+
     fn composer_error_text(&self, error: &PromptError) -> String {
         let message = match error {
             PromptError::Empty => Message::ComposerEmpty,
@@ -4632,6 +5133,7 @@ impl Ui {
             self.composer_render_stamp = None;
         }
         self.poll_composer();
+        self.poll_worktree();
         self.sync_composer();
         if self.bubble_mode == BubbleMode::Expanded && cards_height != self.cards.content_height() {
             self.bubble_content_dirty = true;
@@ -4800,6 +5302,7 @@ impl Ui {
 
     fn frame_tick(&mut self) {
         self.poll_composer();
+        self.poll_worktree();
         let scene = match self.shared.lock() {
             Ok(state) => state.scene(),
             Err(_) => return,
@@ -5915,7 +6418,18 @@ impl Ui {
         } else {
             status_text(scene, self.locale)
         };
-        let disconnect = disconnected_text(scene, self.locale);
+        let offline_warning = disconnected_text(scene, self.locale);
+        let feedback_summary = self
+            .worktree_feedback
+            .as_ref()
+            .map(|feedback| feedback.compact_summary(self.locale))
+            .unwrap_or("");
+        let disconnect = worktree_feedback_detail(
+            self.worktree_feedback.as_ref(),
+            self.locale,
+            &offline_warning,
+        );
+        let compact_secondary = compact_worktree_secondary(feedback_summary, &offline_warning);
         if !self.bubble_content_dirty
             && self.dialogue_text == dialogue
             && self.status_text == status
@@ -5942,7 +6456,15 @@ impl Ui {
         self.disconnect_text = disconnect;
         self.bubble_layout.primary = primary;
         self.bubble_layout.full_message = full_message.clone();
-        self.bubble_layout.secondary = self.disconnect_text.clone();
+        self.bubble_layout.feedback_summary = feedback_summary.to_owned();
+        self.bubble_layout.secondary = compact_secondary;
+        self.dialogue
+            .setMaximumNumberOfLines(if feedback_summary.is_empty() { 2 } else { 0 });
+        self.dialogue.setToolTip(
+            (!feedback_summary.is_empty())
+                .then(|| NSString::from_str(&self.disconnect_text))
+                .as_deref(),
+        );
         self.message_view
             .setString(&NSString::from_str(&full_message));
         let message_style = bubble_paragraph_style(2.4, 5.0);
@@ -5962,7 +6484,7 @@ impl Ui {
             );
         }
         self.dialogue
-            .setStringValue(&NSString::from_str(&self.disconnect_text));
+            .setStringValue(&NSString::from_str(&self.bubble_layout.secondary));
         self.bubble_content_dirty = false;
         self.remeasure_bubble(scene);
     }
@@ -5994,14 +6516,14 @@ impl Ui {
         );
         set_attributed_field_text(
             &self.dialogue,
-            &self.disconnect_text,
+            &self.bubble_layout.secondary,
             &secondary_font,
             &secondary_color,
             &secondary_style,
         );
 
         let natural_primary = measure_attributed_field(&self.bubble, 10_000.0);
-        let natural_secondary = if self.disconnect_text.is_empty() {
+        let natural_secondary = if self.bubble_layout.secondary.is_empty() {
             0.0
         } else {
             measure_attributed_field(&self.dialogue, 10_000.0)
@@ -6106,13 +6628,36 @@ impl Ui {
         );
         let compact_metrics = measure_attributed_field(&self.bubble, compact_content_width);
 
-        let warning_metrics = if self.disconnect_text.is_empty() {
+        let warning_metrics = if self.bubble_layout.secondary.is_empty() {
             None
         } else {
             Some(measure_attributed_field(
                 &self.dialogue,
                 compact_content_width,
             ))
+        };
+        let feedback_summary_height = if self.bubble_layout.feedback_summary.is_empty() {
+            0.0
+        } else {
+            set_attributed_field_text(
+                &self.dialogue,
+                &self.bubble_layout.feedback_summary,
+                &secondary_font,
+                &secondary_color,
+                &secondary_style,
+            );
+            let summary_metrics = measure_attributed_field(&self.dialogue, compact_content_width);
+            set_attributed_field_text(
+                &self.dialogue,
+                &self.bubble_layout.secondary,
+                &secondary_font,
+                &secondary_color,
+                &secondary_style,
+            );
+            summary_metrics
+                .size
+                .height
+                .max(BUBBLE_SECONDARY_FONT_SIZE + 2.0)
         };
         let warning_height = warning_metrics
             .as_ref()
@@ -6127,8 +6672,10 @@ impl Ui {
                     .height
                     .max(BUBBLE_SECONDARY_FONT_SIZE + 2.0)
                     .min((body_height_cap - BUBBLE_LINE_HEIGHT).max(BUBBLE_LINE_HEIGHT))
+                    .max(feedback_summary_height)
             })
             .unwrap_or(0.0);
+        self.bubble_layout.feedback_summary_height = feedback_summary_height;
         let compact_text_height = if show_status && primary.is_empty() {
             0.0
         } else {
@@ -6238,6 +6785,14 @@ impl Ui {
         if let Some(cell) = self.bubble.cell() {
             set_accessibility_cell_text(&cell, &primary, Some(&primary));
         }
+        if let Some(cell) = self.dialogue.cell() {
+            let detail = if self.bubble_layout.feedback_summary.is_empty() {
+                &self.bubble_layout.secondary
+            } else {
+                &self.disconnect_text
+            };
+            set_accessibility_cell_text(&cell, detail, Some(detail));
+        }
         if let Some(cell) = self.disclosure.cell() {
             set_accessibility_cell_text(&cell, expand_accessibility, Some(&disclosure_title));
         }
@@ -6281,10 +6836,31 @@ impl Ui {
         };
         let content_top = body.y + body.height - spacing.inset;
         let status_row = if show_status {
+            let feedback_compact = self.bubble_mode == BubbleMode::Compact
+                && !self.bubble_layout.feedback_summary.is_empty();
+            let status_bottom = body.y + spacing.inset + BUBBLE_CONTROL_HEIGHT + spacing.gap;
+            let status_height = if feedback_compact {
+                STATUS_ROW_HEIGHT.min(
+                    (content_top
+                        - status_bottom
+                        - self.bubble_layout.feedback_summary_height
+                        - spacing.gap)
+                        .max(0.0),
+                )
+            } else {
+                STATUS_ROW_HEIGHT
+            };
             let frame = bounded_frame(
                 NSRect::new(
-                    NSPoint::new(content_x, content_top - STATUS_ROW_HEIGHT),
-                    NSSize::new(content_width, STATUS_ROW_HEIGHT),
+                    NSPoint::new(
+                        content_x,
+                        if feedback_compact {
+                            status_bottom
+                        } else {
+                            content_top - status_height
+                        },
+                    ),
+                    NSSize::new(content_width, status_height),
                 ),
                 NSRect::new(
                     NSPoint::new(
@@ -6383,7 +6959,7 @@ impl Ui {
                 } else {
                     primary_metrics.size.height.max(BUBBLE_LINE_HEIGHT)
                 };
-                let warning_height = if self.disconnect_text.is_empty() {
+                let warning_height = if self.bubble_layout.secondary.is_empty() {
                     0.0
                 } else {
                     measure_attributed_field(&self.dialogue, content_width.max(1.0))
@@ -6391,23 +6967,64 @@ impl Ui {
                         .height
                         .max(BUBBLE_SECONDARY_FONT_SIZE + 2.0)
                 };
-                let available_top = if show_status {
+                let feedback_compact = !self.bubble_layout.feedback_summary.is_empty();
+                let available_top = if show_status && !feedback_compact {
                     (status_row.origin.y - BUBBLE_CONTENT_GAP).max(body.y)
                 } else {
                     content_top.max(body.y)
                 };
-                let available_bottom =
-                    (footer.origin.y + footer.size.height + BUBBLE_CONTENT_GAP).min(available_top);
-                let warning_frame = if warning_height > 0.0 {
-                    let desired = NSRect::new(
-                        NSPoint::new(
-                            content_x,
-                            available_top - primary_height - BUBBLE_CONTENT_GAP - warning_height,
+                let footer_top = footer.origin.y + footer.size.height + BUBBLE_CONTENT_GAP;
+                let available_bottom = if show_status && feedback_compact {
+                    (status_row.origin.y + status_row.size.height + BUBBLE_CONTENT_GAP)
+                        .max(footer_top)
+                        .min(available_top)
+                } else {
+                    footer_top.min(available_top)
+                };
+                let (primary_frame, warning_frame) = if feedback_compact {
+                    feedback_compact_frames(
+                        content_x,
+                        content_width,
+                        available_bottom,
+                        available_top,
+                        primary_height,
+                        warning_height,
+                    )
+                } else {
+                    let warning_frame = if warning_height > 0.0 {
+                        let desired = NSRect::new(
+                            NSPoint::new(
+                                content_x,
+                                available_top
+                                    - primary_height
+                                    - BUBBLE_CONTENT_GAP
+                                    - warning_height,
+                            ),
+                            NSSize::new(content_width, warning_height),
+                        );
+                        bounded_frame(
+                            desired,
+                            NSRect::new(
+                                NSPoint::new(body.x, available_bottom),
+                                NSSize::new(
+                                    body.width.max(0.0),
+                                    (available_top - available_bottom).max(0.0),
+                                ),
+                            ),
+                        )
+                    } else {
+                        NSRect::new(NSPoint::new(body.x, body.y), NSSize::new(0.0, 0.0))
+                    };
+                    let primary_bottom = if warning_height > 0.0 {
+                        warning_frame.origin.y - BUBBLE_CONTENT_GAP
+                    } else {
+                        available_top
+                    };
+                    let primary_frame = bounded_frame(
+                        NSRect::new(
+                            NSPoint::new(content_x, primary_bottom - primary_height),
+                            NSSize::new(content_width, primary_height),
                         ),
-                        NSSize::new(content_width, warning_height),
-                    );
-                    bounded_frame(
-                        desired,
                         NSRect::new(
                             NSPoint::new(body.x, available_bottom),
                             NSSize::new(
@@ -6415,71 +7032,52 @@ impl Ui {
                                 (available_top - available_bottom).max(0.0),
                             ),
                         ),
-                    )
-                } else {
-                    NSRect::new(NSPoint::new(body.x, body.y), NSSize::new(0.0, 0.0))
-                };
-                let primary_bottom = if warning_height > 0.0 {
-                    warning_frame.origin.y - BUBBLE_CONTENT_GAP
-                } else {
-                    available_top
-                };
-                let primary_frame = bounded_frame(
-                    NSRect::new(
-                        NSPoint::new(content_x, primary_bottom - primary_height),
-                        NSSize::new(content_width, primary_height),
-                    ),
-                    NSRect::new(
-                        NSPoint::new(body.x, available_bottom),
-                        NSSize::new(
-                            body.width.max(0.0),
-                            (available_top - available_bottom).max(0.0),
-                        ),
-                    ),
-                );
-                let (primary_frame, warning_frame) = if show_status {
-                    let bounds = NSRect::new(
-                        NSPoint::new(body.x, available_bottom),
-                        NSSize::new(
-                            body.width.max(0.0),
-                            (available_top - available_bottom).max(0.0),
-                        ),
                     );
-                    let primary_frame = bounded_frame(
-                        NSRect::new(
-                            NSPoint::new(content_x, available_top - primary_height),
-                            NSSize::new(content_width, primary_height),
-                        ),
-                        bounds,
-                    );
-                    let warning_top = if primary_height > 0.0 {
-                        primary_frame.origin.y - BUBBLE_CONTENT_GAP
-                    } else {
-                        available_top
-                    };
-                    let warning_frame = bounded_frame(
-                        NSRect::new(
-                            NSPoint::new(content_x, warning_top - warning_height),
-                            NSSize::new(content_width, warning_height),
-                        ),
-                        NSRect::new(
+                    if show_status {
+                        let bounds = NSRect::new(
                             NSPoint::new(body.x, available_bottom),
                             NSSize::new(
                                 body.width.max(0.0),
-                                (warning_top - available_bottom).max(0.0),
+                                (available_top - available_bottom).max(0.0),
                             ),
-                        ),
-                    );
-                    (primary_frame, warning_frame)
-                } else {
-                    (primary_frame, warning_frame)
+                        );
+                        let primary_frame = bounded_frame(
+                            NSRect::new(
+                                NSPoint::new(content_x, available_top - primary_height),
+                                NSSize::new(content_width, primary_height),
+                            ),
+                            bounds,
+                        );
+                        let warning_top = if primary_height > 0.0 {
+                            primary_frame.origin.y - BUBBLE_CONTENT_GAP
+                        } else {
+                            available_top
+                        };
+                        let warning_frame = bounded_frame(
+                            NSRect::new(
+                                NSPoint::new(content_x, warning_top - warning_height),
+                                NSSize::new(content_width, warning_height),
+                            ),
+                            NSRect::new(
+                                NSPoint::new(body.x, available_bottom),
+                                NSSize::new(
+                                    body.width.max(0.0),
+                                    (warning_top - available_bottom).max(0.0),
+                                ),
+                            ),
+                        );
+                        (primary_frame, warning_frame)
+                    } else {
+                        (primary_frame, warning_frame)
+                    }
                 };
                 self.bubble.setHidden(
                     (show_status && primary.is_empty()) || primary_frame.size.height <= 0.0,
                 );
                 self.bubble.setFrame(primary_frame);
-                self.dialogue
-                    .setHidden(self.disconnect_text.is_empty() || warning_frame.size.height <= 0.0);
+                self.dialogue.setHidden(
+                    self.bubble_layout.secondary.is_empty() || warning_frame.size.height <= 0.0,
+                );
                 self.dialogue.setFrame(warning_frame);
                 self.disclosure
                     .setHidden(footer.size.width <= 0.0 || footer.size.height <= 0.0);
@@ -7526,6 +8124,30 @@ fn reply_child_geometry(size: NSSize, readonly: bool) -> ReplyChildGeometry {
     }
 }
 
+fn feedback_compact_frames(
+    x: f64,
+    width: f64,
+    bottom: f64,
+    top: f64,
+    primary_height: f64,
+    warning_height: f64,
+) -> (NSRect, NSRect) {
+    // The result occupies the first visible lines. Dialogue uses only the
+    // remaining height, irrespective of its (possibly unbounded) text.
+    let warning_visible = warning_height.min((top - bottom).max(0.0));
+    let warning = NSRect::new(
+        NSPoint::new(x, top - warning_visible),
+        NSSize::new(width, warning_visible),
+    );
+    let primary_top = (warning.origin.y - BUBBLE_CONTENT_GAP).max(bottom);
+    let primary_visible = primary_height.min((primary_top - bottom).max(0.0));
+    let primary = NSRect::new(
+        NSPoint::new(x, primary_top - primary_visible),
+        NSSize::new(width, primary_visible),
+    );
+    (primary, warning)
+}
+
 fn bounded_frame(frame: NSRect, bounds: NSRect) -> NSRect {
     let bounds_x = bounds.origin.x;
     let bounds_y = bounds.origin.y;
@@ -7945,6 +8567,144 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1.0e-9
+    }
+
+    #[test]
+    fn worktree_context_targets_the_clicked_header_or_captured_background_selection() {
+        let a = SessionKey {
+            source_id: 1,
+            generation: 1,
+            terminal_id: "A".to_owned(),
+        };
+        let b = SessionKey {
+            source_id: 1,
+            generation: 1,
+            terminal_id: "B".to_owned(),
+        };
+        assert_eq!(
+            worktree_menu_key(Some(b.clone()), false, Some(a.clone())),
+            Some(b.clone())
+        );
+        assert_eq!(
+            worktree_menu_key(None, true, Some(a.clone())),
+            Some(a.clone())
+        );
+        assert_eq!(
+            worktree_menu_key(Some(b.clone()), true, Some(a.clone())),
+            Some(a.clone())
+        );
+        assert_eq!(worktree_menu_key(None, true, None), None);
+        assert_eq!(worktree_menu_key(None, false, Some(a)), None);
+    }
+
+    #[test]
+    fn worktree_result_stays_concise_while_full_detail_retains_target_and_server_response() {
+        let repo = "repository-name-".repeat(12);
+        let basename = "checkout-name-".repeat(12);
+        let checkout = format!("/parent/{basename}");
+        let target = WorktreeRemoveTarget {
+            key: SessionKey {
+                source_id: 1,
+                generation: 1,
+                terminal_id: "session".into(),
+            },
+            source: "/local.sock".into(),
+            pane_id: "pane".into(),
+            workspace_id: "workspace".into(),
+            worktree: Arc::new(crate::herdr_protocol::WorkspaceWorktreeInfo {
+                repo_key: "key".into(),
+                repo_name: repo.clone(),
+                repo_root: "/parent".into(),
+                checkout_path: checkout.clone(),
+                is_linked_worktree: true,
+                pane_count: 1,
+                tab_count: 1,
+            }),
+        };
+        let feedback = [
+            WorktreeFeedback::Pending(target.clone()),
+            WorktreeFeedback::Finished(target.clone(), Ok(())),
+            WorktreeFeedback::Finished(
+                target.clone(),
+                Err(WorktreeRemoveError::Rejected {
+                    code: "dirty_worktree".into(),
+                    message: "uncommitted files".into(),
+                }),
+            ),
+            WorktreeFeedback::Finished(
+                target.clone(),
+                Err(WorktreeRemoveError::Other("server not ready".into())),
+            ),
+            WorktreeFeedback::Finished(target.clone(), Err(WorktreeRemoveError::UnknownDelivery)),
+            WorktreeFeedback::Finished(target.clone(), Err(WorktreeRemoveError::Offline)),
+        ];
+        for locale in [UiLocale::En, UiLocale::Ko] {
+            for state in &feedback {
+                let compact = state.compact_summary(locale);
+                let full = state.full_text(locale);
+                assert!(!compact.contains(&repo));
+                assert!(!compact.contains(&basename));
+                assert!(full.contains(&repo));
+                assert!(full.contains(&checkout));
+            }
+            let rejection = feedback[2].full_text(locale);
+            assert!(rejection.contains("dirty_worktree"));
+            assert!(rejection.contains("uncommitted files"));
+            assert!(feedback[3].full_text(locale).contains("server not ready"));
+            let uncertain = feedback[4].compact_summary(locale);
+            assert!(feedback[4].full_text(locale).contains(&checkout));
+            let warning = format!("{}: disconnected", locale.tag());
+            let compact = compact_worktree_secondary(uncertain, &warning);
+            let detail = worktree_feedback_detail(Some(&feedback[2]), locale, &warning);
+            assert!(compact.starts_with(uncertain));
+            assert!(compact.ends_with(&warning));
+            assert!(!compact.contains(&repo));
+            assert!(detail.contains(&checkout));
+            assert!(detail.contains("dirty_worktree"));
+            assert!(detail.ends_with(&warning));
+        }
+    }
+
+    #[test]
+    fn compact_result_owns_visible_space_before_dialogue_with_or_without_status() {
+        let content_width = BUBBLE_BODY_MIN_WIDTH - 2.0 * BUBBLE_HORIZONTAL_INSET;
+        let summary_height = 3.0 * BUBBLE_LINE_HEIGHT;
+        for show_status in [false, true] {
+            let body_height = 148.0;
+            let top = body_height - BUBBLE_VERTICAL_INSET;
+            let footer_top = BUBBLE_VERTICAL_INSET + BUBBLE_CONTROL_HEIGHT + BUBBLE_CONTENT_GAP;
+            let bottom = footer_top
+                + if show_status {
+                    STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
+                } else {
+                    0.0
+                };
+            let (primary, result) = feedback_compact_frames(
+                BUBBLE_HORIZONTAL_INSET,
+                content_width,
+                bottom,
+                top,
+                4.0 * BUBBLE_LINE_HEIGHT,
+                summary_height,
+            );
+            assert_eq!(result.size.width, 96.0);
+            assert!(result.size.height >= summary_height);
+            assert!(result.origin.y >= primary.origin.y + primary.size.height);
+            assert!(primary.origin.y >= bottom);
+            assert!(result.origin.y + result.size.height <= top);
+
+            let (primary, result) = feedback_compact_frames(
+                BUBBLE_HORIZONTAL_INSET,
+                content_width,
+                bottom,
+                top,
+                4.0 * BUBBLE_LINE_HEIGHT,
+                2000.0,
+            );
+            assert!(result.size.height >= summary_height);
+            assert!(primary.size.height <= (result.origin.y - bottom).max(0.0));
+            assert!(result.origin.y >= bottom);
+        }
     }
 
     #[test]

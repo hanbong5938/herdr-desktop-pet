@@ -578,6 +578,727 @@ mod prompt {
     }
 }
 
+mod worktree_remove {
+    use crate::herdr::{WorktreeRemoveError, WorktreeRemoveResult, WorktreeRemoveSender};
+    use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
+    use crate::session_view::{SessionFilter, SessionKey};
+    use crate::state::{AppState, SourceCounts};
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+
+    struct Server {
+        path: PathBuf,
+        listener: UnixListener,
+    }
+
+    impl Server {
+        fn new() -> Self {
+            let path = PathBuf::from("/tmp").join(format!(
+                "herdr-remove-test-{}-{}.sock",
+                std::process::id(),
+                NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
+            ));
+            let listener = UnixListener::bind(&path).unwrap();
+            Self { path, listener }
+        }
+
+        fn source(&self) -> String {
+            fs::canonicalize(&self.path)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+
+        fn exchange(&self, method: &str, result: Value) -> Value {
+            let (mut stream, _) = self.listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], method);
+            writeln!(stream, "{}", json!({"id": request["id"], "result": result})).unwrap();
+            request
+        }
+
+        fn snapshot(&self, workspaces: Value, agents: Value, panes: Value) {
+            self.exchange(
+                "session.snapshot",
+                json!({
+                    "type": "session_snapshot",
+                    "snapshot": { "workspaces": workspaces, "agents": agents, "panes": panes }
+                }),
+            );
+        }
+
+        fn assert_no_request(&self) {
+            self.listener.set_nonblocking(true).unwrap();
+            assert!(
+                self.listener.accept().is_err(),
+                "unexpected destructive request"
+            );
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn worktree(
+        checkout: &str,
+        panes: usize,
+        tabs: usize,
+        linked: bool,
+    ) -> Arc<WorkspaceWorktreeInfo> {
+        Arc::new(WorkspaceWorktreeInfo {
+            repo_key: "repo-key".into(),
+            repo_name: "Repo".into(),
+            repo_root: "/virtual/repo".into(),
+            checkout_path: checkout.into(),
+            is_linked_worktree: linked,
+            pane_count: panes,
+            tab_count: tabs,
+        })
+    }
+
+    fn workspace(id: &str, info: &WorkspaceWorktreeInfo) -> Value {
+        json!({
+            "workspace_id": id, "label": "Checkout",
+            "pane_count": info.pane_count, "tab_count": info.tab_count,
+            "worktree": {
+                "repo_key": info.repo_key, "repo_name": info.repo_name,
+                "repo_root": info.repo_root, "checkout_path": info.checkout_path,
+                "is_linked_worktree": info.is_linked_worktree
+            }
+        })
+    }
+
+    fn agent(terminal: &str, pane: &str, workspace: &str) -> Value {
+        json!({
+            "terminal_id": terminal, "pane_id": pane,
+            "workspace_id": workspace, "agent_status": "idle"
+        })
+    }
+
+    fn record(
+        terminal: &str,
+        pane: &str,
+        workspace: &str,
+        info: Arc<WorkspaceWorktreeInfo>,
+    ) -> AgentRecord {
+        AgentRecord {
+            terminal_id: terminal.into(),
+            pane_id: pane.into(),
+            status: AgentStatus::Idle,
+            metadata: SessionMetadata {
+                workspace_id: Some(workspace.into()),
+                worktree: Some(info),
+                ..SessionMetadata::default()
+            },
+            outcome_authoritative: false,
+            outcome: None,
+        }
+    }
+
+    fn publish(
+        shared: &Arc<Mutex<AppState>>,
+        source: &str,
+        generation: u64,
+        agents: &[AgentRecord],
+    ) -> SessionKey {
+        let mut state = shared.lock().unwrap();
+        assert!(state.begin_source(source.into(), generation));
+        assert!(state.publish_source_snapshot(
+            source,
+            generation,
+            agents,
+            SourceCounts::default(),
+            &[],
+            Instant::now()
+        ));
+        state
+            .session_snapshot(SessionFilter::All, None)
+            .rows
+            .into_iter()
+            .filter(|row| {
+                row.key.generation == generation && row.key.terminal_id == agents[0].terminal_id
+            })
+            .max_by_key(|row| row.key.source_id)
+            .unwrap()
+            .key
+    }
+
+    fn receive(sender: &mut WorktreeRemoveSender) -> WorktreeRemoveResult {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = sender.try_result() {
+                assert!(!sender.is_pending());
+                return result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worktree remove worker did not finish"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn routes_confirmed_source_with_duplicate_ids_and_allows_multiple_workspace_panes() {
+        let selected = Server::new();
+        let other = Server::new();
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let info = worktree("/virtual/checkout", 2, 2, true);
+        publish(
+            &shared,
+            &other.source(),
+            1,
+            &[record(
+                "same",
+                "same-pane",
+                "same-ws",
+                worktree("/virtual/other", 1, 1, true),
+            )],
+        );
+        let key = publish(
+            &shared,
+            &selected.source(),
+            1,
+            &[record("same", "same-pane", "same-ws", Arc::clone(&info))],
+        );
+        let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+        let expected = target.clone();
+        let server_info = Arc::clone(&info);
+        let worker = thread::spawn(move || {
+            selected.snapshot(
+                json!([workspace("same-ws", &server_info)]),
+                json!([
+                    agent("same", "same-pane", "same-ws"),
+                    agent("other", "second-pane", "same-ws")
+                ]),
+                json!([{"pane_id": "same-pane"}, {"pane_id": "second-pane"}]),
+            );
+            let request = selected.exchange(
+                "worktree.remove",
+                json!({
+                    "type": "worktree_removed", "workspace_id": "same-ws",
+                    "path": "/virtual/checkout", "forced": false
+                }),
+            );
+            assert_eq!(
+                request["params"],
+                json!({"workspace_id": "same-ws", "force": false})
+            );
+            selected
+        });
+        let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
+        sender.submit(target.clone()).unwrap();
+        assert_eq!(sender.submit(target), Err(WorktreeRemoveError::Busy));
+        let result = receive(&mut sender);
+        assert_eq!(result.target, expected);
+        assert_eq!(result.result, Ok(()));
+        assert!(
+            shared.lock().unwrap().session_view_for_key(&key).is_some(),
+            "never optimistically purge"
+        );
+        worker.join().unwrap().assert_no_request();
+        other.assert_no_request();
+    }
+
+    #[test]
+    fn frozen_target_change_and_ineligible_metadata_never_contact_server() {
+        let server = Server::new();
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let info = worktree("/virtual/checkout", 1, 1, true);
+        let key = publish(
+            &shared,
+            &server.source(),
+            1,
+            &[record("terminal", "pane", "ws", Arc::clone(&info))],
+        );
+        let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+        let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
+        let changed = record(
+            "terminal",
+            "pane",
+            "ws",
+            worktree("/virtual/checkout", 2, 1, true),
+        );
+        assert!(shared.lock().unwrap().publish_source_snapshot(
+            &server.source(),
+            1,
+            &[changed],
+            SourceCounts::default(),
+            &[],
+            Instant::now()
+        ));
+        assert_eq!(sender.submit(target), Err(WorktreeRemoveError::StaleTarget));
+        assert!(!sender.is_pending());
+        let current = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+        assert_eq!(current.worktree.pane_count, 2);
+        assert!(shared.lock().unwrap().publish_source_snapshot(
+            &server.source(),
+            1,
+            &[record(
+                "terminal",
+                "pane",
+                "ws",
+                worktree("/virtual/checkout", 1, 1, false)
+            )],
+            SourceCounts::default(),
+            &[],
+            Instant::now()
+        ));
+        assert_eq!(
+            sender.submit(current),
+            Err(WorktreeRemoveError::NotLinkedWorktree)
+        );
+        server.assert_no_request();
+    }
+
+    #[test]
+    fn fresh_snapshot_identity_or_impact_change_aborts_before_remove() {
+        for (agents, panes, info) in [
+            (
+                json!([agent("replacement", "pane", "ws")]),
+                json!([{"pane_id": "pane"}]),
+                worktree("/virtual/checkout", 1, 1, true),
+            ),
+            (
+                json!([
+                    agent("terminal", "pane", "ws"),
+                    agent("terminal", "other", "ws")
+                ]),
+                json!([{"pane_id": "pane"}, {"pane_id": "other"}]),
+                worktree("/virtual/checkout", 1, 1, true),
+            ),
+            (
+                json!([agent("terminal", "pane", "other-ws")]),
+                json!([{"pane_id": "pane"}]),
+                worktree("/virtual/checkout", 1, 1, true),
+            ),
+            (
+                json!([agent("terminal", "pane", "ws")]),
+                json!([{"pane_id": "pane"}]),
+                worktree("/virtual/checkout", 1, 2, true),
+            ),
+            (
+                json!([agent("terminal", "pane", "ws")]),
+                json!([{"pane_id": "pane"}]),
+                worktree("/virtual/checkout", 1, 1, false),
+            ),
+        ] {
+            let server = Server::new();
+            let shared = Arc::new(Mutex::new(AppState::new()));
+            let key = publish(
+                &shared,
+                &server.source(),
+                1,
+                &[record(
+                    "terminal",
+                    "pane",
+                    "ws",
+                    worktree("/virtual/checkout", 1, 1, true),
+                )],
+            );
+            let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+            let worker = thread::spawn(move || {
+                server.snapshot(json!([workspace("ws", &info)]), agents, panes);
+                server
+            });
+            let mut sender = WorktreeRemoveSender::new(shared);
+            sender.submit(target.clone()).unwrap();
+            let result = receive(&mut sender);
+            assert_eq!(result.target, target);
+            assert_eq!(result.result, Err(WorktreeRemoveError::StaleTarget));
+            worker.join().unwrap().assert_no_request();
+        }
+    }
+
+    #[test]
+    fn state_change_during_snapshot_aborts_before_remove_without_holding_lock() {
+        let server = Server::new();
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let info = worktree("/virtual/checkout", 1, 1, true);
+        let key = publish(
+            &shared,
+            &server.source(),
+            1,
+            &[record("terminal", "pane", "ws", Arc::clone(&info))],
+        );
+        let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+        let (read_tx, read_rx) = mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = server.listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "session.snapshot");
+            read_tx.send(()).unwrap();
+            reply_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            writeln!(
+                stream,
+                "{}",
+                json!({"id": request["id"], "result": {
+                    "type": "session_snapshot", "snapshot": {
+                        "workspaces": [workspace("ws", &info)],
+                        "panes": [{"pane_id": "pane"}],
+                        "agents": [agent("terminal", "pane", "ws")]
+                    }
+                }})
+            )
+            .unwrap();
+            server
+        });
+        let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
+        sender.submit(target.clone()).unwrap();
+        read_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(shared.lock().unwrap().publish_source_snapshot(
+            &target.source,
+            1,
+            &[record(
+                "terminal",
+                "pane",
+                "ws",
+                worktree("/virtual/checkout", 2, 1, true)
+            )],
+            SourceCounts::default(),
+            &[],
+            Instant::now()
+        ));
+        reply_tx.send(()).unwrap();
+        let result = receive(&mut sender);
+        assert_eq!(result.target, target);
+        assert_eq!(result.result, Err(WorktreeRemoveError::StaleTarget));
+        worker.join().unwrap().assert_no_request();
+    }
+
+    #[test]
+    fn remote_offline_main_and_ambiguous_targets_are_ineligible() {
+        use crate::session_view::WorktreeRemoveTargetError;
+        use crate::sources::{
+            remote_source, MachineInfo, MachineStatus, ObservationPreferences, SourceCatalog,
+        };
+        let server = Server::new();
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let linked = worktree("/virtual/checkout", 1, 1, true);
+        let key = publish(
+            &shared,
+            &server.source(),
+            1,
+            &[record("terminal", "pane", "ws", Arc::clone(&linked))],
+        );
+        let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
+        let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+        assert!(shared.lock().unwrap().update_source(
+            &server.source(),
+            1,
+            false,
+            SourceCounts::default()
+        ));
+        assert_eq!(
+            sender.submit(target.clone()),
+            Err(WorktreeRemoveError::Offline)
+        );
+        shared.lock().unwrap().begin_source(server.source(), 2);
+        assert_eq!(sender.submit(target), Err(WorktreeRemoveError::StaleTarget));
+
+        let main_key = publish(
+            &shared,
+            &server.source(),
+            3,
+            &[record(
+                "main",
+                "main-pane",
+                "main-ws",
+                worktree("/virtual/repo", 1, 1, false),
+            )],
+        );
+        assert_eq!(
+            shared.lock().unwrap().worktree_remove_target(&main_key),
+            Err(WorktreeRemoveTargetError::NotLinkedWorktree)
+        );
+        let ambiguous = publish(
+            &shared,
+            &server.source(),
+            4,
+            &[
+                record("one", "shared-pane", "ws", Arc::clone(&linked)),
+                record("two", "shared-pane", "ws", Arc::clone(&linked)),
+            ],
+        );
+        assert_eq!(
+            shared.lock().unwrap().worktree_remove_target(&ambiguous),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
+        server.assert_no_request();
+
+        let remote_id = server.source();
+        let remote = remote_source(&remote_id);
+        {
+            let mut state = shared.lock().unwrap();
+            state.set_observation_catalog(SourceCatalog {
+                initialized: true,
+                machines: vec![MachineInfo {
+                    id: remote_id.clone(),
+                    label: "Remote".into(),
+                    remote_session: "observation".into(),
+                    enabled: true,
+                    status: MachineStatus::Online,
+                    error: None,
+                }],
+                error: None,
+            });
+            state.apply_observation_preferences(ObservationPreferences {
+                local: true,
+                remote: true,
+                machines: vec![remote_id],
+            });
+        }
+        let remote_key = publish(
+            &shared,
+            &remote,
+            1,
+            &[record("remote", "pane", "ws", linked)],
+        );
+        assert_eq!(
+            shared.lock().unwrap().worktree_remove_target(&remote_key),
+            Err(WorktreeRemoveTargetError::ReadOnly)
+        );
+        assert!(!sender.is_pending());
+    }
+
+    #[test]
+    fn snapshot_duplicate_workspace_or_pane_is_not_removable() {
+        for (workspaces, panes) in [
+            (
+                json!([
+                    workspace("ws", &worktree("/virtual/checkout", 1, 1, true)),
+                    workspace("ws", &worktree("/virtual/checkout", 1, 1, true))
+                ]),
+                json!([{"pane_id": "pane"}]),
+            ),
+            (
+                json!([workspace("ws", &worktree("/virtual/checkout", 1, 1, true))]),
+                json!([{"pane_id": "pane"}, {"pane_id": "pane"}]),
+            ),
+        ] {
+            let server = Server::new();
+            let shared = Arc::new(Mutex::new(AppState::new()));
+            let key = publish(
+                &shared,
+                &server.source(),
+                1,
+                &[record(
+                    "terminal",
+                    "pane",
+                    "ws",
+                    worktree("/virtual/checkout", 1, 1, true),
+                )],
+            );
+            let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+            let worker = thread::spawn(move || {
+                server.snapshot(workspaces, json!([agent("terminal", "pane", "ws")]), panes);
+                server
+            });
+            let mut sender = WorktreeRemoveSender::new(shared);
+            sender.submit(target.clone()).unwrap();
+            let result = receive(&mut sender);
+            assert_eq!(result.target, target);
+            assert_eq!(result.result, Err(WorktreeRemoveError::StaleTarget));
+            worker.join().unwrap().assert_no_request();
+        }
+    }
+
+    #[test]
+    fn rejection_preserves_code_and_message_without_force_trust_or_retry() {
+        for (code, expected) in [
+            (
+                "dirty_worktree_requires_force",
+                WorktreeRemoveError::Rejected {
+                    code: "dirty_worktree_requires_force".into(),
+                    message: "Uncommitted changes".into(),
+                },
+            ),
+            ("unsupported_method", WorktreeRemoveError::Unsupported),
+        ] {
+            let server = Server::new();
+            let shared = Arc::new(Mutex::new(AppState::new()));
+            let info = worktree("/virtual/checkout", 1, 1, true);
+            let key = publish(
+                &shared,
+                &server.source(),
+                1,
+                &[record("terminal", "pane", "ws", Arc::clone(&info))],
+            );
+            let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+            let worker = thread::spawn(move || {
+                server.snapshot(
+                    json!([workspace("ws", &info)]),
+                    json!([agent("terminal", "pane", "ws")]),
+                    json!([{"pane_id": "pane"}]),
+                );
+                let (mut stream, _) = server.listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "worktree.remove");
+                assert_eq!(
+                    request["params"],
+                    json!({"workspace_id": "ws", "force": false})
+                );
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"id": request["id"], "error": {
+                        "code": code, "message": "Uncommitted changes"
+                    }})
+                )
+                .unwrap();
+                server
+            });
+            let mut sender = WorktreeRemoveSender::new(shared);
+            sender.submit(target.clone()).unwrap();
+            let result = receive(&mut sender);
+            assert_eq!(result.target, target);
+            assert_eq!(result.result, Err(expected));
+            worker.join().unwrap().assert_no_request();
+        }
+    }
+
+    #[test]
+    fn uncertain_delivery_or_wrong_ack_never_reports_success_or_resends() {
+        for response in [
+            None,
+            Some(
+                json!({"result": {"type": "worktree_removed", "workspace_id": "other", "path": "/virtual/checkout", "forced": false}}),
+            ),
+            Some(
+                json!({"result": {"type": "worktree_removed", "workspace_id": "ws", "path": "/virtual/other", "forced": false}}),
+            ),
+            Some(
+                json!({"result": {"type": "worktree_removed", "workspace_id": "ws", "path": "/virtual/checkout", "forced": true}}),
+            ),
+            Some(
+                json!({"result": {"type": "worktree_removed", "workspace_id": "ws", "path": "/virtual/checkout", "forced": false}, "bad_id": true}),
+            ),
+            Some(json!({"malformed": true})),
+        ] {
+            let server = Server::new();
+            let shared = Arc::new(Mutex::new(AppState::new()));
+            let info = worktree("/virtual/checkout", 1, 1, true);
+            let key = publish(
+                &shared,
+                &server.source(),
+                1,
+                &[record("terminal", "pane", "ws", Arc::clone(&info))],
+            );
+            let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+            let worker = thread::spawn(move || {
+                server.snapshot(
+                    json!([workspace("ws", &info)]),
+                    json!([agent("terminal", "pane", "ws")]),
+                    json!([{"pane_id": "pane"}]),
+                );
+                let (mut stream, _) = server.listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["method"], "worktree.remove");
+                assert_eq!(
+                    request["params"],
+                    json!({"workspace_id": "ws", "force": false})
+                );
+                if let Some(mut response) = response {
+                    if response.get("bad_id").is_some() {
+                        response.as_object_mut().unwrap().remove("bad_id");
+                        response["id"] = json!("wrong-request");
+                    } else {
+                        response["id"] = request["id"].clone();
+                    }
+                    writeln!(stream, "{response}").unwrap();
+                }
+                drop(stream);
+                server
+            });
+            let mut sender = WorktreeRemoveSender::new(shared);
+            sender.submit(target.clone()).unwrap();
+            let result = receive(&mut sender);
+            assert_eq!(result.target, target);
+            assert_eq!(result.result, Err(WorktreeRemoveError::UnknownDelivery));
+            worker.join().unwrap().assert_no_request();
+        }
+    }
+    #[test]
+    fn remove_request_does_not_hold_app_state_mutex_while_waiting_for_ack() {
+        let server = Server::new();
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let info = worktree("/virtual/checkout", 1, 1, true);
+        let key = publish(
+            &shared,
+            &server.source(),
+            1,
+            &[record("terminal", "pane", "ws", Arc::clone(&info))],
+        );
+        let target = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
+        let (received_tx, received_rx) = mpsc::sync_channel(1);
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            server.snapshot(
+                json!([workspace("ws", &info)]),
+                json!([agent("terminal", "pane", "ws")]),
+                json!([{"pane_id": "pane"}]),
+            );
+            let (mut stream, _) = server.listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], "worktree.remove");
+            received_tx.send(()).unwrap();
+            reply_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            writeln!(
+                stream,
+                "{}",
+                json!({"id": request["id"], "result": {
+                    "type": "worktree_removed", "workspace_id": "ws",
+                    "path": "/virtual/checkout", "forced": false
+                }})
+            )
+            .unwrap();
+            server
+        });
+        let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
+        sender.submit(target.clone()).unwrap();
+        received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(shared.lock().unwrap().update_source(
+            &target.source,
+            target.key.generation,
+            false,
+            SourceCounts::default()
+        ));
+        reply_tx.send(()).unwrap();
+        let result = receive(&mut sender);
+        assert_eq!(result.target, target);
+        assert_eq!(result.result, Ok(()));
+        worker.join().unwrap().assert_no_request();
+    }
+}
+
 mod watcher_lifecycle {
     use crate::herdr::Watchers;
     use crate::lifecycle::LifecycleSettings;

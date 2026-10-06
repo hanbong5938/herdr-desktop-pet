@@ -1,6 +1,7 @@
 use crate::agent_outcome::{AgentOutcome, OutcomeReport};
-use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata};
+use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
 const MAX_SOURCES: usize = 64;
 const MAX_RECORDS_PER_SOURCE: usize = crate::herdr_protocol::MAX_AGENT_RECORDS;
@@ -155,6 +156,23 @@ pub(crate) enum PromptTargetError {
     ReadOnly,
     Offline,
     Stale,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorktreeRemoveTarget {
+    pub(crate) key: SessionKey,
+    pub(crate) source: String,
+    pub(crate) pane_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) worktree: Arc<WorkspaceWorktreeInfo>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorktreeRemoveTargetError {
+    ReadOnly,
+    Offline,
+    Stale,
+    NotLinkedWorktree,
 }
 
 #[derive(Debug, Default)]
@@ -530,6 +548,60 @@ impl SessionStore {
         Ok(PromptTarget {
             source: source.source.clone(),
             pane_id: record.pane_id.clone(),
+        })
+    }
+
+    /// Resolve the clicked card's retained identity, never UI selection.
+    pub(crate) fn worktree_remove_target(
+        &self,
+        key: &SessionKey,
+    ) -> Result<WorktreeRemoveTarget, WorktreeRemoveTargetError> {
+        let source = self
+            .sources
+            .iter()
+            .find(|source| source.source_id == key.source_id)
+            .ok_or(WorktreeRemoveTargetError::Stale)?;
+        if !source.visible || source.generation != key.generation {
+            return Err(WorktreeRemoveTargetError::Stale);
+        }
+        let record = source
+            .records
+            .get(&key.terminal_id)
+            .ok_or(WorktreeRemoveTargetError::Stale)?;
+        if crate::sources::remote_machine_id(&source.source).is_some() {
+            return Err(WorktreeRemoveTargetError::ReadOnly);
+        }
+        if source.availability != Availability::Live {
+            return Err(WorktreeRemoveTargetError::Offline);
+        }
+        if source.records.iter().any(|(terminal, other)| {
+            terminal != &key.terminal_id && other.pane_id == record.pane_id
+        }) {
+            return Err(WorktreeRemoveTargetError::Stale);
+        }
+        let (Some(workspace_id), Some(worktree)) = (
+            record.metadata.workspace_id.as_ref(),
+            record.metadata.worktree.as_ref(),
+        ) else {
+            return Err(WorktreeRemoveTargetError::NotLinkedWorktree);
+        };
+        if !worktree.is_linked_worktree || worktree.checkout_path == worktree.repo_root {
+            return Err(WorktreeRemoveTargetError::NotLinkedWorktree);
+        }
+        // A pane can contain at most one terminal, but one workspace legitimately
+        // contains multiple panes. Divergent descriptors cannot grant authority.
+        if source.records.values().any(|other| {
+            other.metadata.workspace_id.as_ref() == Some(workspace_id)
+                && other.metadata.worktree.as_ref() != Some(worktree)
+        }) {
+            return Err(WorktreeRemoveTargetError::Stale);
+        }
+        Ok(WorktreeRemoveTarget {
+            key: key.clone(),
+            source: source.source.clone(),
+            pane_id: record.pane_id.clone(),
+            workspace_id: workspace_id.clone(),
+            worktree: Arc::clone(worktree),
         })
     }
 
@@ -1315,6 +1387,106 @@ mod tests {
         );
         assert!(store.remove_source("socket", 1));
         assert_eq!(store.view_for_key(&ambiguous.key), None);
+    }
+
+    #[test]
+    fn worktree_target_keeps_card_identity_and_rejects_ambiguous_or_stale_rows() {
+        let info = Arc::new(WorkspaceWorktreeInfo {
+            repo_key: "repo".into(),
+            repo_name: "Project".into(),
+            repo_root: "/project".into(),
+            checkout_path: "/linked".into(),
+            is_linked_worktree: true,
+            pane_count: 2,
+            tab_count: 2,
+        });
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("/local.sock", 1));
+        let mut first = record("first", "pane-one", AgentStatus::Working);
+        first.metadata.workspace_id = Some("w".into());
+        first.metadata.worktree = Some(Arc::clone(&info));
+        let mut second = record("second", "pane-two", AgentStatus::Working);
+        second.metadata = first.metadata.clone();
+        assert!(store.replace_source("/local.sock", 1, [&first, &second]));
+        let rows = store.snapshot(SessionFilter::All, None).rows;
+        let key = rows[1].key.clone();
+        let target = store.worktree_remove_target(&key).unwrap();
+        assert_eq!(target.key, key);
+        assert_eq!(target.pane_id, "pane-two");
+        assert_eq!(target.workspace_id, "w");
+        assert_eq!(target.worktree.as_ref(), info.as_ref());
+
+        let mut missing = second.clone();
+        missing.metadata.worktree = None;
+        assert!(store.replace_source("/local.sock", 1, [&first, &missing]));
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::NotLinkedWorktree)
+        );
+
+        let mut main = second.clone();
+        main.metadata.worktree = Some(Arc::new(WorkspaceWorktreeInfo {
+            is_linked_worktree: false,
+            ..(*info).clone()
+        }));
+        assert!(store.replace_source("/local.sock", 1, [&first, &main]));
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::NotLinkedWorktree)
+        );
+        let mut falsely_linked_root = second.clone();
+        falsely_linked_root.metadata.worktree = Some(Arc::new(WorkspaceWorktreeInfo {
+            checkout_path: info.repo_root.clone(),
+            ..(*info).clone()
+        }));
+        assert!(store.replace_source("/local.sock", 1, [&first, &falsely_linked_root]));
+        assert!(store.view_for_key(&key).is_some());
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::NotLinkedWorktree)
+        );
+        assert!(store.replace_source("/local.sock", 1, [&first, &second]));
+        assert!(store.worktree_remove_target(&key).is_ok());
+        let mut changed = second.clone();
+        changed.metadata.worktree = Some(Arc::new(WorkspaceWorktreeInfo {
+            tab_count: 3,
+            ..(*info).clone()
+        }));
+        assert!(store.replace_source("/local.sock", 1, [&first, &changed]));
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
+        changed.pane_id = "pane-one".into();
+        assert!(store.replace_source("/local.sock", 1, [&first, &changed]));
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
+        assert!(store.mark_offline("/local.sock", 1));
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Offline)
+        );
+        assert!(store.begin_source("/local.sock", 2));
+        assert_eq!(
+            store.worktree_remove_target(&key),
+            Err(WorktreeRemoveTargetError::Stale)
+        );
+        let remote = crate::sources::remote_source("east");
+        assert!(store.begin_source(&remote, 1));
+        assert!(store.replace_source(&remote, 1, [&first]));
+        let remote_key = store
+            .snapshot(SessionFilter::All, None)
+            .rows
+            .into_iter()
+            .find(|row| row.key.terminal_id == "first" && row.key.source_id != key.source_id)
+            .unwrap()
+            .key;
+        assert_eq!(
+            store.worktree_remove_target(&remote_key),
+            Err(WorktreeRemoveTargetError::ReadOnly)
+        );
     }
 
     #[test]

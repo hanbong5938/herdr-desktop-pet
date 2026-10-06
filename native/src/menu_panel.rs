@@ -15,12 +15,13 @@ use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBox,
     NSBoxType, NSButton, NSButtonType, NSCellImagePosition, NSColor, NSControl, NSControlSize,
     NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSPanel, NSPopUpButton,
+    NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSImageView, NSPanel, NSPopUpButton,
     NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSwitch, NSTextAlignment, NSTextField,
     NSUserInterfaceItemIdentification, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use std::cell::Cell;
 const PANEL_WIDTH: f64 = 352.0;
 const PANEL_HEIGHT: f64 = 540.0;
 const PANEL_EDGE_INSET: f64 = 10.0;
@@ -33,7 +34,6 @@ const BUBBLE_CONTENT_HEIGHT: f64 = 578.0;
 const SETTINGS_BASE_HEIGHT: f64 = 308.0 + CARD_HEIGHT + 14.0;
 const MENU_BAR_CARD_TOP: f64 = 300.0;
 const MENU_BAR_CARD_GAP: f64 = 8.0;
-const MENU_BAR_HELP_TOP: f64 = 64.0;
 const MENU_BAR_CARD_BOTTOM: f64 = 14.0;
 const MIN_SCALE: f64 = 0.35;
 const MAX_SCALE: f64 = 1.25;
@@ -386,8 +386,20 @@ pub(crate) struct MenuPanel {
     language_popup: Retained<NSPopUpButton>,
     menu_bar_card: Retained<MenuPanelCard>,
     menu_bar_label: Retained<NSTextField>,
+    menu_bar_preview_well: Retained<NSBox>,
+    menu_bar_preview: Retained<NSImageView>,
+    menu_bar_separator: Retained<NSBox>,
+    menu_bar_icon_status: Retained<NSTextField>,
+    menu_bar_visibility: Retained<NSTextField>,
     menu_bar_popup: Retained<NSPopUpButton>,
     menu_bar_help: Retained<NSTextField>,
+    menu_bar_choose: Retained<NSButton>,
+    menu_bar_restore: Retained<NSButton>,
+    menu_bar_icon_help: Retained<NSTextField>,
+    menu_bar_icon_error: Retained<NSTextField>,
+    menu_bar_icon_error_detail: Option<(Message, String)>,
+    menu_bar_icon_custom: bool,
+    menu_bar_icon_busy: Cell<bool>,
     lifecycle_card: LifecycleSettingsCard,
     observation_card: Retained<MenuPanelCard>,
     observation_title: Retained<NSTextField>,
@@ -893,6 +905,50 @@ impl MenuPanel {
             primary(),
             mtm,
         );
+        let menu_bar_preview_well = NSBox::initWithFrame(NSBox::alloc(mtm), NSRect::default());
+        menu_bar_preview_well.setBoxType(NSBoxType::Custom);
+        menu_bar_preview_well.setTitlePosition(objc2_app_kit::NSTitlePosition::NoTitle);
+        menu_bar_preview_well.setContentViewMargins(NSSize::new(0.0, 0.0));
+        menu_bar_preview_well.setTransparent(false);
+        menu_bar_preview_well.setBorderWidth(1.0);
+        menu_bar_preview_well.setCornerRadius(6.0);
+        menu_bar_preview_well.setFillColor(&NSColor::controlBackgroundColor());
+        menu_bar_preview_well.setBorderColor(&color(
+            CARD_BORDER_RED,
+            CARD_BORDER_GREEN,
+            CARD_BORDER_BLUE,
+            CARD_BORDER_ALPHA,
+        ));
+        set_accessibility_element(&*menu_bar_preview_well, false);
+        let menu_bar_preview =
+            NSImageView::initWithFrame(NSImageView::alloc(mtm), NSRect::default());
+        menu_bar_preview.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+        menu_bar_preview.setEditable(false);
+        set_accessibility_element(&*menu_bar_preview, false);
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str("pawprint.fill"),
+            None,
+        ) {
+            image.setTemplate(true);
+            menu_bar_preview.setImage(Some(&image));
+        }
+        menu_bar_preview_well.addSubview(&menu_bar_preview);
+        let menu_bar_icon_status = label(
+            text(locale, Message::MenuBarIconDefault),
+            11.5,
+            true,
+            primary(),
+            mtm,
+        );
+        set_accessibility_identifier(&menu_bar_icon_status, "menu-bar-icon-status");
+        let menu_bar_visibility = label(
+            text(locale, Message::MenuBarVisibility),
+            11.0,
+            true,
+            secondary(),
+            mtm,
+        );
+        set_accessibility_element(&*menu_bar_visibility, false);
         let menu_bar_popup = make_selection_popup(
             &[
                 (Message::MenuBarAlways, 0),
@@ -903,6 +959,7 @@ impl MenuPanel {
             sel!(setMenuBarMode:),
             mtm,
         );
+        set_accessibility_identifier(&menu_bar_popup, "menu-bar-visibility");
         let menu_bar_help = label(
             text(locale, Message::MenuBarModeHelp),
             10.0,
@@ -911,9 +968,55 @@ impl MenuPanel {
             mtm,
         );
         menu_bar_help.setMaximumNumberOfLines(0);
+        let menu_bar_separator = NSBox::initWithFrame(NSBox::alloc(mtm), NSRect::default());
+        menu_bar_separator.setBoxType(NSBoxType::Custom);
+        menu_bar_separator.setBorderWidth(0.0);
+        menu_bar_separator.setFillColor(&color(
+            CARD_BORDER_RED,
+            CARD_BORDER_GREEN,
+            CARD_BORDER_BLUE,
+            0.35,
+        ));
+        set_accessibility_element(&*menu_bar_separator, false);
+        let menu_bar_choose = make_action_button(
+            text(locale, Message::MenuBarIconChoose),
+            target,
+            sel!(chooseMenuBarIcon:),
+            mtm,
+        );
+        set_accessibility_identifier(&menu_bar_choose, "menu-bar-icon-choose");
+        let menu_bar_restore = make_action_button(
+            text(locale, Message::MenuBarIconRestore),
+            target,
+            sel!(resetMenuBarIcon:),
+            mtm,
+        );
+        set_accessibility_identifier(&menu_bar_restore, "menu-bar-icon-reset");
+        menu_bar_restore.setEnabled(false);
+        let menu_bar_icon_help = label(
+            text(locale, Message::MenuBarIconHelp),
+            10.0,
+            false,
+            secondary(),
+            mtm,
+        );
+        menu_bar_icon_help.setMaximumNumberOfLines(0);
+        let menu_bar_icon_error = label("", 10.5, false, NSColor::systemRedColor(), mtm);
+        menu_bar_icon_error.setMaximumNumberOfLines(0);
+        menu_bar_icon_error.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByCharWrapping);
+        set_accessibility_identifier(&menu_bar_icon_error, "menu-bar-icon-error");
+        menu_bar_icon_error.setHidden(true);
         menu_bar_card.addSubview(&menu_bar_label);
+        menu_bar_card.addSubview(&menu_bar_visibility);
         menu_bar_card.addSubview(&menu_bar_popup);
         menu_bar_card.addSubview(&menu_bar_help);
+        menu_bar_card.addSubview(&menu_bar_separator);
+        menu_bar_card.addSubview(&menu_bar_preview_well);
+        menu_bar_card.addSubview(&menu_bar_icon_status);
+        menu_bar_card.addSubview(&menu_bar_choose);
+        menu_bar_card.addSubview(&menu_bar_restore);
+        menu_bar_card.addSubview(&menu_bar_icon_help);
+        menu_bar_card.addSubview(&menu_bar_icon_error);
         settings_tab.addSubview(&menu_bar_card);
         let observation_card = MenuPanelCard::new(NSRect::default(), mtm);
         set_accessibility_element(&*observation_card, false);
@@ -1063,8 +1166,20 @@ impl MenuPanel {
             language_popup,
             menu_bar_card,
             menu_bar_label,
+            menu_bar_preview_well,
+            menu_bar_preview,
+            menu_bar_separator,
+            menu_bar_icon_status,
+            menu_bar_visibility,
             menu_bar_popup,
             menu_bar_help,
+            menu_bar_choose,
+            menu_bar_restore,
+            menu_bar_icon_help,
+            menu_bar_icon_error,
+            menu_bar_icon_error_detail: None,
+            menu_bar_icon_custom: false,
+            menu_bar_icon_busy: Cell::new(false),
             lifecycle_card,
             observation_card,
             observation_title,
@@ -1277,6 +1392,57 @@ impl MenuPanel {
             MenuBarMode::Always => 0,
             MenuBarMode::RecoveryOnly => 1,
         });
+    }
+
+    pub(crate) fn set_menu_bar_icon(
+        &mut self,
+        image: &NSImage,
+        custom: bool,
+        error: Option<(Message, &str)>,
+    ) {
+        self.menu_bar_preview.setImage(Some(image));
+        self.menu_bar_icon_custom = custom;
+        self.menu_bar_icon_error_detail =
+            error.map(|(message, detail)| (message, detail.to_owned()));
+        self.update_menu_bar_icon_labels();
+        self.menu_bar_restore
+            .setEnabled(custom && !self.menu_bar_icon_busy.get());
+        self.layout_documents();
+    }
+
+    pub(crate) fn set_menu_bar_icon_busy(&self, busy: bool) {
+        // This setter is called on the main thread; keep the state together
+        // with the controls so clearing busy never enables reset for Default.
+        self.menu_bar_icon_busy.set(busy);
+        self.menu_bar_choose.setEnabled(!busy);
+        self.menu_bar_restore
+            .setEnabled(self.menu_bar_icon_custom && !busy);
+    }
+
+    fn update_menu_bar_icon_labels(&self) {
+        self.menu_bar_icon_status
+            .setStringValue(&NSString::from_str(text(
+                self.locale,
+                if self.menu_bar_icon_custom {
+                    Message::MenuBarIconCustom
+                } else {
+                    Message::MenuBarIconDefault
+                },
+            )));
+        if let Some((summary, detail)) = &self.menu_bar_icon_error_detail {
+            let value = if detail.is_empty() {
+                text(self.locale, *summary).to_owned()
+            } else {
+                format!("{}: {detail}", text(self.locale, *summary))
+            };
+            self.menu_bar_icon_error
+                .setStringValue(&NSString::from_str(&value));
+            self.menu_bar_icon_error.setHidden(false);
+        } else {
+            self.menu_bar_icon_error
+                .setStringValue(&NSString::from_str(""));
+            self.menu_bar_icon_error.setHidden(true);
+        }
     }
 
     pub(crate) fn revert_observation_controls(&mut self) {
@@ -1768,8 +1934,31 @@ impl MenuPanel {
         self.menu_bar_label
             .setStringValue(&NSString::from_str(text(locale, Message::MenuBarIcon)));
         set_accessibility_label(&*self.menu_bar_label, text(locale, Message::MenuBarIcon));
+        self.menu_bar_visibility
+            .setStringValue(&NSString::from_str(text(
+                locale,
+                Message::MenuBarVisibility,
+            )));
         self.menu_bar_help
             .setStringValue(&NSString::from_str(text(locale, Message::MenuBarModeHelp)));
+        self.menu_bar_icon_help
+            .setStringValue(&NSString::from_str(text(locale, Message::MenuBarIconHelp)));
+        self.menu_bar_choose.setTitle(&NSString::from_str(text(
+            locale,
+            Message::MenuBarIconChoose,
+        )));
+        self.menu_bar_restore.setTitle(&NSString::from_str(text(
+            locale,
+            Message::MenuBarIconRestore,
+        )));
+        set_accessibility_label(
+            &*self.menu_bar_choose,
+            text(locale, Message::MenuBarIconChoose),
+        );
+        set_accessibility_label(
+            &*self.menu_bar_restore,
+            text(locale, Message::MenuBarIconRestore),
+        );
         localize_popup_items(
             &self.menu_bar_popup,
             locale,
@@ -1778,7 +1967,10 @@ impl MenuPanel {
                 (Message::MenuBarRecoveryOnly, 1),
             ],
         );
-        set_accessibility_label(&self.menu_bar_popup, text(locale, Message::MenuBarIcon));
+        set_accessibility_label(
+            &self.menu_bar_popup,
+            text(locale, Message::MenuBarVisibility),
+        );
         set_accessibility_label(&*self.menu_bar_help, text(locale, Message::MenuBarModeHelp));
         set_tooltip(&self.menu_bar_popup, text(locale, Message::MenuBarModeHelp));
         for tag in [0, 1] {
@@ -1793,6 +1985,7 @@ impl MenuPanel {
                 ))));
         }
         self.locale = locale;
+        self.update_menu_bar_icon_labels();
         self.observation_catalog = None;
         self.observation_title
             .setStringValue(&NSString::from_str(text(locale, Message::ObservationTitle)));
@@ -2275,9 +2468,89 @@ impl MenuPanel {
     }
 
     fn menu_bar_card_height(&self, card_width: f64) -> f64 {
-        MENU_BAR_HELP_TOP
-            + measured_label_height(&self.menu_bar_help, (card_width - 28.0).max(1.0)).max(16.0)
-            + MENU_BAR_CARD_BOTTOM
+        self.layout_menu_bar_card(card_width, false)
+    }
+
+    fn layout_menu_bar_card(&self, card_width: f64, apply: bool) -> f64 {
+        let width = (card_width - 28.0).max(1.0);
+        if apply {
+            self.menu_bar_label.setFrame(NSRect::new(
+                NSPoint::new(14.0, 8.0),
+                NSSize::new(width, 18.0),
+            ));
+            self.menu_bar_visibility.setFrame(NSRect::new(
+                NSPoint::new(14.0, 31.0),
+                NSSize::new(width, 16.0),
+            ));
+            self.menu_bar_popup.setFrame(NSRect::new(
+                NSPoint::new(14.0, 51.0),
+                NSSize::new(width, 26.0),
+            ));
+        }
+        let mut y = 84.0;
+        place_observation_label(&self.menu_bar_help, 14.0, width, 16.0, &mut y, apply);
+        y += 10.0;
+        if apply {
+            self.menu_bar_separator
+                .setFrame(NSRect::new(NSPoint::new(14.0, y), NSSize::new(width, 1.0)));
+        }
+        y += 11.0;
+        if apply {
+            self.menu_bar_preview_well
+                .setFrame(NSRect::new(NSPoint::new(14.0, y), NSSize::new(36.0, 36.0)));
+            self.menu_bar_preview
+                .setFrame(NSRect::new(NSPoint::new(9.0, 9.0), NSSize::new(18.0, 18.0)));
+            self.menu_bar_icon_status.setFrame(NSRect::new(
+                NSPoint::new(60.0, y + 9.0),
+                NSSize::new((width - 46.0).max(1.0), 18.0),
+            ));
+        }
+        y += 46.0;
+        let choose_width = self
+            .menu_bar_choose
+            .cell()
+            .map(|cell| cell.cellSize().width + 8.0)
+            .unwrap_or(110.0)
+            .max(110.0);
+        let restore_width = self
+            .menu_bar_restore
+            .cell()
+            .map(|cell| cell.cellSize().width + 8.0)
+            .unwrap_or(156.0)
+            .max(156.0);
+        let side_by_side = choose_width + 8.0 + restore_width <= width;
+        if apply {
+            self.menu_bar_choose.setFrame(NSRect::new(
+                NSPoint::new(14.0, y),
+                NSSize::new(if side_by_side { choose_width } else { width }, 26.0),
+            ));
+            self.menu_bar_restore.setFrame(NSRect::new(
+                NSPoint::new(
+                    if side_by_side {
+                        22.0 + choose_width
+                    } else {
+                        14.0
+                    },
+                    if side_by_side { y } else { y + 32.0 },
+                ),
+                NSSize::new(
+                    if side_by_side {
+                        width - choose_width - 8.0
+                    } else {
+                        width
+                    },
+                    26.0,
+                ),
+            ));
+        }
+        y += if side_by_side { 26.0 } else { 58.0 };
+        y += 8.0;
+        place_observation_label(&self.menu_bar_icon_help, 14.0, width, 16.0, &mut y, apply);
+        if !self.menu_bar_icon_error.isHidden() {
+            y += 6.0;
+            place_observation_label(&self.menu_bar_icon_error, 14.0, width, 16.0, &mut y, apply);
+        }
+        y + MENU_BAR_CARD_BOTTOM
     }
 
     fn layout_settings(&self, card_width: f64) {
@@ -2363,21 +2636,7 @@ impl MenuPanel {
             NSPoint::new(8.0, MENU_BAR_CARD_TOP),
             NSSize::new(card_width, menu_bar_height),
         ));
-        self.menu_bar_label.setFrame(NSRect::new(
-            NSPoint::new(14.0, 8.0),
-            NSSize::new((card_width - 28.0).max(1.0), 18.0),
-        ));
-        self.menu_bar_popup.setFrame(NSRect::new(
-            NSPoint::new(14.0, 30.0),
-            NSSize::new((card_width - 28.0).max(1.0), 26.0),
-        ));
-        self.menu_bar_help.setFrame(NSRect::new(
-            NSPoint::new(14.0, MENU_BAR_HELP_TOP),
-            NSSize::new(
-                (card_width - 28.0).max(1.0),
-                menu_bar_height - MENU_BAR_HELP_TOP - MENU_BAR_CARD_BOTTOM,
-            ),
-        ));
+        self.layout_menu_bar_card(card_width, true);
         let observation_height = self.layout_observation(card_width, true);
         self.observation_card.setFrame(NSRect::new(
             NSPoint::new(8.0, MENU_BAR_CARD_TOP + menu_bar_height + MENU_BAR_CARD_GAP),
@@ -2854,6 +3113,13 @@ fn set_accessibility_label(view: &NSView, value: &str) {
     }
 }
 
+fn set_accessibility_identifier(view: &NSView, value: &str) {
+    let value = NSString::from_str(value);
+    unsafe {
+        let _: () = msg_send![view, setAccessibilityIdentifier: Some(&*value)];
+    }
+}
+
 fn set_tooltip(view: &NSView, value: &str) {
     let value = NSString::from_str(value);
     unsafe {
@@ -2915,25 +3181,5 @@ fn placement_index(placement: BubblePlacement) -> usize {
         BubblePlacement::Below => 2,
         BubblePlacement::Left => 3,
         BubblePlacement::Right => 4,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn settings_document_keeps_wrapped_menu_bar_help_and_lifecycle_scrollable() {
-        for (help_height, observation_height) in [(16.0, 200.0), (44.0, 310.0), (100.0, 500.0)] {
-            let menu_bar_height = MENU_BAR_HELP_TOP + help_height + MENU_BAR_CARD_BOTTOM;
-            let observation_top = MENU_BAR_CARD_TOP + menu_bar_height + MENU_BAR_CARD_GAP;
-            let lifecycle_top = observation_top + observation_height + MENU_BAR_CARD_GAP;
-            let document_height = settings_content_height(menu_bar_height, observation_height);
-
-            assert!(observation_top >= MENU_BAR_CARD_TOP + menu_bar_height);
-            assert!(lifecycle_top >= observation_top + observation_height);
-            assert!(document_height >= lifecycle_top + CARD_HEIGHT + 14.0);
-            assert!(document_height > 240.0); // A short panel must expose the rest via scrolling.
-        }
     }
 }

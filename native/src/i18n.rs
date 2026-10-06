@@ -235,6 +235,15 @@ pub(crate) enum Message {
     MenuAppearance,
     MenuLanguage,
     MenuBarIcon,
+    MenuBarVisibility,
+    MenuBarIconDefault,
+    MenuBarIconCustom,
+    MenuBarIconChoose,
+    MenuBarIconRestore,
+    MenuBarIconHelp,
+    MenuBarIconImportFailure,
+    MenuBarIconSaveFailure,
+    MenuBarIconLoadFailure,
     MenuBarAlways,
     MenuBarRecoveryOnly,
     MenuBarModeHelp,
@@ -344,6 +353,25 @@ pub(crate) enum Message {
     ExpandSpeechBubble,
     CollapseSpeechBubble,
     CloseBubbleWindow,
+    WorktreeRemove,
+    WorktreeRemoveConfirm,
+    WorktreeRemoveAction,
+    WorktreeRemoving,
+    WorktreeConfirmUnavailable,
+    WorktreeCompactUnknownDelivery,
+    WorktreeCompactRejected,
+    WorktreeCompactUnavailable,
+    WorktreeCompactFailed,
+    WorktreeRemoved,
+    WorktreeBusy,
+    WorktreeOffline,
+    WorktreeReadOnly,
+    WorktreeStale,
+    WorktreeNotLinked,
+    WorktreeUnsupported,
+    WorktreeUnknownDelivery,
+    WorktreeRejected,
+    WorktreeFailed,
     FullSpeechBubbleMessage,
     AllSessions,
     ComposerSelectSession,
@@ -483,6 +511,15 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::MenuAppearance => "외관",
             Message::MenuLanguage => "언어",
             Message::MenuBarIcon => "메뉴 막대 아이콘",
+            Message::MenuBarVisibility => "표시 조건",
+            Message::MenuBarIconDefault => "기본 아이콘",
+            Message::MenuBarIconCustom => "사용자 지정 이미지",
+            Message::MenuBarIconChoose => "이미지 선택…",
+            Message::MenuBarIconRestore => "기본 아이콘 복원",
+            Message::MenuBarIconHelp => "정적 PNG만 사용 가능 · 최대 4 MiB · 최대 100만 픽셀",
+            Message::MenuBarIconImportFailure => "메뉴 막대 이미지 가져오기 실패",
+            Message::MenuBarIconSaveFailure => "메뉴 막대 이미지 저장 실패",
+            Message::MenuBarIconLoadFailure => "저장된 아이콘을 불러오지 못해 기본 아이콘을 표시합니다",
             Message::MenuBarAlways => "항상 표시",
             Message::MenuBarRecoveryOnly => "복구가 필요할 때만 표시",
             Message::MenuBarModeHelp => "조건부 모드에서는 캐릭터와 말풍선을 모두 숨기거나 전체 창 클릭 통과를 켜면 표시합니다.",
@@ -602,6 +639,25 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ExpandSpeechBubble => "말풍선 펼치기",
             Message::CollapseSpeechBubble => "말풍선 접기",
             Message::CloseBubbleWindow => "대화창 닫기",
+            Message::WorktreeRemove => "워크트리 삭제…",
+            Message::WorktreeRemoveConfirm => "이 워크트리를 삭제할까요?",
+            Message::WorktreeRemoveAction => "워크트리 삭제",
+            Message::WorktreeRemoving => "워크트리 삭제 중…",
+            Message::WorktreeConfirmUnavailable => "삭제 확인 창을 안전하게 설정할 수 없습니다",
+            Message::WorktreeCompactUnknownDelivery => "결과 불명.\n재시도 전 확인하세요",
+            Message::WorktreeCompactRejected => "서버가 삭제를 거부했습니다",
+            Message::WorktreeCompactUnavailable => "워크트리를 삭제할 수 없습니다",
+            Message::WorktreeCompactFailed => "워크트리 삭제 실패",
+            Message::WorktreeRemoved => "워크트리 삭제 완료",
+            Message::WorktreeBusy => "다른 워크트리 삭제 작업이 진행 중입니다",
+            Message::WorktreeOffline => "로컬 Herdr 소스가 오프라인입니다",
+            Message::WorktreeReadOnly => "원격 관찰 소스는 읽기 전용입니다",
+            Message::WorktreeStale => "워크트리 또는 영향받는 세션이 변경되었습니다. 다시 확인하세요",
+            Message::WorktreeNotLinked => "연결된 워크트리가 아닙니다",
+            Message::WorktreeUnsupported => "이 Herdr 서버는 worktree.remove를 지원하지 않습니다",
+            Message::WorktreeUnknownDelivery => "삭제 결과를 확인할 수 없습니다. 확인 없이 다시 시도하지 마세요",
+            Message::WorktreeRejected => "Herdr 서버가 워크트리 삭제를 거부했습니다",
+            Message::WorktreeFailed => "워크트리를 삭제하지 못했습니다",
             Message::FullSpeechBubbleMessage => "전체 말풍선 메시지",
             Message::AllSessions => "전체",
             Message::ComposerSelectSession => "답장할 로컬 세션 카드를 선택하세요",
@@ -729,6 +785,15 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::MenuAppearance => "Appearance",
             Message::MenuLanguage => "Language",
             Message::MenuBarIcon => "Menu bar icon",
+            Message::MenuBarVisibility => "Visibility",
+            Message::MenuBarIconDefault => "Default icon",
+            Message::MenuBarIconCustom => "Custom image",
+            Message::MenuBarIconChoose => "Choose image…",
+            Message::MenuBarIconRestore => "Restore default icon",
+            Message::MenuBarIconHelp => "Static PNG only · up to 4 MiB · up to 1 million pixels",
+            Message::MenuBarIconImportFailure => "Could not import menu bar image",
+            Message::MenuBarIconSaveFailure => "Could not save menu bar image",
+            Message::MenuBarIconLoadFailure => "Could not load saved icon; showing the default icon",
             Message::MenuBarAlways => "Always show",
             Message::MenuBarRecoveryOnly => "Only when recovery is needed",
             Message::MenuBarModeHelp => "In conditional mode, show when both character and bubble are hidden or full-window click-through is on.",
@@ -848,6 +913,25 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ExpandSpeechBubble => "Expand speech bubble",
             Message::CollapseSpeechBubble => "Collapse speech bubble",
             Message::CloseBubbleWindow => "Close Bubble Window",
+            Message::WorktreeRemove => "Remove Worktree…",
+            Message::WorktreeRemoveConfirm => "Remove this worktree?",
+            Message::WorktreeRemoveAction => "Remove Worktree",
+            Message::WorktreeRemoving => "Removing worktree…",
+            Message::WorktreeConfirmUnavailable => "Could not safely configure the removal confirmation",
+            Message::WorktreeCompactUnknownDelivery => "Outcome unknown.\nCheck before retrying",
+            Message::WorktreeCompactRejected => "Server refused removal",
+            Message::WorktreeCompactUnavailable => "Cannot remove worktree",
+            Message::WorktreeCompactFailed => "Worktree removal failed",
+            Message::WorktreeRemoved => "Worktree removed",
+            Message::WorktreeBusy => "Another worktree removal is in progress",
+            Message::WorktreeOffline => "The local Herdr source is offline",
+            Message::WorktreeReadOnly => "Remote observation sources are read-only",
+            Message::WorktreeStale => "The worktree or affected sessions changed. Review again",
+            Message::WorktreeNotLinked => "This is not a linked worktree",
+            Message::WorktreeUnsupported => "This Herdr server does not support worktree.remove",
+            Message::WorktreeUnknownDelivery => "Removal outcome is unknown. Check before trying again",
+            Message::WorktreeRejected => "The Herdr server rejected worktree removal",
+            Message::WorktreeFailed => "Could not remove worktree",
             Message::FullSpeechBubbleMessage => "Full speech bubble message",
             Message::AllSessions => "All",
             Message::ComposerSelectSession => "Select a local session card to reply",
@@ -1238,6 +1322,23 @@ pub(crate) fn remove_character_confirmation(locale: UiLocale, id: &str) -> Strin
     }
 }
 
+pub(crate) fn worktree_remove_confirmation(
+    locale: UiLocale,
+    repo_name: &str,
+    checkout_path: &str,
+    tabs: usize,
+    panes: usize,
+) -> String {
+    match locale {
+        UiLocale::Ko => format!(
+            "저장소: {repo_name}\n삭제할 체크아웃: {checkout_path}\n\n이 워크트리의 전체 작업 공간에서 탭 {tabs}개와 패널 {panes}개가 닫히며 실행 중인 프로세스와 에이전트가 종료됩니다. 선택한 카드만 닫는 작업이 아닙니다.\n\n무시된 파일(예: 빌드 결과물)은 삭제됩니다. 변경된 추적 파일이나 추적되지 않은 파일이 있으면 서버가 삭제를 거부할 수 있습니다. Git 브랜치는 유지됩니다. 이 작업은 되돌릴 수 없습니다."
+        ),
+        UiLocale::En => format!(
+            "Repository: {repo_name}\nCheckout to remove: {checkout_path}\n\nAcross this entire workspace, {tabs} tab(s) and {panes} pane(s) will close, terminating running processes and agents—not just the selected card.\n\nIgnored files (such as build outputs) will be deleted. The server may refuse removal if tracked or untracked files are dirty. The Git branch remains. This cannot be undone."
+        ),
+    }
+}
+
 pub(crate) fn pack_inspect_details(
     locale: UiLocale,
     name: &str,
@@ -1398,6 +1499,20 @@ mod tests {
             pack_operation_state_label(UiLocale::Ko, "future_state"),
             "future_state"
         );
+    }
+
+    #[test]
+    fn worktree_confirmation_names_exact_checkout_impact_and_ignored_files() {
+        for locale in [UiLocale::Ko, UiLocale::En] {
+            let warning = worktree_remove_confirmation(locale, "repo", "/checkout/linked-b", 2, 3);
+            assert!(warning.contains("/checkout/linked-b"));
+            assert!(warning.contains('2'));
+            assert!(warning.contains('3'));
+            assert!(warning.contains(match locale {
+                UiLocale::Ko => "무시된 파일",
+                UiLocale::En => "Ignored files",
+            }));
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 pub(crate) const MAX_FRAME_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_AGENT_RECORDS: usize = 16_384;
@@ -102,11 +103,23 @@ impl AgentStatus {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkspaceWorktreeInfo {
+    pub(crate) repo_key: String,
+    pub(crate) repo_name: String,
+    pub(crate) repo_root: String,
+    pub(crate) checkout_path: String,
+    pub(crate) is_linked_worktree: bool,
+    pub(crate) pane_count: usize,
+    pub(crate) tab_count: usize,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SessionMetadata {
     pub(crate) title: Option<String>,
     pub(crate) agent: Option<String>,
     pub(crate) workspace_id: Option<String>,
+    pub(crate) worktree: Option<Arc<WorkspaceWorktreeInfo>>,
     pub(crate) workspace_label: Option<String>,
     pub(crate) tab_id: Option<String>,
     pub(crate) tab_label: Option<String>,
@@ -394,6 +407,7 @@ pub(crate) fn parse_snapshot(response: Response) -> Result<Snapshot, ProtocolErr
     }
     // Optional collections cannot invalidate an otherwise usable snapshot.
     let workspaces = metadata_labels(snapshot, "workspaces", "workspace_id");
+    let worktree_info = workspace_worktrees(snapshot);
     let tabs = metadata_labels(snapshot, "tabs", "tab_id");
     let mut records = Vec::with_capacity(agents.len());
     for value in agents {
@@ -409,7 +423,7 @@ pub(crate) fn parse_snapshot(response: Response) -> Result<Snapshot, ProtocolErr
         }
         let status = AgentStatus::parse(agent.get("agent_status"))?;
         let (outcome_authoritative, outcome) = parse_agent_outcome(agent);
-        let workspace_id = optional_text(agent, "workspace_id");
+        let workspace_id = safe_text(agent, "workspace_id");
         let tab_id = optional_text(agent, "tab_id");
         let omp = agent.get("agent").and_then(Value::as_str) == Some("omp");
         let title = agent
@@ -428,6 +442,7 @@ pub(crate) fn parse_snapshot(response: Response) -> Result<Snapshot, ProtocolErr
             workspace_label: workspace_id
                 .and_then(|id| workspaces.get(id).map(|label| (*label).to_owned())),
             workspace_id: workspace_id.map(str::to_owned),
+            worktree: workspace_id.and_then(|id| worktree_info.get(id).cloned()),
             tab_label: tab_id.and_then(|id| tabs.get(id).map(|label| (*label).to_owned())),
             tab_id: tab_id.map(str::to_owned),
             cwd: ["foreground_cwd", "cwd"]
@@ -449,6 +464,80 @@ pub(crate) fn parse_snapshot(response: Response) -> Result<Snapshot, ProtocolErr
         panes: pane_ids,
         agents: records,
     })
+}
+
+// Worktree permission is optional metadata, independent of snapshot validity.
+// Any repeated workspace identity, even with an invalid second record, fails closed.
+fn workspace_worktrees(snapshot: &Map<String, Value>) -> HashMap<&str, Arc<WorkspaceWorktreeInfo>> {
+    let Some(workspaces) = snapshot.get("workspaces").and_then(Value::as_array) else {
+        return HashMap::new();
+    };
+    if workspaces.len() > MAX_AGENT_RECORDS {
+        return HashMap::new();
+    }
+    let mut result = HashMap::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in workspaces {
+        let Some(workspace) = entry.as_object() else {
+            continue;
+        };
+        let Some(id) = safe_text(workspace, "workspace_id") else {
+            continue;
+        };
+        if !seen.insert(id) {
+            result.remove(id);
+            continue;
+        }
+        let Some(worktree) = workspace.get("worktree").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some((repo_key, repo_name, repo_root, checkout_path)) = (|| {
+            Some((
+                safe_text(worktree, "repo_key")?,
+                safe_text(worktree, "repo_name")?,
+                safe_absolute_path(worktree, "repo_root")?,
+                safe_absolute_path(worktree, "checkout_path")?,
+            ))
+        })() else {
+            continue;
+        };
+        let (Some(is_linked_worktree), Some(pane_count), Some(tab_count)) = (
+            worktree.get("is_linked_worktree").and_then(Value::as_bool),
+            bounded_positive_count(workspace, "pane_count"),
+            bounded_positive_count(workspace, "tab_count"),
+        ) else {
+            continue;
+        };
+        result.insert(
+            id,
+            Arc::new(WorkspaceWorktreeInfo {
+                repo_key: repo_key.to_owned(),
+                repo_name: repo_name.to_owned(),
+                repo_root: repo_root.to_owned(),
+                checkout_path: checkout_path.to_owned(),
+                is_linked_worktree,
+                pane_count,
+                tab_count,
+            }),
+        );
+    }
+    result
+}
+
+fn safe_text<'a>(object: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
+    optional_text(object, field).filter(|text| !text.chars().any(is_unsafe_format))
+}
+
+fn safe_absolute_path<'a>(object: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
+    safe_text(object, field).filter(|path| Path::new(path).is_absolute())
+}
+
+fn bounded_positive_count(object: &Map<String, Value>, field: &str) -> Option<usize> {
+    object
+        .get(field)?
+        .as_u64()
+        .filter(|count| (1..=MAX_AGENT_RECORDS as u64).contains(count))
+        .map(|count| count as usize)
 }
 
 fn optional_text<'a>(object: &'a Map<String, Value>, field: &str) -> Option<&'a str> {
@@ -849,6 +938,75 @@ mod tests {
             normalize_title(&"x".repeat(MAX_METADATA_BYTES + 1), false),
             None
         );
+    }
+
+    #[test]
+    fn worktree_metadata_requires_unique_complete_safe_workspace_records() {
+        let agent = serde_json::json!({
+            "terminal_id": "t", "pane_id": "p", "agent_status": "working",
+            "workspace_id": "w"
+        });
+        let good = serde_json::json!({
+            "workspace_id": "w", "pane_count": 2, "tab_count": 3,
+            "worktree": {
+                "repo_key": "repo", "repo_name": "Project", "repo_root": "/repo",
+                "checkout_path": "/repo-linked", "is_linked_worktree": true
+            }
+        });
+        let parse = |workspaces: Value| {
+            parse_snapshot(Response::Success {
+                result: serde_json::json!({
+                    "type": "session_snapshot",
+                    "snapshot": {"panes": [{"pane_id": "p"}], "agents": [agent], "workspaces": workspaces}
+                }),
+            })
+            .unwrap()
+            .agents
+            .remove(0)
+        };
+        let valid = parse(serde_json::json!([good.clone()]));
+        let info = valid.metadata.worktree.as_ref().unwrap();
+        assert_eq!((info.pane_count, info.tab_count), (2, 3));
+        assert_eq!(info.checkout_path, "/repo-linked");
+        assert!(info.is_linked_worktree);
+        let mut unrelated = good.clone();
+        unrelated["workspace_id"] = serde_json::json!("other");
+        assert!(parse(serde_json::json!([unrelated]))
+            .metadata
+            .worktree
+            .is_none());
+        let mut main = good.clone();
+        main["worktree"]["is_linked_worktree"] = serde_json::json!(false);
+        assert!(
+            !parse(serde_json::json!([main]))
+                .metadata
+                .worktree
+                .unwrap()
+                .is_linked_worktree
+        );
+        let duplicate = parse(serde_json::json!([good.clone(), {"workspace_id": "w"}]));
+        assert!(duplicate.metadata.worktree.is_none());
+        assert_eq!(duplicate.status, AgentStatus::Working);
+        let duplicate_first = parse(serde_json::json!([{"workspace_id": "w"}, good.clone()]));
+        assert!(duplicate_first.metadata.worktree.is_none());
+        for bad in [
+            Value::Null,
+            serde_json::json!([{"workspace_id": "w", "worktree": null}]),
+            serde_json::json!([{"workspace_id": "w", "pane_count": 0, "tab_count": 1, "worktree": good["worktree"]}]),
+            serde_json::json!([{"workspace_id": "w", "pane_count": 1, "tab_count": "2", "worktree": good["worktree"]}]),
+            serde_json::json!([{"workspace_id": "w", "pane_count": 1, "tab_count": 1,
+                "worktree": {"repo_key": "repo", "repo_name": "Project", "repo_root": "/repo",
+                    "checkout_path": "relative", "is_linked_worktree": true}}]),
+            serde_json::json!([{"workspace_id": "w", "pane_count": 1, "tab_count": 1,
+                "worktree": {"repo_key": "repo", "repo_name": "Project", "repo_root": "/repo",
+                    "checkout_path": "/unsafe\npath", "is_linked_worktree": true}}]),
+        ] {
+            let record = parse(bad);
+            assert!(record.metadata.worktree.is_none());
+            assert_eq!(record.metadata.workspace_id.as_deref(), Some("w"));
+        }
+        let oversized = Value::Array(vec![good; MAX_AGENT_RECORDS + 1]);
+        assert!(parse(oversized).metadata.worktree.is_none());
     }
 
     #[test]

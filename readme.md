@@ -4,7 +4,9 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 **English** · [한국어](readme.ko.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **Public `main` source builds and the pinned public app v0.1.11 use the baseline menu-bar UI described below.** The four pending native changes are local-branch previews only: they are **not merged into `main` and not included in any public v0.1.11 binary**. `--source` builds the checkout you already have; it does not obtain these changes. See [v0.1.11 notes](docs/releases/v0.1.11.md), [local pending notes](docs/releases/unreleased.md), and the [local-checkout guide](docs/migrations/unreleased.md) ([한국어](docs/migrations/unreleased.ko.md)).
+> **Public `main` source builds and the pinned public app v0.1.11 use the baseline menu-bar UI described below.** The four pending native commits are local-branch previews only: they are **not merged into `main` and not included in any public v0.1.11 binary**. The menu-bar additions and worktree removal described as current-working-copy features below are later, uncommitted changes, not part of those four commits. `--source` builds the checkout you already have; it does not obtain these changes. See [v0.1.11 notes](docs/releases/v0.1.11.md), [local pending notes](docs/releases/unreleased.md), and the [local-checkout guide](docs/migrations/unreleased.md) ([한국어](docs/migrations/unreleased.ko.md)).
+
+The optional beta channel below is separate from public `main` and stable v0.1.11: its planned artifact is built from an isolated snapshot of this working copy (including the four commits and later local additions). References to “current working copy only” below also describe that opt-in beta snapshot, **not** the stable installer or Homebrew app.
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
@@ -92,6 +94,20 @@ brew uninstall --cask herdr-desktop-pet
 brew install hanbong5938/tap/herdr-desktop-pet
 ```
 
+## Opt-in beta UI test (not the stable install)
+
+For Apple Silicon on macOS 13+, the **planned** [0.1.12-beta.1 prerelease](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.1.12-beta.1) is a manually selected test channel, not an update to public `main`, stable v0.1.11, the manifest, `--prebuilt`, Homebrew, or the normal plugin install. Once the prerelease is published, download `HerdrDesktopPet-v0.1.12-beta.1-macos-arm64.tar.gz` and its `.sha256` checksum from that page; check the downloaded archive against the checksum before unpacking. The separate bundle is `HerdrDesktopPetBeta.app`:
+
+```sh
+mkdir -p "$HOME/HerdrBeta"
+tar -xzf "$HOME/Downloads/HerdrDesktopPet-v0.1.12-beta.1-macos-arm64.tar.gz" -C "$HOME/HerdrBeta"
+BETA="$HOME/HerdrBeta/HerdrDesktopPetBeta.app/Contents/MacOS/herdr-desktop-pet"
+"$BETA" --version
+"$BETA" start
+```
+
+Adjust the download path if your browser saved the archive elsewhere. Before `start`, use **Quit** in the running pet's menu bar to stop the existing app, and back up its existing profile (including `preferences.json`, `lifecycle.json`, `characters/`, and managed `menu-bar-icons/`); the beta shares profile data and must not run beside the stable pet. This is an ad-hoc-signed, non-notarized test bundle; a browser download may require explicit macOS approval. The source snapshot alone uses beta versioning; this working copy's manifest remains pinned to stable v0.1.11. Please check the actual UI: A/B target selection, bubble-background targeting, **Cancel** / **Return** / **Escape**, **Close Bubble Window**, and active IME composition, particularly around **Remove Worktree…**. Native tests and an isolated backend exercise are not an actual AppKit/IME visual test; that manual check remains outstanding. Read the removal warning below before trying it on a disposable worktree.
+
 ## Install this checkout from source
 
 For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. Building public `main` provides the baseline UI, not the local pending previews. For client-attach auto-start, run the patched Herdr host in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
@@ -117,7 +133,7 @@ Preview guidance here applies only if you **already have the appropriate local c
 
 This branch and these commits are local provenance, **not public checkout/download links**; their availability elsewhere is not guaranteed. They remain unmerged into `main`, and no public v0.1.11 binary contains them. Only from that existing local checkout, use the source-install commands above with your isolated patched host. Use explicit `--source` for the preview: `--prebuilt` never includes it, and optionless installation normally selects the pinned public binary (source fallback builds only the checkout already present). Do not use a public `main` checkout as a substitute.
 
-The four commits above describe the original local preview, whose status icon was conditional. The **selectable menu-bar policy described below is an addition in the current working copy**, not a change contained in `bf23ced` or a public release. A checkout at that commit alone retains its original conditional recovery behavior.
+The four commits above describe the original local preview, whose status icon was conditional. The **selectable menu-bar policy, custom icon image, and worktree removal described below are additions in this current working copy**, not changes contained in `bf23ced` or a public release. A checkout at that commit alone retains its original conditional recovery behavior and does not provide worktree removal.
 
 ### Shared installer behavior
 
@@ -148,7 +164,7 @@ The bubble context menu preserves card selection and drafts when canceled. Text 
 
 ### Local checkout: independent visibility and menu-bar recovery
 
-The independent visibility and contextual entry points require the local commits listed above; they are **not in `main` source builds or public v0.1.11**. The selectable menu-bar policy below additionally requires this current working copy, not just the original `bf23ced` checkout. Right-click/Control-click the character or bubble background/card header and choose **Settings…** to open the same full three-tab panel; activation is requested, not guaranteed. The bubble menu also adds **Show Character** when hidden. See [local-checkout and preference-preservation guidance](docs/migrations/unreleased.md).
+The independent visibility and contextual entry points require the local commits listed above; they are **not in `main` source builds or public v0.1.11**. The selectable menu-bar policy and custom image below additionally require this current working copy, not just the original `bf23ced` checkout. Right-click/Control-click the character or bubble background/card header and choose **Settings…** to open the same full three-tab panel; activation is requested, not guaranteed. The bubble menu also adds **Show Character** when hidden. See [local-checkout and preference-preservation guidance](docs/migrations/unreleased.md).
 
 Character visibility (`show`/`hide`/`toggle`) and **Bubble → Bubble visible** (`show_bubble`/`hide_bubble`) are independent:
 
@@ -174,9 +190,21 @@ In the original `bf23ced` preview, the recovery icon was conditional: it appeare
 | Full-window click-through on (regardless of visibility) | Icon visible | Icon visible |
 | Alpha click-through only | Icon visible | No icon unless both windows are hidden |
 
-The single pawprint status icon identifies **Herdr Desktop Pet**. In either mode its menu always offers **Settings…** (the same full panel) and **Quit**; **Show and Enable Character** appears only when recovery is needed (both windows hidden or full-window click-through on). Recovery shows the character and disables full-window click-through, preserving bubble visibility and alpha click-through; a visible bubble reattaches, while a hidden bubble stays hidden. **Always show** keeps the icon after recovery; **Only when recovery is needed** removes it after the menu closes. While the app is shutting down, neither mode shows an icon. Alpha-mask pointer polling by itself does not change the recovery condition. CLI `show` still shows only the character, without turning on the bubble.
+The default status icon is a template pawprint; a chosen image replaces its artwork without changing the status item or its menu. In either mode its menu always offers **Settings…** (the same full panel) and **Quit**; **Show and Enable Character** appears only when recovery is needed (both windows hidden or full-window click-through on). Recovery shows the character and disables full-window click-through, preserving bubble visibility and alpha click-through; a visible bubble reattaches, while a hidden bubble stays hidden. **Always show** keeps the icon after recovery; **Only when recovery is needed** removes it after the menu closes. While the app is shutting down, neither mode shows an icon. Alpha-mask pointer polling by itself does not change the recovery condition. CLI `show` still shows only the character, without turning on the bubble.
 
 The native `preferences.json` key `menu_bar_mode` stores `always` or `recovery_only`. New profiles and older profiles without this key (including those from the original conditional-icon preview) use **Always show**; this migration does not infer a saved preference for the old conditional behavior. A successfully saved choice applies immediately and survives restart and unrelated preference saves, preserving unknown preference fields. If saving fails, the previously selected mode and icon remain in effect. Changing the mode does not change window visibility, full-window or alpha click-through, character/bubble positions, reply drafts, or lifecycle settings.
+
+**Current working copy only:** in **Settings → Menu bar icon**, use **Choose image…** to import a static PNG (at most 4 MiB encoded and 1 million decoded pixels; animated, corrupt, truncated, or fully transparent images are rejected), or **Restore default icon** for the template pawprint. The chosen image keeps its original colors, aspect-fits within 18 pt, and has 1×/2× Retina representations. A successful import stores a managed copy under the configuration directory's `menu-bar-icons/`; the optional `preferences.json` field `menu_bar_icon.asset` points to it, so the external source may be moved or deleted. Back up `menu-bar-icons/` alongside `preferences.json`, `lifecycle.json`, and `characters/`. Missing icon preference uses the default pawprint. An import/save failure leaves the previous image and settings intact; a missing or corrupt managed image on restart shows the default with an error while keeping the custom-image preference for recovery. Restoring the default changes only the image, not `menu_bar_mode`, character/bubble visibility, click-through, geometry, drafts, or lifecycle.
+
+### Current working copy only: remove a linked worktree
+
+In the expanded bubble, right-click or Control-click a **card header** and choose **Remove Worktree…** to target that card, even if another card is selected. Right-click or Control-click the **bubble background** to target the selected card as it stood when the menu opened; if no eligible card is selected, the item is absent. The menu identifies the target. Native text-field, button, dropdown, and scrollbar menus/behavior remain unchanged. **Close Bubble Window** is separate: it only hides the bubble and does not remove a checkout, workspace, or session.
+
+Review the confirmation before acting: it names the repository and **exact checkout path** and counts the tabs and panes in the **entire workspace**, not merely the clicked card. Removal closes that workspace and its tabs/panes and terminates their running processes and agents; it deletes the linked checkout, **including ignored files such as build outputs**, and cannot be undone through this app. The Git branch remains; this does not delete the main repository or offer trash/undo. **Cancel** is first and the default (Return/Escape cancel); **Remove Worktree** is a separate second action. Check the path and workspace impact carefully before choosing it.
+
+Only a current, live, coherent local source with unambiguous valid linked-worktree metadata is eligible. Main repository roots, remote/retained/offline cards, missing or malformed optional metadata, and older servers that cannot provide the required metadata do not offer deletion. A server that does not support `worktree.remove` reports that limitation instead of falling back to Git, a shell command, SSH, or forced removal. Active IME composition disables removal and is checked again before submission. One operation may be pending at a time; the chosen target is frozen and checked again after confirmation and against a fresh server snapshot. The app sends a single `worktree.remove` request with `force: false`, never auto-trusts a changed target, retries, or optimistically removes the row. The server may reject dirty tracked/untracked files or a locked checkout. Watcher observations remain authoritative on the normal five-second refresh; feedback remains in the bubble even if its row disappears, selection changes, or the window is hidden and reopened. If delivery is uncertain after a write, **check the actual server/worktree state before any manual retry**; the app does not automatically resend.
+
+The request addresses a `workspace_id`, not an expected checkout/generation compare-and-swap: client revalidation is **not an atomic guarantee** against a server restart or workspace rebinding between the final check and removal. This current-working-copy behavior has native tests and isolated real-backend exercise, but actual AppKit right-click/confirmation/IME visual smoke was blocked by a locked screen; do not treat those interactions as visually verified.
 
 ### Shared bubble and character settings
 
