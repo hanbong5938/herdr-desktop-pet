@@ -30,8 +30,7 @@ const SCROLL_TOP: f64 = 86.0;
 const FOOTER_HEIGHT: f64 = 50.0;
 const CHARACTER_CONTENT_HEIGHT: f64 = 404.0;
 const BUBBLE_CONTENT_HEIGHT: f64 = 578.0;
-const SETTINGS_BASE_HEIGHT: f64 = 334.0 + CARD_HEIGHT + 14.0;
-const MACHINE_ROW_HEIGHT: f64 = 94.0;
+const SETTINGS_BASE_HEIGHT: f64 = 308.0 + CARD_HEIGHT + 14.0;
 const MIN_SCALE: f64 = 0.35;
 const MAX_SCALE: f64 = 1.25;
 
@@ -385,16 +384,17 @@ pub(crate) struct MenuPanel {
     observation_card: Retained<MenuPanelCard>,
     observation_title: Retained<NSTextField>,
     observation_local_label: Retained<NSTextField>,
+    observation_local_help: Retained<NSTextField>,
     observation_remote_label: Retained<NSTextField>,
     observation_local_switch: Retained<NSSwitch>,
     observation_remote_switch: Retained<NSSwitch>,
-    observation_help: Retained<NSTextField>,
+    observation_machines: Retained<NSTextField>,
+    observation_registration: Retained<NSButton>,
     observation_notice: Retained<NSTextField>,
-    machine_rows: Vec<(
-        Retained<NSSwitch>,
-        Retained<NSTextField>,
-        Retained<NSTextField>,
-    )>,
+    observation_error_toggle: Retained<NSButton>,
+    observation_error: Retained<NSTextField>,
+    observation_error_expanded: bool,
+    machine_rows: Vec<MachineRow>,
     observation_catalog: Option<SourceCatalog>,
     observation_preferences: Option<ObservationPreferences>,
     locale: UiLocale,
@@ -402,6 +402,19 @@ pub(crate) struct MenuPanel {
     reset: Retained<NSButton>,
     quit: Retained<NSButton>,
     selected_tab: usize,
+}
+
+struct MachineRow {
+    id: String,
+    toggle: Retained<NSSwitch>,
+    title: Retained<NSTextField>,
+    session: Retained<NSTextField>,
+    status: Retained<NSTextField>,
+    error_toggle: Retained<NSButton>,
+    error: Retained<NSTextField>,
+    copy: Retained<NSButton>,
+    error_expanded: bool,
+    copy_feedback: Option<Message>,
 }
 
 impl MenuPanel {
@@ -879,6 +892,14 @@ impl MenuPanel {
             primary(),
             mtm,
         );
+        let observation_local_help = label(
+            text(locale, Message::ObservationLocalHelp),
+            10.0,
+            false,
+            secondary(),
+            mtm,
+        );
+        observation_local_help.setMaximumNumberOfLines(0);
         let observation_remote_label = label(
             text(locale, Message::ObservationRemote),
             12.0,
@@ -886,30 +907,50 @@ impl MenuPanel {
             primary(),
             mtm,
         );
+        observation_local_label.setMaximumNumberOfLines(0);
+        observation_remote_label.setMaximumNumberOfLines(0);
         let observation_local_switch = make_switch(target, sel!(setObservationLocal:), mtm);
         let observation_remote_switch = make_switch(target, sel!(setObservationRemote:), mtm);
-        let observation_help = label(
-            text(locale, Message::ObservationHelp),
-            10.0,
-            false,
-            secondary(),
+        let observation_machines = label(
+            text(locale, Message::ObservationMachines),
+            11.0,
+            true,
+            primary(),
             mtm,
         );
-        let observation_notice = label(
-            text(locale, Message::ObservationEmpty),
-            10.5,
-            false,
-            secondary(),
+        observation_machines.setMaximumNumberOfLines(0);
+        observation_machines.setHidden(true);
+        let observation_registration = make_action_button(
+            text(locale, Message::ObservationRegistration),
+            target,
+            sel!(showObservationHelp:),
             mtm,
         );
+        let observation_notice = label("", 10.5, false, secondary(), mtm);
+        observation_notice.setMaximumNumberOfLines(0);
+        observation_notice.setHidden(true);
+        let observation_error_toggle = make_action_button(
+            text(locale, Message::ObservationDetails),
+            target,
+            sel!(toggleObservationCatalogError:),
+            mtm,
+        );
+        observation_error_toggle.setHidden(true);
+        let observation_error = label("", 10.0, false, secondary(), mtm);
+        observation_error.setMaximumNumberOfLines(0);
+        observation_error.setHidden(true);
         for view in [
             &*observation_title as &NSView,
             &*observation_local_label,
+            &*observation_local_help,
             &*observation_remote_label,
             &*observation_local_switch,
             &*observation_remote_switch,
-            &*observation_help,
+            &*observation_machines,
+            &*observation_registration,
             &*observation_notice,
+            &*observation_error_toggle,
+            &*observation_error,
         ] {
             observation_card.addSubview(view);
         }
@@ -985,11 +1026,16 @@ impl MenuPanel {
             observation_card,
             observation_title,
             observation_local_label,
+            observation_local_help,
             observation_remote_label,
             observation_local_switch,
             observation_remote_switch,
-            observation_help,
+            observation_machines,
+            observation_registration,
             observation_notice,
+            observation_error_toggle,
+            observation_error,
+            observation_error_expanded: false,
             machine_rows: Vec::new(),
             observation_catalog: None,
             observation_preferences: None,
@@ -1194,7 +1240,6 @@ impl MenuPanel {
         {
             return;
         }
-        let catalog_changed = self.observation_catalog.as_ref() != Some(catalog);
         self.observation_local_switch
             .setState(if preferences.local {
                 NSControlStateValueOn
@@ -1207,93 +1252,299 @@ impl MenuPanel {
             } else {
                 NSControlStateValueOff
             });
-        if catalog_changed {
-            for (toggle, title, detail) in self.machine_rows.drain(..) {
-                toggle.removeFromSuperview();
-                title.removeFromSuperview();
-                detail.removeFromSuperview();
-            }
-            for machine in &catalog.machines {
-                let toggle = make_switch(&self.target, sel!(setObservationMachine:), self.mtm);
-                let id = NSString::from_str(&machine.id);
-                toggle.setIdentifier(Some(&id));
-                toggle.setEnabled(machine.enabled);
-                let title = label(&machine.label, 11.5, true, primary(), self.mtm);
-                let status = if !machine.enabled {
-                    text(self.locale, Message::ObservationDisabled)
-                } else {
-                    match machine.status {
-                        MachineStatus::Connecting => {
-                            text(self.locale, Message::ObservationConnecting)
-                        }
-                        MachineStatus::Online => text(self.locale, Message::ObservationOnline),
-                        MachineStatus::Offline => text(self.locale, Message::ObservationOffline),
-                        MachineStatus::NotSelected => {
-                            text(self.locale, Message::ObservationNotSelected)
-                        }
-                    }
-                };
-                let mut detail_text = format!("{} · {}", machine.remote_session, status);
-                if machine.enabled && machine.status == MachineStatus::Offline {
-                    let command = format!(
-                        "herdr machine reconnect '{}'",
-                        machine.id.replace('\'', "'\\''")
-                    );
-                    detail_text.push('\n');
-                    detail_text.push_str(text(self.locale, Message::ObservationReconnect));
-                    detail_text.push(' ');
-                    detail_text.push_str(&command);
-                }
-                if let Some(error) = machine.error.as_deref() {
-                    detail_text.push('\n');
-                    detail_text.push_str(error);
-                }
-                let detail = label(&detail_text, 10.0, false, secondary(), self.mtm);
-                detail.setMaximumNumberOfLines(4);
-                set_accessibility_label(&*toggle, &format!("{} · {}", machine.label, detail_text));
-                set_tooltip(&*toggle, &detail_text);
-                self.observation_card.addSubview(&toggle);
-                self.observation_card.addSubview(&title);
-                self.observation_card.addSubview(&detail);
-                self.machine_rows.push((toggle, title, detail));
-            }
-            self.observation_catalog = Some(catalog.clone());
-        }
-        for (machine, (toggle, _, _)) in catalog.machines.iter().zip(&self.machine_rows) {
-            toggle.setState(if preferences.machines.contains(&machine.id) {
-                NSControlStateValueOn
+        let mut old = std::mem::take(&mut self.machine_rows);
+        for machine in &catalog.machines {
+            let row = if let Some(index) = old.iter().position(|row| row.id == machine.id) {
+                old.remove(index)
             } else {
-                NSControlStateValueOff
-            });
+                let toggle = make_switch(&self.target, sel!(setObservationMachine:), self.mtm);
+                toggle.setIdentifier(Some(&NSString::from_str(&machine.id)));
+                let title = label("", 11.5, true, primary(), self.mtm);
+                let session = label("", 10.0, false, secondary(), self.mtm);
+                let status = label("", 10.5, false, secondary(), self.mtm);
+                title.setMaximumNumberOfLines(0);
+                session.setMaximumNumberOfLines(0);
+                status.setMaximumNumberOfLines(0);
+                let error_toggle = make_action_button(
+                    text(self.locale, Message::ObservationDetails),
+                    &self.target,
+                    sel!(toggleObservationMachineError:),
+                    self.mtm,
+                );
+                error_toggle.setIdentifier(Some(&NSString::from_str(&machine.id)));
+                let error = label("", 10.0, false, secondary(), self.mtm);
+                error.setMaximumNumberOfLines(0);
+                let copy = make_action_button(
+                    text(self.locale, Message::ObservationCopyReconnect),
+                    &self.target,
+                    sel!(copyObservationReconnect:),
+                    self.mtm,
+                );
+                copy.setIdentifier(Some(&NSString::from_str(&machine.id)));
+                for view in [
+                    &*toggle as &NSView,
+                    &*title,
+                    &*session,
+                    &*status,
+                    &*error_toggle,
+                    &*error,
+                    &*copy,
+                ] {
+                    self.observation_card.addSubview(view);
+                }
+                MachineRow {
+                    id: machine.id.clone(),
+                    toggle,
+                    title,
+                    session,
+                    status,
+                    error_toggle,
+                    error,
+                    copy,
+                    error_expanded: false,
+                    copy_feedback: None,
+                }
+            };
+            row.toggle.setEnabled(machine.enabled);
+            row.toggle
+                .setState(if preferences.machines.contains(&machine.id) {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+            let name = format!(
+                "{} {}",
+                text(self.locale, Message::ObservationMachineObserve),
+                machine.label
+            );
+            row.title
+                .setStringValue(&NSString::from_str(&machine.label));
+            set_tooltip(&row.title, &machine.label);
+            set_accessibility_label(&row.title, &machine.label);
+            let session = format!(
+                "{}: {}",
+                text(self.locale, Message::ObservationSession),
+                machine.remote_session
+            );
+            row.session.setStringValue(&NSString::from_str(&session));
+            set_tooltip(&row.session, &session);
+            let state = if !machine.enabled {
+                Message::ObservationDisabled
+            } else if !preferences.remote {
+                Message::ObservationMachinePaused
+            } else if !preferences.machines.contains(&machine.id) {
+                Message::ObservationNotSelected
+            } else {
+                match machine.status {
+                    MachineStatus::Connecting => Message::ObservationConnecting,
+                    MachineStatus::Online => Message::ObservationOnline,
+                    MachineStatus::Offline => Message::ObservationOffline,
+                    MachineStatus::NotSelected => Message::ObservationConnecting,
+                }
+            };
+            let status = text(self.locale, state);
+            row.status.setStringValue(&NSString::from_str(status));
+            set_accessibility_label(&row.toggle, &format!("{name} · {session} · {status}"));
+            set_tooltip(&row.toggle, &format!("{name} · {session} · {status}"));
+            let error = machine.error.as_deref().unwrap_or("");
+            row.error.setStringValue(&NSString::from_str(error));
+            set_tooltip(&row.error, error);
+            set_accessibility_label(&row.error, error);
+            row.error_toggle.setHidden(error.is_empty());
+            row.error.setHidden(error.is_empty() || !row.error_expanded);
+            row.error_toggle.setTitle(&NSString::from_str(text(
+                self.locale,
+                if row.error_expanded {
+                    Message::ObservationHideDetails
+                } else {
+                    Message::ObservationDetails
+                },
+            )));
+            set_accessibility_label(
+                &row.error_toggle,
+                &format!(
+                    "{} · {}",
+                    name,
+                    text(
+                        self.locale,
+                        if row.error_expanded {
+                            Message::ObservationHideDetails
+                        } else {
+                            Message::ObservationDetails
+                        },
+                    )
+                ),
+            );
+            row.copy.setHidden(
+                !machine.enabled
+                    || !preferences.remote
+                    || !preferences.machines.contains(&machine.id)
+                    || machine.status != MachineStatus::Offline,
+            );
+            row.copy.setTitle(&NSString::from_str(text(
+                self.locale,
+                row.copy_feedback
+                    .unwrap_or(Message::ObservationCopyReconnect),
+            )));
+            set_accessibility_label(
+                &row.copy,
+                &format!(
+                    "{} · {}",
+                    name,
+                    text(
+                        self.locale,
+                        row.copy_feedback
+                            .unwrap_or(Message::ObservationCopyReconnect)
+                    )
+                ),
+            );
+            set_tooltip(
+                &row.copy,
+                &format!(
+                    "herdr machine reconnect '{}'",
+                    machine.id.replace('\'', "'\\''")
+                ),
+            );
+            self.machine_rows.push(row);
         }
-        let mut notice = String::new();
-        if !preferences.local
-            && (!preferences.remote
-                || !catalog
-                    .machines
-                    .iter()
-                    .any(|machine| machine.enabled && preferences.machines.contains(&machine.id)))
-        {
-            notice.push_str(text(self.locale, Message::ObservationNone));
-        }
-        if let Some(error) = &catalog.error {
-            if !notice.is_empty() {
-                notice.push('\n');
+        for row in old {
+            for view in [
+                &*row.toggle as &NSView,
+                &*row.title,
+                &*row.session,
+                &*row.status,
+                &*row.error_toggle,
+                &*row.error,
+                &*row.copy,
+            ] {
+                view.removeFromSuperview();
             }
-            notice.push_str(text(self.locale, Message::ObservationError));
-            notice.push(' ');
-            notice.push_str(error);
+        }
+        self.observation_machines
+            .setHidden(self.machine_rows.is_empty());
+        let notice = if catalog.error.is_some() {
+            Some(Message::ObservationError)
+        } else if !catalog.initialized {
+            Some(Message::ObservationLoading)
         } else if catalog.machines.is_empty() {
-            if !notice.is_empty() {
-                notice.push('\n');
-            }
-            notice.push_str(text(self.locale, Message::ObservationEmpty));
+            Some(Message::ObservationEmpty)
+        } else if !preferences.local && !preferences.remote {
+            Some(Message::ObservationNone)
+        } else if !preferences.remote {
+            Some(Message::ObservationPaused)
+        } else if !catalog
+            .machines
+            .iter()
+            .any(|machine| machine.enabled && preferences.machines.contains(&machine.id))
+        {
+            Some(Message::ObservationSelect)
+        } else {
+            None
+        };
+        let mut notice_text = notice
+            .map(|message| text(self.locale, message))
+            .unwrap_or("")
+            .to_owned();
+        if catalog.error.is_some() && !catalog.machines.is_empty() {
+            notice_text.push_str(" · ");
+            notice_text.push_str(text(self.locale, Message::ObservationPreviousResults));
         }
         self.observation_notice
-            .setStringValue(&NSString::from_str(&notice));
-        set_accessibility_label(&*self.observation_notice, &notice);
+            .setStringValue(&NSString::from_str(&notice_text));
+        set_accessibility_label(&self.observation_notice, &notice_text);
+        self.observation_notice.setHidden(notice_text.is_empty());
+        let error = catalog.error.as_deref().unwrap_or("");
+        self.observation_error
+            .setStringValue(&NSString::from_str(error));
+        set_tooltip(&self.observation_error, error);
+        set_accessibility_label(&self.observation_error, error);
+        self.observation_error_toggle.setHidden(error.is_empty());
+        self.observation_error
+            .setHidden(error.is_empty() || !self.observation_error_expanded);
+        self.observation_error_toggle
+            .setTitle(&NSString::from_str(text(
+                self.locale,
+                if self.observation_error_expanded {
+                    Message::ObservationHideDetails
+                } else {
+                    Message::ObservationDetails
+                },
+            )));
+        set_accessibility_label(
+            &self.observation_error_toggle,
+            &format!(
+                "{} · {}",
+                text(self.locale, Message::ObservationMachines),
+                text(
+                    self.locale,
+                    if self.observation_error_expanded {
+                        Message::ObservationHideDetails
+                    } else {
+                        Message::ObservationDetails
+                    },
+                )
+            ),
+        );
+        self.observation_catalog = Some(catalog.clone());
         self.observation_preferences = Some(preferences.clone());
         self.layout_documents();
+    }
+
+    pub(crate) fn toggle_observation_error(&mut self, id: Option<&str>) {
+        if let Some(id) = id {
+            if let Some(row) = self.machine_rows.iter_mut().find(|row| row.id == id) {
+                row.error_expanded = !row.error_expanded;
+            }
+        } else {
+            self.observation_error_expanded = !self.observation_error_expanded;
+        }
+        if let (Some(preferences), Some(catalog)) = (
+            self.observation_preferences.clone(),
+            self.observation_catalog.clone(),
+        ) {
+            self.observation_catalog = None;
+            self.sync_observation(&preferences, &catalog);
+        }
+    }
+
+    pub(crate) fn observation_reconnect_command(&self, id: &str) -> Option<String> {
+        let preferences = self.observation_preferences.as_ref()?;
+        let machine = self
+            .observation_catalog
+            .as_ref()?
+            .machines
+            .iter()
+            .find(|machine| machine.id == id)?;
+        (preferences.remote
+            && preferences
+                .machines
+                .iter()
+                .any(|selected| selected.as_str() == id)
+            && machine.enabled
+            && machine.status == MachineStatus::Offline)
+            .then(|| format!("herdr machine reconnect '{}'", id.replace('\'', "'\\''")))
+    }
+
+    pub(crate) fn observation_copy_feedback(&mut self, id: &str, success: bool) {
+        if let Some(row) = self.machine_rows.iter_mut().find(|row| row.id == id) {
+            let message = if success {
+                Message::ObservationCommandCopied
+            } else {
+                Message::ObservationCopyFailed
+            };
+            row.copy_feedback = Some(message);
+            row.copy
+                .setTitle(&NSString::from_str(text(self.locale, message)));
+            set_accessibility_label(
+                &row.copy,
+                &format!(
+                    "{} · {}",
+                    row.title.stringValue(),
+                    text(self.locale, message)
+                ),
+            );
+            self.layout_documents();
+        }
     }
 
     pub(crate) fn set_locale(&mut self, locale: UiLocale) {
@@ -1467,13 +1718,30 @@ impl MenuPanel {
             .setStringValue(&NSString::from_str(text(locale, Message::ObservationTitle)));
         self.observation_local_label
             .setStringValue(&NSString::from_str(text(locale, Message::ObservationLocal)));
+        self.observation_local_help
+            .setStringValue(&NSString::from_str(text(
+                locale,
+                Message::ObservationLocalHelp,
+            )));
         self.observation_remote_label
             .setStringValue(&NSString::from_str(text(
                 locale,
                 Message::ObservationRemote,
             )));
-        self.observation_help
-            .setStringValue(&NSString::from_str(text(locale, Message::ObservationHelp)));
+        self.observation_machines
+            .setStringValue(&NSString::from_str(text(
+                locale,
+                Message::ObservationMachines,
+            )));
+        self.observation_registration
+            .setTitle(&NSString::from_str(text(
+                locale,
+                Message::ObservationRegistration,
+            )));
+        set_accessibility_label(
+            &self.observation_registration,
+            text(locale, Message::ObservationRegistration),
+        );
         set_accessibility_label(
             &*self.observation_local_switch,
             text(locale, Message::ObservationLocal),
@@ -1691,10 +1959,13 @@ impl MenuPanel {
         let char_view_height = (scroll_height - 106.0).max(250.0);
         let char_content_height = (106.0 + char_view_height).max(scroll_height);
 
+        let old_offset = self.scroll.contentView().bounds().origin.y;
+        let initial_width = (scroll_width - 30.0).max(1.0);
+        let mut settings_height = self.settings_height(initial_width).max(scroll_height);
         let content_height = match self.selected_tab {
             0 => char_content_height,
             1 => BUBBLE_CONTENT_HEIGHT,
-            _ => self.settings_height().max(scroll_height),
+            _ => settings_height,
         };
 
         self.document.setFrame(NSRect::new(
@@ -1711,7 +1982,7 @@ impl MenuPanel {
         ));
         self.settings_tab.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(scroll_width, self.settings_height().max(scroll_height)),
+            NSSize::new(scroll_width, settings_height),
         ));
 
         self.scroll.layoutSubtreeIfNeeded();
@@ -1739,9 +2010,28 @@ impl MenuPanel {
         let outer_margin = 8.0;
         let card_width = (visible_width - outer_margin * 2.0 - scroller_allowance).max(1.0);
 
+        settings_height = self.settings_height(card_width).max(scroll_height);
+        if self.selected_tab == 2 {
+            self.document.setFrame(NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(scroll_width, settings_height),
+            ));
+        }
+        self.settings_tab.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(scroll_width, settings_height),
+        ));
         self.layout_character(card_width, clip_width, char_view_height);
         self.layout_bubble(card_width);
         self.layout_settings(card_width);
+        let max_offset = (self.document.frame().size.height
+            - self.scroll.contentView().bounds().size.height)
+            .max(0.0);
+        self.scroll
+            .contentView()
+            .scrollToPoint(NSPoint::new(0.0, old_offset.min(max_offset)));
+        self.scroll
+            .reflectScrolledClipView(&self.scroll.contentView());
     }
 
     fn layout_character(&self, card_width: f64, clip_width: f64, char_view_height: f64) {
@@ -1904,8 +2194,8 @@ impl MenuPanel {
         ));
     }
 
-    fn settings_height(&self) -> f64 {
-        SETTINGS_BASE_HEIGHT + 216.0 + self.machine_rows.len() as f64 * MACHINE_ROW_HEIGHT
+    fn settings_height(&self, card_width: f64) -> f64 {
+        SETTINGS_BASE_HEIGHT + self.observation_height(card_width)
     }
 
     fn layout_settings(&self, card_width: f64) {
@@ -1986,68 +2276,204 @@ impl MenuPanel {
             NSPoint::new(14.0, 30.0),
             NSSize::new((card_width - 28.0).max(1.0), 26.0),
         ));
-        let observation_height = 216.0 + self.machine_rows.len() as f64 * MACHINE_ROW_HEIGHT;
+        let observation_height = self.layout_observation(card_width, true);
         self.observation_card.setFrame(NSRect::new(
             NSPoint::new(8.0, 300.0),
             NSSize::new(card_width, observation_height),
         ));
-        let label_width = (card_width - 80.0).max(1.0);
-        self.observation_title.setFrame(NSRect::new(
-            NSPoint::new(14.0, 10.0),
-            NSSize::new(label_width, 20.0),
+        self.lifecycle_card.layout(NSRect::new(
+            NSPoint::new(8.0, 308.0 + observation_height),
+            NSSize::new(card_width, CARD_HEIGHT),
         ));
-        for (label, toggle, y) in [
+    }
+
+    fn observation_height(&self, card_width: f64) -> f64 {
+        self.layout_observation(card_width, false)
+    }
+
+    fn layout_observation(&self, width: f64, apply: bool) -> f64 {
+        let content_width = (width - 28.0).max(1.0);
+        let row_width = (width - 96.0).max(1.0);
+        let mut y = 14.0;
+        place_observation_label(
+            &self.observation_title,
+            14.0,
+            content_width,
+            18.0,
+            &mut y,
+            apply,
+        );
+        y += 8.0;
+        for (index, (field, toggle)) in [
             (
                 &self.observation_local_label,
                 &self.observation_local_switch,
-                34.0,
             ),
             (
                 &self.observation_remote_label,
                 &self.observation_remote_switch,
-                72.0,
             ),
-        ] {
-            label.setFrame(NSRect::new(
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let field_width = (width - 88.0).max(1.0);
+            let height = measured_label_height(field, field_width).max(30.0);
+            if apply {
+                field.setFrame(NSRect::new(
+                    NSPoint::new(14.0, y),
+                    NSSize::new(field_width, height),
+                ));
+                toggle.setFrame(NSRect::new(
+                    NSPoint::new(width - 60.0, y + (height - 30.0) / 2.0),
+                    NSSize::new(46.0, 30.0),
+                ));
+            }
+            y += height + 8.0;
+            if index == 0 {
+                place_observation_label(
+                    &self.observation_local_help,
+                    14.0,
+                    content_width,
+                    16.0,
+                    &mut y,
+                    apply,
+                );
+                y += 8.0;
+            }
+        }
+        if !self.observation_notice.isHidden() {
+            place_observation_label(
+                &self.observation_notice,
+                14.0,
+                content_width,
+                16.0,
+                &mut y,
+                apply,
+            );
+            y += 6.0;
+        }
+        if !self.observation_error_toggle.isHidden() {
+            if apply {
+                self.observation_error_toggle.setFrame(NSRect::new(
+                    NSPoint::new(14.0, y),
+                    NSSize::new(content_width, 26.0),
+                ));
+            }
+            y += 30.0;
+            if !self.observation_error.isHidden() {
+                place_observation_label(
+                    &self.observation_error,
+                    14.0,
+                    content_width,
+                    16.0,
+                    &mut y,
+                    apply,
+                );
+                y += 6.0;
+            }
+        }
+        if !self.machine_rows.is_empty() {
+            y += 8.0;
+            place_observation_label(
+                &self.observation_machines,
+                30.0,
+                content_width - 16.0,
+                16.0,
+                &mut y,
+                apply,
+            );
+            y += 8.0;
+        }
+        for row in &self.machine_rows {
+            let row_start = y;
+            let title_height = measured_label_height(&row.title, row_width).max(17.0);
+            if apply {
+                row.title.setFrame(NSRect::new(
+                    NSPoint::new(30.0, y),
+                    NSSize::new(row_width, title_height),
+                ));
+                row.toggle.setFrame(NSRect::new(
+                    NSPoint::new(width - 60.0, y),
+                    NSSize::new(46.0, 30.0),
+                ));
+            }
+            y += title_height + 3.0;
+            place_observation_label(&row.session, 30.0, row_width, 15.0, &mut y, apply);
+            y += 2.0;
+            place_observation_label(&row.status, 30.0, row_width, 15.0, &mut y, apply);
+            if !row.copy.isHidden() {
+                y += 6.0;
+                if apply {
+                    row.copy.setFrame(NSRect::new(
+                        NSPoint::new(30.0, y),
+                        NSSize::new((content_width - 16.0).max(1.0), 26.0),
+                    ));
+                }
+                y += 26.0;
+            }
+            if !row.error_toggle.isHidden() {
+                y += 4.0;
+                if apply {
+                    row.error_toggle.setFrame(NSRect::new(
+                        NSPoint::new(30.0, y),
+                        NSSize::new((content_width - 16.0).max(1.0), 26.0),
+                    ));
+                }
+                y += 26.0;
+                if !row.error.isHidden() {
+                    y += 4.0;
+                    place_observation_label(
+                        &row.error,
+                        30.0,
+                        content_width - 16.0,
+                        16.0,
+                        &mut y,
+                        apply,
+                    );
+                }
+            }
+            y = y.max(row_start + 56.0) + 8.0;
+        }
+        if apply {
+            self.observation_registration.setFrame(NSRect::new(
                 NSPoint::new(14.0, y),
-                NSSize::new(label_width, 26.0),
-            ));
-            toggle.setFrame(NSRect::new(
-                NSPoint::new(card_width - 58.0, y - 4.0),
-                NSSize::new(46.0, 30.0),
+                NSSize::new(content_width, 27.0),
             ));
         }
-        self.observation_help.setFrame(NSRect::new(
-            NSPoint::new(14.0, 106.0),
-            NSSize::new((card_width - 28.0).max(1.0), 36.0),
+        y += 27.0;
+        y + 14.0
+    }
+}
+
+fn measured_label_height(field: &NSTextField, width: f64) -> f64 {
+    // NSCell measures the actual localized glyphs and wraps at the available width.
+    let size = field
+        .cell()
+        .expect("wrapping label cell")
+        .cellSizeForBounds(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(width.max(1.0), 100_000.0),
         ));
-        self.observation_notice.setFrame(NSRect::new(
-            NSPoint::new(14.0, 146.0),
-            NSSize::new((card_width - 28.0).max(1.0), 62.0),
-        ));
-        for (index, (toggle, title, detail)) in self.machine_rows.iter().enumerate() {
-            let y = 216.0 + index as f64 * MACHINE_ROW_HEIGHT;
-            toggle.setFrame(NSRect::new(
-                NSPoint::new(12.0, y + 12.0),
-                NSSize::new(46.0, 30.0),
-            ));
-            title.setFrame(NSRect::new(
-                NSPoint::new(64.0, y + 3.0),
-                NSSize::new((card_width - 78.0).max(1.0), 20.0),
-            ));
-            detail.setFrame(NSRect::new(
-                NSPoint::new(64.0, y + 24.0),
-                NSSize::new((card_width - 78.0).max(1.0), 67.0),
-            ));
-        }
-        self.lifecycle_card.layout(NSRect::new(
-            NSPoint::new(
-                8.0,
-                530.0 + self.machine_rows.len() as f64 * MACHINE_ROW_HEIGHT,
-            ),
-            NSSize::new(card_width, CARD_HEIGHT),
+    size.height.ceil()
+}
+
+fn place_observation_label(
+    field: &NSTextField,
+    x: f64,
+    width: f64,
+    minimum: f64,
+    y: &mut f64,
+    apply: bool,
+) {
+    let height = measured_label_height(field, width).max(minimum);
+    if apply {
+        field.setFrame(NSRect::new(
+            NSPoint::new(x, *y),
+            NSSize::new(width.max(1.0), height),
         ));
     }
+    *y += height;
 }
 
 fn configure_panel(panel: &NSPanel) {

@@ -1551,6 +1551,7 @@ mod tests {
         let mut state = AppState::new();
         let source = crate::sources::remote_source("east");
         state.set_observation_catalog(SourceCatalog {
+            initialized: true,
             machines: vec![MachineInfo {
                 id: "east".to_owned(),
                 label: "East".to_owned(),
@@ -1907,6 +1908,7 @@ mod tests {
         let mut state = AppState::new();
         let source = crate::sources::remote_source("machine-one");
         state.set_observation_catalog(SourceCatalog {
+            initialized: true,
             machines: vec![MachineInfo {
                 id: "machine-one".to_owned(),
                 label: "Workstation".to_owned(),

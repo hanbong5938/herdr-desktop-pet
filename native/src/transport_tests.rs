@@ -256,6 +256,7 @@ mod prompt {
         {
             let mut state = shared.lock().unwrap();
             state.set_observation_catalog(SourceCatalog {
+                initialized: true,
                 machines: vec![MachineInfo {
                     id: id.clone(),
                     label: "Remote".to_owned(),

@@ -81,6 +81,7 @@ pub(crate) struct MachineInfo {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SourceCatalog {
+    pub initialized: bool,
     pub machines: Vec<MachineInfo>,
     pub error: Option<String>,
 }

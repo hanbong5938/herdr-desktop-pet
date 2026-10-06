@@ -195,6 +195,12 @@ fn discover(shared: &Shared, stop: &AtomicBool, cli: Option<&PathBuf>) {
         return;
     }
     let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+    update_catalog(&mut state, result);
+    drop(state);
+    crate::ui::wake();
+}
+
+fn update_catalog(state: &mut AppState, result: Result<Vec<MachineInfo>, String>) {
     let old = state.observation_catalog().clone();
     let catalog = match result {
         Ok(mut machines) => {
@@ -211,18 +217,18 @@ fn discover(shared: &Shared, stop: &AtomicBool, cli: Option<&PathBuf>) {
                 }
             }
             SourceCatalog {
+                initialized: true,
                 machines,
                 error: None,
             }
         }
         Err(error) => SourceCatalog {
+            initialized: true,
             machines: old.machines,
             error: Some(error),
         },
     };
     state.set_observation_catalog(catalog);
-    drop(state);
-    crate::ui::wake();
 }
 
 fn parse_catalog(bytes: &[u8]) -> Result<Vec<MachineInfo>, String> {
@@ -620,6 +626,58 @@ mod tests {
     }
 
     #[test]
+    fn discovery_distinguishes_pending_empty_failure_and_recovery_without_losing_profiles() {
+        let mut state = AppState::new();
+        assert!(!state.observation_catalog().initialized);
+        assert!(state.observation_catalog().machines.is_empty());
+        let mut initially_failed = AppState::new();
+        update_catalog(&mut initially_failed, Err("CLI unavailable".to_owned()));
+        assert!(initially_failed.observation_catalog().initialized);
+        assert!(initially_failed.observation_catalog().machines.is_empty());
+        assert_eq!(
+            initially_failed.observation_catalog().error.as_deref(),
+            Some("CLI unavailable")
+        );
+
+        update_catalog(&mut state, Ok(Vec::new()));
+        assert!(state.observation_catalog().initialized);
+        assert!(state.observation_catalog().machines.is_empty());
+        assert!(state.observation_catalog().error.is_none());
+
+        let profiles = parse_catalog(
+            br#"[{"id":"east","label":"East","target":"ssh","session":"work","enabled":true,"selected":false}]"#,
+        )
+        .unwrap();
+        update_catalog(&mut state, Ok(profiles));
+        let mut observed = state.observation_catalog().clone();
+        observed.machines[0].status = MachineStatus::Online;
+        observed.machines[0].error = Some("Previous connection error".to_owned());
+        state.set_observation_catalog(observed);
+        let previous = state.observation_catalog().machines.clone();
+
+        update_catalog(&mut state, Err("machine list failed".to_owned()));
+        let failed = state.observation_catalog();
+        assert!(failed.initialized);
+        assert_eq!(failed.error.as_deref(), Some("machine list failed"));
+        assert_eq!(failed.machines, previous);
+
+        let recovered = parse_catalog(
+            br#"[{"id":"east","label":"Renamed","target":"ssh","session":"work","enabled":true,"selected":false}]"#,
+        )
+        .unwrap();
+        update_catalog(&mut state, Ok(recovered));
+        let catalog = state.observation_catalog();
+        assert!(catalog.initialized);
+        assert!(catalog.error.is_none());
+        assert_eq!(catalog.machines[0].label, "Renamed");
+        assert_eq!(catalog.machines[0].status, MachineStatus::Online);
+        assert_eq!(
+            catalog.machines[0].error.as_deref(),
+            Some("Previous connection error")
+        );
+    }
+
+    #[test]
     fn cli_output_is_bounded_and_cancelled_process_group_is_reaped() {
         let stop = Arc::new(AtomicBool::new(false));
         assert!(run_cli(
@@ -723,6 +781,7 @@ mod tests {
                 error: None,
             }],
             error: None,
+            initialized: true,
         });
         state.apply_observation_preferences(ObservationPreferences {
             local: true,

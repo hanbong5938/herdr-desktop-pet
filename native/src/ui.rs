@@ -54,11 +54,12 @@ use objc2_app_kit::{
     NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
     NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem,
     NSModalPanelRunLoopMode, NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
-    NSParagraphStyleAttributeName, NSPopUpButton, NSRunningApplication, NSScreen, NSScrollView,
-    NSScrollerStyle, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment, NSTextContainer,
-    NSTextField, NSTextStorage, NSTextView, NSTrackingArea, NSTrackingAreaOptions,
-    NSUserInterfaceItemIdentification, NSVariableStatusItemLength, NSView,
-    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
+    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
+    NSRunningApplication, NSScreen, NSScrollView, NSScrollerStyle, NSStatusBar, NSStatusItem,
+    NSSwitch, NSTextAlignment, NSTextContainer, NSTextField, NSTextStorage, NSTextView,
+    NSTrackingArea, NSTrackingAreaOptions, NSUserInterfaceItemIdentification,
+    NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
+    NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
     NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate, NSLocale,
@@ -1400,6 +1401,42 @@ define_class!(
             let Some(toggle) = sender.and_then(|sender| sender.downcast_ref::<NSSwitch>()) else { return };
             let Some(id) = toggle.identifier().map(|id| id.to_string()) else { return };
             with_ui_mut(|ui| ui.change_observation_machine(id, toggle.state() == NSControlStateValueOn));
+        }
+
+        #[unsafe(method(showObservationHelp:))]
+        fn show_observation_help(&self, _sender: Option<&AnyObject>) {
+            let Some((mtm, locale)) = with_ui_read(|ui| (ui.mtm, ui.locale)) else { return };
+            let alert = NSAlert::new(mtm);
+            alert.setMessageText(&NSString::from_str(text(locale, Message::ObservationHelpTitle)));
+            alert.setInformativeText(&NSString::from_str(text(locale, Message::ObservationHelpDetails)));
+            alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::Close)));
+            let _ = alert.runModal();
+        }
+
+        #[unsafe(method(toggleObservationCatalogError:))]
+        fn toggle_observation_catalog_error(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| ui.menu_panel.toggle_observation_error(None));
+        }
+
+        #[unsafe(method(toggleObservationMachineError:))]
+        fn toggle_observation_machine_error(&self, sender: Option<&AnyObject>) {
+            let Some(button) = sender.and_then(|sender| sender.downcast_ref::<NSButton>()) else { return };
+            let Some(id) = button.identifier().map(|id| id.to_string()) else { return };
+            with_ui_mut(|ui| ui.menu_panel.toggle_observation_error(Some(&id)));
+        }
+
+        #[unsafe(method(copyObservationReconnect:))]
+        fn copy_observation_reconnect(&self, sender: Option<&AnyObject>) {
+            let Some(button) = sender.and_then(|sender| sender.downcast_ref::<NSButton>()) else { return };
+            let Some(id) = button.identifier().map(|id| id.to_string()) else { return };
+            let Some(command) = with_ui_read(|ui| ui.menu_panel.observation_reconnect_command(&id)).flatten() else { return };
+            let pasteboard = NSPasteboard::generalPasteboard();
+            pasteboard.clearContents();
+            let success = pasteboard.setString_forType(
+                &NSString::from_str(&command),
+                unsafe { NSPasteboardTypeString },
+            );
+            with_ui_mut(|ui| ui.menu_panel.observation_copy_feedback(&id, success));
         }
 
         #[unsafe(method(setBubbleTheme:))]

@@ -852,6 +852,7 @@ mod tests {
 
     fn catalog(profiles: &[(&str, &str, bool)]) -> SourceCatalog {
         SourceCatalog {
+            initialized: true,
             machines: profiles
                 .iter()
                 .map(|(id, label, enabled)| crate::sources::MachineInfo {

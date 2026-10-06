@@ -1,6 +1,20 @@
 Herdr Desktop Pet 0.1.11; native bubble close menu
 ===================================================
 
+Unreleased: compact observation settings
+- Separate This Mac and Remote machines with right-aligned native switches;
+  nest saved profiles under Machines to observe, with name, session and status.
+- Measure wrapped text for card, row and scroll heights; remove fixed notice
+  gaps and duplicate help. Reuse controls by opaque profile ID so polling and
+  renaming preserve focus and scroll; clamp scrolling when the list shrinks.
+- Distinguish initial catalog lookup, confirmed empty, no selection, paused,
+  checking, observing, unavailable and disabled states. Retain the previous
+  profile list with an explicit warning on catalog failure. Remote off keeps
+  saved selections and masks stale successful statuses.
+- Localize labels and contextual accessibility names in Korean and English.
+  Registration help and folded diagnostics are read-only; reconnect copies a
+  shell-quoted command with native clipboard feedback, never executes it.
+
 Unreleased: independent character and bubble visibility
 - Hiding the character leaves an enabled bubble as a movable tailless panel;
   showing the character reattaches it. The four visibility combinations remain
