@@ -146,6 +146,7 @@ pub struct Preferences {
     bubble_placement: BubblePlacement,
     scale: f64,
     position: Option<(f64, f64)>,
+    standalone_bubble_position: Option<(f64, f64)>,
     position_space: PositionSpace,
     language: LanguagePreference,
     bubble_appearance: BubbleAppearance,
@@ -169,6 +170,8 @@ struct DiskPreferences {
     bubble_placement: BubblePlacement,
     scale: f64,
     position: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    standalone_bubble_position: Option<[f64; 2]>,
     #[serde(default)]
     position_space: PositionSpace,
     #[serde(default)]
@@ -202,6 +205,7 @@ impl Default for Preferences {
             bubble_placement: BubblePlacement::default(),
             scale: DEFAULT_SCALE,
             position: None,
+            standalone_bubble_position: None,
             position_space: PositionSpace::Display,
             language: LanguagePreference::default(),
             bubble_appearance: BubbleAppearance::default(),
@@ -293,6 +297,9 @@ impl Preferences {
             bubble_placement: disk.bubble_placement,
             scale: disk.scale,
             position: disk.position.map(|value| (value[0], value[1])),
+            standalone_bubble_position: disk
+                .standalone_bubble_position
+                .map(|value| (value[0], value[1])),
             position_space: disk.position_space,
             language: disk.language,
             bubble_appearance: disk.bubble_appearance,
@@ -464,6 +471,7 @@ impl Preferences {
             bubble_placement: self.bubble_placement,
             scale: self.scale,
             position: self.position.map(|(x, y)| [x, y]),
+            standalone_bubble_position: self.standalone_bubble_position.map(|(x, y)| [x, y]),
             position_space: self.position_space,
             language: self.language,
             bubble_appearance: self.bubble_appearance,
@@ -544,6 +552,10 @@ impl Preferences {
         self.position
     }
 
+    pub fn standalone_bubble_position(&self) -> Option<(f64, f64)> {
+        self.standalone_bubble_position
+    }
+
     pub fn position_is_legacy(&self) -> bool {
         self.position_space == PositionSpace::LegacyCanvas
     }
@@ -591,11 +603,18 @@ impl Preferences {
         self.mark_display_position();
     }
 
+    pub fn set_standalone_bubble_position(&mut self, position: Option<(f64, f64)>) {
+        self.standalone_bubble_position = position.filter(|(x, y)| x.is_finite() && y.is_finite());
+    }
+
     fn sanitize(&mut self) {
         self.scale = normalize_scale(self.scale).unwrap_or(DEFAULT_SCALE);
         self.position = self
             .position
             .filter(|(x, y)| x.is_finite() && y.is_finite() && x.abs() < 1.0e7 && y.abs() < 1.0e7);
+        self.standalone_bubble_position = self
+            .standalone_bubble_position
+            .filter(|(x, y)| x.is_finite() && y.is_finite());
         self.observation.sanitize();
     }
 }
@@ -683,6 +702,7 @@ mod tests {
             bubble_placement: BubblePlacement::Above,
             scale: f64::NAN,
             position: Some((f64::INFINITY, 2.0)),
+            standalone_bubble_position: Some((f64::NAN, 3.0)),
             position_space: PositionSpace::LegacyCanvas,
             language: LanguagePreference::default(),
             bubble_appearance: BubbleAppearance::default(),
@@ -693,6 +713,7 @@ mod tests {
         preferences.sanitize();
         assert_eq!(preferences.scale(), DEFAULT_SCALE);
         assert!(preferences.position().is_none());
+        assert_eq!(preferences.standalone_bubble_position(), None);
     }
 
     fn isolated_preferences_directory() -> PathBuf {
@@ -728,6 +749,68 @@ mod tests {
     }
 
     #[test]
+    fn standalone_origin_roundtrips_without_migrating_or_overwriting_pet_position() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        fs::write(
+            &path,
+            br#"{"visible":false,"passthrough":false,"scale":0.8,"position":[42.0,64.0]}"#,
+        )
+        .expect("legacy preferences should be written");
+        let mut preferences =
+            Preferences::load_path(&path).expect("legacy preferences should load");
+        assert!(preferences.position_is_legacy());
+        preferences.set_standalone_bubble_position(Some((-1250.25, -310.75)));
+        assert!(preferences.position_is_legacy());
+        preferences
+            .save_in_directory(&directory)
+            .expect("standalone origin should save");
+        let loaded = Preferences::load_path(&path).expect("standalone origin should reload");
+        assert_eq!(loaded.position(), Some((42.0, 64.0)));
+        assert!(loaded.position_is_legacy());
+        assert_eq!(
+            loaded.standalone_bubble_position(),
+            Some((-1250.25, -310.75))
+        );
+
+        preferences.set_position(Some((15.0, 25.0)));
+        assert_eq!(
+            preferences.standalone_bubble_position(),
+            Some((-1250.25, -310.75))
+        );
+        preferences.set_standalone_bubble_position(None);
+        assert_eq!(preferences.position(), Some((15.0, 25.0)));
+        preferences
+            .save_in_directory(&directory)
+            .expect("cleared origin should save");
+        let raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(raw.get("standalone_bubble_position").is_none());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn standalone_origin_rejects_nonfinite_but_retains_large_finite_coordinates() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        preferences.set_standalone_bubble_position(Some((f64::NAN, 3.0)));
+        assert_eq!(preferences.standalone_bubble_position(), None);
+        preferences.set_standalone_bubble_position(Some((3.0, f64::NEG_INFINITY)));
+        assert_eq!(preferences.standalone_bubble_position(), None);
+        preferences.set_standalone_bubble_position(Some((-1.0e100, 1.0e100)));
+        preferences
+            .save_in_directory(&directory)
+            .expect("large origin should save");
+        let loaded = Preferences::load_path(&path).expect("large origin should reload");
+        assert_eq!(
+            loaded.standalone_bubble_position(),
+            Some((-1.0e100, 1.0e100))
+        );
+        assert_eq!(loaded.position(), None);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn old_schema_preserves_passthrough_and_geometry_with_new_defaults() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
@@ -745,6 +828,7 @@ mod tests {
         assert_eq!(loaded.bubble_placement(), BubblePlacement::Above);
         assert_eq!(loaded.scale(), 0.875);
         assert_eq!(loaded.position(), Some((123.25, 456.75)));
+        assert_eq!(loaded.standalone_bubble_position(), None);
         assert!(loaded.position_is_legacy());
 
         assert_eq!(loaded.language(), LanguagePreference::System);
@@ -1060,6 +1144,7 @@ mod tests {
             bubble_placement: valid.bubble_placement,
             scale: valid.scale,
             position: None,
+            standalone_bubble_position: None,
             language: valid.language,
             position_space: valid.position_space,
             bubble_appearance: valid.bubble_appearance,
@@ -1421,6 +1506,7 @@ mod tests {
         let mut preferences =
             Preferences::load_path(&path).expect("unknown top-level fields should load");
         preferences.set_bubble_visible(false);
+        preferences.set_standalone_bubble_position(Some((-500.5, 300.25)));
         preferences
             .save_in_directory(&directory)
             .expect("preferences should save");
@@ -1434,9 +1520,17 @@ mod tests {
         assert_eq!(raw["bubble_visible"], Value::Bool(false));
         assert_eq!(raw["scale"], serde_json::json!(0.875));
         assert_eq!(raw["position"], serde_json::json!([12.5, 34.5]));
+        assert_eq!(
+            raw["standalone_bubble_position"],
+            serde_json::json!([-500.5, 300.25])
+        );
         assert_eq!(raw["language"], serde_json::json!("ko"));
         let reloaded = Preferences::load_path(&path).expect("saved preferences should reload");
         assert!(!reloaded.bubble_visible());
+        assert_eq!(
+            reloaded.standalone_bubble_position(),
+            Some((-500.5, 300.25))
+        );
         assert_eq!(reloaded.language(), LanguagePreference::Ko);
         let _ = fs::remove_dir_all(directory);
     }

@@ -5,8 +5,8 @@ use crate::behavior::{
     Behavior, EffectKind, Presentation, PresentationIntent, PresentationViewport, Reaction,
 };
 use crate::bubble::{
-    place_bubble, BubbleGeometry, BubblePlacement, Rect as BubbleRect, BUBBLE_RADIUS,
-    BUBBLE_WINDOW_INSET,
+    place_bubble, place_standalone_bubble, BubbleGeometry, BubblePlacement, Rect as BubbleRect,
+    BUBBLE_RADIUS, BUBBLE_WINDOW_INSET,
 };
 use crate::character_menu::{self, CharacterMenu, MenuCommand};
 use crate::character_renderer::{self, CharacterHit, PrepareBuilder, PreparedCharacter};
@@ -419,6 +419,12 @@ enum GestureKind {
     Resize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DragTarget {
+    Character,
+    StandaloneBubble,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct InputOwner {
     backend_epoch: u64,
@@ -428,6 +434,7 @@ struct InputOwner {
 
 #[derive(Clone, Copy, Debug)]
 struct DragState {
+    target: DragTarget,
     kind: GestureKind,
     start_mouse: NSPoint,
     start_frame: NSRect,
@@ -753,7 +760,7 @@ struct Ui {
     bubble_layout: BubbleLayout,
     bubble_geometry: Option<BubbleGeometry>,
     bubble_content_dirty: bool,
-    pending_bubble_placement: Option<BubblePlacement>,
+    pending_bubble_scene: Option<Scene>,
     pending_bubble_content: bool,
     bubble_layout_dirty: bool,
     transition_generation: u64,
@@ -2992,7 +2999,7 @@ impl Ui {
             bubble_layout: BubbleLayout::default(),
             bubble_geometry: None,
             bubble_content_dirty: true,
-            pending_bubble_placement: None,
+            pending_bubble_scene: None,
             pending_bubble_content: false,
             bubble_layout_dirty: true,
             transition_generation: 0,
@@ -3163,7 +3170,7 @@ impl Ui {
     fn pending_ui_updates(&self) -> bool {
         self.pending_language.is_some()
             || self.pending_bubble_content
-            || self.pending_bubble_placement.is_some()
+            || self.pending_bubble_scene.is_some()
     }
 
     fn defer_bubble_content(&mut self) {
@@ -4360,12 +4367,14 @@ impl Ui {
             }
         }
         if bubble_changed || presentation_changed || reset_position_changed || scale_changed {
-            self.update_bubble_frame_for(scene.bubble_placement);
+            self.update_bubble_frame_scene(&scene);
         }
-        if scene.visible && scene.bubble_visible {
+        if scene.bubble_visible {
             self.show_bubble_panel();
         } else {
-            self.hide_bubble_panel();
+            if self.bubble_panel.isVisible() {
+                self.hide_bubble_panel();
+            }
             self.reset_bubble_mode();
         }
         if presentation_changed || reset_position_changed {
@@ -4433,8 +4442,8 @@ impl Ui {
         self.apply_presentation(scene, rendered);
         self.refresh_bubble_content(scene);
         self.update_rig(scene);
-        if self.refresh_speech_anchor(scene) {
-            self.update_bubble_frame_for(scene.bubble_placement);
+        if scene.visible && self.refresh_speech_anchor(scene) {
+            self.update_bubble_frame_scene(scene);
         }
         self.advance_bubble_fade();
         self.update_pointer_timer(scene);
@@ -4492,12 +4501,12 @@ impl Ui {
 
     fn update_pointer_timer(&mut self, scene: &Scene) {
         let needed = self.bubble_fade.is_some()
-            || (scene.visible
-                && !scene.shutdown
+            || (!scene.shutdown
                 && !scene.passthrough
-                && (scene.alpha_passthrough
-                    || scene.bubble_visible
-                    || matches!(&self.active, PreparedCharacter::Rig(_))));
+                && (scene.bubble_visible
+                    || (scene.visible
+                        && (scene.alpha_passthrough
+                            || matches!(&self.active, PreparedCharacter::Rig(_))))));
         if needed {
             if self.pointer_timer.is_none() {
                 let timer = unsafe {
@@ -4536,9 +4545,11 @@ impl Ui {
             self.refresh();
             return;
         }
-        self.update_rig(&scene);
-        if self.refresh_speech_anchor(&scene) {
-            self.update_bubble_frame_for(scene.bubble_placement);
+        if scene.visible {
+            self.update_rig(&scene);
+            if self.refresh_speech_anchor(&scene) {
+                self.update_bubble_frame_scene(&scene);
+            }
         }
         self.advance_bubble_fade();
         self.apply_pending_bubble_updates();
@@ -4548,7 +4559,7 @@ impl Ui {
     fn apply_pending_bubble_updates(&mut self) {
         // A deferred drain must not perform even placement-only layout while
         // AppKit is tracking a control or a pet/bubble gesture is active.
-        if self.bubble_content_tracking_locked() {
+        if self.bubble_content_tracking_locked() || self.composer_marked() {
             return;
         }
         if self.pending_bubble_content {
@@ -4556,13 +4567,13 @@ impl Ui {
             self.bubble_content_dirty = true;
             self.refresh_bubble_content(&scene);
         }
-        if let Some(placement) = self.pending_bubble_placement.take() {
-            self.apply_bubble_frame_for(placement);
+        if let Some(scene) = self.pending_bubble_scene.take() {
+            self.apply_bubble_frame_scene(&scene);
         }
     }
 
     fn update_pointer_policy(&mut self, scene: &Scene) {
-        if scene.shutdown || !scene.visible || scene.passthrough {
+        if scene.shutdown || scene.passthrough {
             self.panel.setIgnoresMouseEvents(true);
             self.bubble_panel.setIgnoresMouseEvents(true);
             return;
@@ -4572,7 +4583,7 @@ impl Ui {
             || self.root.ivars().drag.get().is_some()
             || self.bubble_root.ivars().drag.get().is_some();
         if gesture_locked {
-            self.panel.setIgnoresMouseEvents(false);
+            self.panel.setIgnoresMouseEvents(!scene.visible);
             self.bubble_panel
                 .setIgnoresMouseEvents(!scene.bubble_visible || fade_active);
             return;
@@ -4583,25 +4594,21 @@ impl Ui {
         if NSEvent::pressedMouseButtons() != 0 || appkit_event_tracking_active() {
             return;
         }
-        if !scene.alpha_passthrough {
-            self.panel.setIgnoresMouseEvents(false);
-            let screen = NSEvent::mouseLocation();
+        let screen = NSEvent::mouseLocation();
+        let pet_hit = if !scene.visible {
+            false
+        } else if !scene.alpha_passthrough {
             if matches!(&self.active, PreparedCharacter::Rig(_)) {
                 let _ = self.character_hit(self.panel.convertPointFromScreen(screen));
             }
-            let bubble_hit = scene.bubble_visible && self.bubble_contains_screen(screen);
-            self.bubble_panel
-                .setIgnoresMouseEvents(!bubble_hit || fade_active);
-            return;
-        }
-        let screen = NSEvent::mouseLocation();
-        let panel_point = self.panel.convertPointFromScreen(screen);
-        let pet_hit = grip_hit_test(panel_point, self.root.bounds().size)
-            || (NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option)
-                && point_in_rect(panel_point, self.root.bounds()))
-            || self
-                .character_hit(panel_point)
-                .is_some_and(|hit| hit.opaque);
+            true
+        } else {
+            let panel_point = self.panel.convertPointFromScreen(screen);
+            grip_hit_test(panel_point, self.root.bounds().size)
+                || (NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option)
+                    && point_in_rect(panel_point, self.root.bounds()))
+                || self.character_hit(panel_point).is_some_and(|hit| hit.opaque)
+        };
         self.panel.setIgnoresMouseEvents(!pet_hit);
 
         let bubble_hit = scene.bubble_visible && self.bubble_contains_screen(screen);
@@ -4710,8 +4717,13 @@ impl Ui {
         {
             return None;
         }
-        let frame = self.panel.frame();
-        let drag = self.begin_gesture(GestureKind::Move, screen_point, frame, None)?;
+        let target = if self.last_scene.visible {
+            DragTarget::Character
+        } else {
+            DragTarget::StandaloneBubble
+        };
+        let frame = self.drag_frame(target);
+        let drag = self.begin_gesture(GestureKind::Move, screen_point, frame, None, target)?;
         self.pointer_event_started_at = Some(event_timestamp);
         self.suspend_transform();
         Some(drag)
@@ -4753,6 +4765,7 @@ impl Ui {
                     press.start_mouse,
                     press.start_frame,
                     press.input_owner,
+                    DragTarget::Character,
                 );
                 if let Some(drag) = drag {
                     self.pointer_press = None;
@@ -4814,6 +4827,7 @@ impl Ui {
                     press.start_mouse,
                     press.start_frame,
                     press.input_owner,
+                    DragTarget::Character,
                 );
                 if drag.is_some() {
                     self.pointer_press = None;
@@ -4830,6 +4844,7 @@ impl Ui {
                     press.start_mouse,
                     press.start_frame,
                     press.input_owner,
+                    DragTarget::Character,
                 );
                 if drag.is_some() {
                     self.pointer_press = None;
@@ -4966,6 +4981,7 @@ impl Ui {
         start_mouse: NSPoint,
         start_frame: NSRect,
         input_owner: Option<InputOwner>,
+        target: DragTarget,
     ) -> Option<DragState> {
         if self.root.ivars().drag.get().is_some() || self.bubble_root.ivars().drag.get().is_some() {
             return None;
@@ -4974,11 +4990,20 @@ impl Ui {
             return None;
         }
         let scene = self.shared.lock().ok()?.scene();
-        if scene.shutdown || !scene.visible || scene.passthrough {
+        if scene.shutdown
+            || scene.passthrough
+            || match target {
+                DragTarget::Character => !scene.visible,
+                DragTarget::StandaloneBubble => {
+                    scene.visible || !scene.bubble_visible || kind != GestureKind::Move
+                }
+            }
+        {
             return None;
         }
-        let frame = self.panel.frame();
-        let size_matches_scale = kind != GestureKind::Resize
+        let frame = self.drag_frame(target);
+        let size_matches_scale = target == DragTarget::StandaloneBubble
+            || kind != GestureKind::Resize
             || frame_size_matches_scale(self.display_geometry, frame.size, scene.scale);
         if !presentation_matches_scene(&scene, &self.last_scene)
             || !rect_nearly_equal(frame, start_frame)
@@ -4987,7 +5012,11 @@ impl Ui {
             self.refresh();
             return None;
         }
-        let screen_visible = panel_visible_frame(&self.panel, self.mtm)?;
+        let screen_visible = if target == DragTarget::StandaloneBubble {
+            standalone_visible_frame(self.mtm, frame)?
+        } else {
+            panel_visible_frame(&self.panel, self.mtm)?
+        };
         let start_top_left = NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height);
         if kind == GestureKind::Resize
             && resize_scale_limits(self.display_geometry, start_top_left, screen_visible).is_none()
@@ -4995,6 +5024,7 @@ impl Ui {
             return None;
         }
         Some(DragState {
+            target,
             kind,
             start_mouse,
             start_frame: frame,
@@ -5029,7 +5059,7 @@ impl Ui {
         if scene.shutdown
             || !self.input_owner_is_current(drag.input_owner)
             || !scene_matches_drag(&scene, &drag)
-            || !rect_nearly_equal(self.panel.frame(), drag.expected_frame)
+            || !rect_nearly_equal(self.drag_frame(drag.target), drag.expected_frame)
         {
             self.cancel_gesture();
             self.refresh();
@@ -5040,18 +5070,24 @@ impl Ui {
         }
 
         let mut updated = drag;
-        match drag.kind {
-            GestureKind::Move => {
-                let mut frame = drag.start_frame;
-                frame.origin = NSPoint::new(
+        match (drag.target, drag.kind) {
+            (target, GestureKind::Move) => {
+                let origin = NSPoint::new(
                     drag.start_frame.origin.x + mouse.x - drag.start_mouse.x,
                     drag.start_frame.origin.y + mouse.y - drag.start_mouse.y,
                 );
-                self.panel.setFrameOrigin(frame.origin);
-                self.clamp_panel();
-                updated.expected_frame = self.panel.frame();
+                if target == DragTarget::StandaloneBubble {
+                    let frame = NSRect::new(origin, drag.start_frame.size);
+                    let visible = standalone_visible_frame(self.mtm, frame)?;
+                    self.bubble_panel.setFrameOrigin(clamp_window_origin(frame, visible));
+                } else {
+                    self.panel.setFrameOrigin(origin);
+                    self.clamp_panel();
+                }
+                updated.expected_frame = self.drag_frame(target);
             }
-            GestureKind::Resize => {
+            (DragTarget::StandaloneBubble, GestureKind::Resize) => return None,
+            (DragTarget::Character, GestureKind::Resize) => {
                 let Some(current_screen) = panel_visible_frame(&self.panel, self.mtm) else {
                     self.handle_screen_change();
                     return None;
@@ -5113,7 +5149,7 @@ impl Ui {
     fn finish_gesture(&mut self, drag: DragState) {
         self.pointer_event_started_at = None;
         let final_state = self.shared.lock().ok().map(|state| state.scene());
-        let final_frame = self.panel.frame();
+        let final_frame = self.drag_frame(drag.target);
         let valid = final_state.as_ref().is_some_and(|scene| {
             self.input_owner_is_current(drag.input_owner)
                 && scene_matches_drag(scene, &drag)
@@ -5134,8 +5170,9 @@ impl Ui {
         let changed = !rect_nearly_equal(final_frame, drag.start_frame)
             || (scene.scale - drag.start_scale).abs() > f64::EPSILON;
         if changed {
-            self.persist_geometry(&scene, final_frame);
+            self.persist_drag_geometry(&scene, drag.target, final_frame);
         }
+        self.apply_pending_bubble_updates();
     }
 
     fn set_hover(&mut self, pet_hovered: bool, grip_hovered: bool) {
@@ -5154,9 +5191,11 @@ impl Ui {
             .drag
             .get()
             .or_else(|| self.bubble_root.ivars().drag.get());
-        if drag_survives_screen_change(drag, self.panel.frame()) {
-            // The drag itself carried the pet onto another display. Each
-            // later sample re-clamps to the new screen and mouse-up persists.
+        if drag_survives_screen_change(
+            drag,
+            drag.map(|drag| self.drag_frame(drag.target))
+                .unwrap_or(self.panel.frame()),
+        ) {
             return;
         }
         self.cancel_gesture();
@@ -5167,6 +5206,10 @@ impl Ui {
         self.clamp_panel();
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
+        let scene = self.last_scene.clone();
+        if !scene.visible && scene.bubble_visible {
+            self.update_bubble_frame_scene(&scene);
+        }
         let _ = self.prefs.save();
     }
 
@@ -5180,7 +5223,7 @@ impl Ui {
         self.cancel_gesture_for(drag);
     }
     fn cancel_gesture_for(&mut self, drag: Option<DragState>) {
-        let accepted_frame = self.panel.frame();
+        let accepted_frame = drag.map(|drag| self.drag_frame(drag.target));
         let scene = self.shared.lock().ok().map(|state| state.scene());
         self.root.ivars().drag.set(None);
         self.bubble_root.ivars().drag.set(None);
@@ -5197,9 +5240,31 @@ impl Ui {
             || (drag.expected_scale - drag.start_scale).abs() > f64::EPSILON;
         if changed
             && scene_matches_drag(&scene, &drag)
-            && rect_nearly_equal(accepted_frame, drag.expected_frame)
+            && accepted_frame.is_some_and(|frame| rect_nearly_equal(frame, drag.expected_frame))
         {
-            self.persist_geometry(&scene, drag.expected_frame);
+            self.persist_drag_geometry(&scene, drag.target, drag.expected_frame);
+        }
+        self.apply_pending_bubble_updates();
+    }
+
+    fn drag_frame(&self, target: DragTarget) -> NSRect {
+        match target {
+            DragTarget::Character => self.panel.frame(),
+            DragTarget::StandaloneBubble => self.bubble_panel.frame(),
+        }
+    }
+
+    fn persist_drag_geometry(&mut self, scene: &Scene, target: DragTarget, frame: NSRect) {
+        if target == DragTarget::StandaloneBubble {
+            if let Some(body) = self.bubble_geometry {
+                self.prefs.set_standalone_bubble_position(Some((
+                    frame.origin.x + body.body.x,
+                    frame.origin.y + body.body.y,
+                )));
+                let _ = self.prefs.save();
+            }
+        } else {
+            self.persist_geometry(scene, frame);
         }
     }
 
@@ -5261,6 +5326,9 @@ impl Ui {
         let size = self.panel.frame().size;
         let origin = default_origin(size, self.mtm);
         self.panel.setFrameOrigin(origin);
+        self.prefs.set_standalone_bubble_position(None);
+        self.bubble_geometry = None;
+        self.bubble_content_dirty = true;
         self.clamp_panel_for(bubble_placement);
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
@@ -5292,13 +5360,19 @@ impl Ui {
     }
 
     fn update_bubble_frame_for(&mut self, bubble_placement: BubblePlacement) {
-        if self.bubble_placement_tracking_locked() {
-            self.pending_bubble_placement = Some(bubble_placement);
+        let mut scene = self.last_scene.clone();
+        scene.bubble_placement = bubble_placement;
+        self.update_bubble_frame_scene(&scene);
+    }
+
+    fn update_bubble_frame_scene(&mut self, scene: &Scene) {
+        if self.bubble_placement_tracking_locked() || self.composer_marked() {
+            self.pending_bubble_scene = Some(scene.clone());
             self.queue_language_apply();
             return;
         }
-        self.pending_bubble_placement = None;
-        self.apply_bubble_frame_for(bubble_placement);
+        self.pending_bubble_scene = None;
+        self.apply_bubble_frame_scene(scene);
     }
 
     fn refresh_speech_anchor(&mut self, scene: &Scene) -> bool {
@@ -5357,13 +5431,11 @@ impl Ui {
         true
     }
 
-    fn apply_bubble_frame_for(&mut self, bubble_placement: BubblePlacement) {
-        let Some(visible) = panel_visible_frame(&self.panel, self.mtm) else {
-            return;
-        };
+    fn attached_bubble_geometry(&self, placement: BubblePlacement) -> Option<BubbleGeometry> {
+        let visible = panel_visible_frame(&self.panel, self.mtm)?;
         let pet = self.panel.frame();
         let body = self.bubble_layout.body_size;
-        let geometry = place_bubble(
+        Some(place_bubble(
             self.cached_anchor
                 .as_ref()
                 .and_then(|cached| cached.relative)
@@ -5380,14 +5452,53 @@ impl Ui {
                     height: pet.size.height,
                 }),
             (body.width.max(0.0), body.height.max(0.0)),
-            BubbleRect {
-                x: visible.origin.x,
-                y: visible.origin.y,
-                width: visible.size.width,
-                height: visible.size.height,
-            },
-            bubble_placement,
-        );
+            bubble_rect(visible),
+            placement,
+        ))
+    }
+
+    fn apply_bubble_frame_scene(&mut self, scene: &Scene) {
+        if !scene.visible && self.bubble_geometry.is_none() && self.bubble_content_dirty {
+            // Measure the actual body before seeding an initially hidden bubble.
+            return;
+        }
+        let geometry = if scene.visible {
+            self.attached_bubble_geometry(scene.bubble_placement)
+        } else {
+            let origin = self.prefs.standalone_bubble_position().or_else(|| {
+                let attached = if self.did_present && self.last_scene.visible {
+                    self.bubble_geometry
+                } else {
+                    None
+                }
+                .or_else(|| self.attached_bubble_geometry(scene.bubble_placement))?;
+                Some((
+                    attached.window.x + attached.body.x,
+                    attached.window.y + attached.body.y,
+                ))
+            });
+            origin.and_then(|origin| {
+                let body = self.bubble_layout.body_size;
+                let frame = NSRect::new(NSPoint::new(origin.0, origin.1), body);
+                let visible = standalone_visible_frame(self.mtm, frame)?;
+                Some(place_standalone_bubble(
+                    origin,
+                    (body.width.max(0.0), body.height.max(0.0)),
+                    bubble_rect(visible),
+                ))
+            })
+        };
+        let Some(geometry) = geometry else { return };
+        if !scene.visible {
+            let body_origin = (
+                geometry.window.x + geometry.body.x,
+                geometry.window.y + geometry.body.y,
+            );
+            if self.prefs.standalone_bubble_position() != Some(body_origin) {
+                self.prefs.set_standalone_bubble_position(Some(body_origin));
+                let _ = self.prefs.save();
+            }
+        }
         let frame = NSRect::new(
             NSPoint::new(geometry.window.x, geometry.window.y),
             NSSize::new(geometry.window.width, geometry.window.height),
@@ -5570,7 +5681,24 @@ impl Ui {
             } else {
                 0.0
             });
-        let visible = panel_visible_frame(&self.panel, self.mtm).unwrap_or(NSRect::new(
+        let visible = if scene.visible {
+            panel_visible_frame(&self.panel, self.mtm)
+        } else {
+            let body = self.bubble_layout.body_size;
+            let origin = self
+                .prefs
+                .standalone_bubble_position()
+                .or_else(|| {
+                    self.bubble_geometry
+                        .map(|g| (g.window.x + g.body.x, g.window.y + g.body.y))
+                })
+                .unwrap_or((self.panel.frame().origin.x, self.panel.frame().origin.y));
+            standalone_visible_frame(
+                self.mtm,
+                NSRect::new(NSPoint::new(origin.0, origin.1), body),
+            )
+        }
+        .unwrap_or(NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(1000.0, 800.0),
         ));
@@ -5763,7 +5891,7 @@ impl Ui {
             BubbleMode::Expanded => NSSize::new(expanded_width, expanded_height),
         };
         self.bubble_layout_dirty = true;
-        self.update_bubble_frame_for(scene.bubble_placement);
+        self.update_bubble_frame_scene(scene);
     }
 
     fn layout_bubble_children(&mut self) {
@@ -6826,6 +6954,52 @@ fn resize_scale_limits(
     }
 }
 
+fn bubble_rect(frame: NSRect) -> BubbleRect {
+    BubbleRect {
+        x: frame.origin.x,
+        y: frame.origin.y,
+        width: frame.size.width,
+        height: frame.size.height,
+    }
+}
+
+fn clamp_window_origin(frame: NSRect, visible: NSRect) -> NSPoint {
+    NSPoint::new(
+        frame.origin.x.clamp(
+            visible.origin.x,
+            (visible.origin.x + visible.size.width - frame.size.width).max(visible.origin.x),
+        ),
+        frame.origin.y.clamp(
+            visible.origin.y,
+            (visible.origin.y + visible.size.height - frame.size.height).max(visible.origin.y),
+        ),
+    )
+}
+
+fn screen_overlap(frame: NSRect, visible: NSRect) -> f64 {
+    let left = frame.origin.x.max(visible.origin.x);
+    let right = (frame.origin.x + frame.size.width).min(visible.origin.x + visible.size.width);
+    let bottom = frame.origin.y.max(visible.origin.y);
+    let top = (frame.origin.y + frame.size.height).min(visible.origin.y + visible.size.height);
+    (right - left).max(0.0) * (top - bottom).max(0.0)
+}
+
+fn standalone_visible_frame(mtm: MainThreadMarker, frame: NSRect) -> Option<NSRect> {
+    let screens = NSScreen::screens(mtm);
+    let mut best = None;
+    let mut overlap = 0.0;
+    for screen in screens.iter() {
+        let visible = screen.visibleFrame();
+        let area = screen_overlap(frame, visible);
+        if area > overlap {
+            overlap = area;
+            best = Some(visible);
+        }
+    }
+    best.or_else(|| NSScreen::mainScreen(mtm).map(|screen| screen.visibleFrame()))
+        .or_else(|| screens.firstObject().map(|screen| screen.visibleFrame()))
+}
+
 fn panel_visible_frame(panel: &NSPanel, mtm: MainThreadMarker) -> Option<NSRect> {
     panel
         .screen()
@@ -6851,6 +7025,10 @@ fn scene_matches_drag(scene: &Scene, drag: &DragState) -> bool {
         && scene.bubble_placement == drag.expected_bubble_placement
         && scene.reset_position_revision == drag.expected_reset_position_revision
         && (scene.scale - drag.expected_scale).abs() <= f64::EPSILON
+        && match drag.target {
+            DragTarget::Character => scene.visible,
+            DragTarget::StandaloneBubble => !scene.visible && scene.bubble_visible,
+        }
 }
 
 /// A screen change caused by the pet's own Move drag must not end that drag.
@@ -7421,6 +7599,20 @@ mod tests {
     }
 
     #[test]
+    fn standalone_screen_crossing_and_clamp_keep_negative_display_coordinates() {
+        let left = NSRect::new(NSPoint::new(-1200.0, -200.0), NSSize::new(1200.0, 800.0));
+        let right = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1400.0, 900.0));
+        let crossing = NSRect::new(NSPoint::new(-80.0, 100.0), NSSize::new(300.0, 120.0));
+        assert!(screen_overlap(crossing, right) > screen_overlap(crossing, left));
+
+        let leftward = NSRect::new(NSPoint::new(-1250.0, -210.0), NSSize::new(300.0, 120.0));
+        assert_eq!(clamp_window_origin(leftward, left), NSPoint::new(-1200.0, -200.0));
+        let offscreen = NSRect::new(NSPoint::new(-6000.0, 100.0), crossing.size);
+        assert_eq!(screen_overlap(offscreen, left), 0.0);
+        assert_eq!(screen_overlap(offscreen, right), 0.0);
+    }
+
+    #[test]
     fn resize_uses_initial_pointer_offset_without_jump() {
         let geometry = DisplayGeometry::new((0.25, 0.25, 0.75, 0.75), (384, 512), false);
         let start_scale = 0.65;
@@ -7448,6 +7640,7 @@ mod tests {
     fn screen_change_keeps_only_matching_move_drag() {
         let frame = NSRect::new(NSPoint::new(1_480.0, 300.0), NSSize::new(240.0, 320.0));
         let move_drag = DragState {
+            target: DragTarget::Character,
             kind: GestureKind::Move,
             start_mouse: NSPoint::new(1_400.0, 400.0),
             start_frame: NSRect::new(NSPoint::new(1_200.0, 300.0), frame.size),

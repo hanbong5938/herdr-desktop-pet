@@ -56,91 +56,91 @@ platforms = ["macos"]
 
 [[actions]]
 id = "toggle"
-title = "Toggle desktop pet"
+title = "Toggle character visibility; keep the bubble if enabled"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "toggle"]
 platforms = ["macos"]
 
 [[actions]]
 id = "show"
-title = "Show desktop pet"
+title = "Show character and reattach the visible bubble"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "show"]
 platforms = ["macos"]
 
 [[actions]]
 id = "hide"
-title = "Hide desktop pet"
+title = "Hide character; keep the visible bubble standalone"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "hide"]
 platforms = ["macos"]
 
 [[actions]]
 id = "passthrough"
-title = "Toggle click passthrough"
+title = "Toggle click passthrough for character and bubble"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "passthrough"]
 platforms = ["macos"]
 
 [[actions]]
 id = "alpha_passthrough"
-title = "Toggle alpha click passthrough"
+title = "Toggle alpha click passthrough for character only"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "alpha_passthrough"]
 platforms = ["macos"]
 
 [[actions]]
 id = "show_bubble"
-title = "Show status bubble"
+title = "Show status bubble, even without the character"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "show_bubble"]
 platforms = ["macos"]
 
 [[actions]]
 id = "hide_bubble"
-title = "Hide status bubble"
+title = "Hide status bubble without hiding the character"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "hide_bubble"]
 platforms = ["macos"]
 
 [[actions]]
 id = "bubble_above"
-title = "Place bubble above pet"
+title = "Place bubble above pet when attached"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_above"]
 platforms = ["macos"]
 
 [[actions]]
 id = "bubble_below"
-title = "Place bubble below pet"
+title = "Place bubble below pet when attached"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_below"]
 platforms = ["macos"]
 
 [[actions]]
 id = "bubble_left"
-title = "Place bubble left of pet"
+title = "Place bubble left of pet when attached"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_left"]
 platforms = ["macos"]
 
 [[actions]]
 id = "bubble_right"
-title = "Place bubble right of pet"
+title = "Place bubble right of pet when attached"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_right"]
 platforms = ["macos"]
 
 [[actions]]
 id = "bubble_auto"
-title = "Place bubble automatically"
+title = "Place bubble automatically when attached"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "bubble_auto"]
 platforms = ["macos"]
 
 [[actions]]
 id = "reset"
-title = "Reset desktop pet position"
+title = "Reset pet and standalone bubble positions; keep visibility"
 contexts = ["global"]
 command = ["./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet", "reset"]
 platforms = ["macos"]

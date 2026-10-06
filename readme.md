@@ -130,8 +130,21 @@ The older **v0.1.4 prebuilt message composer** differs from v0.1.6 inline replie
 | Inline reply (`--source` only) | Enter, Command+Enter, or Send submits to the selected local session; IME composition does not submit |
 | Escape in the reply / click outside the bubble (`--source` only) | Escape cancels active IME composition first; otherwise either folds only the reply field. Inside-bubble clicks do not automatically fold it; outside clicks do not fold during composition |
 | Right-click / Control-click the bubble background or a card header | Open **Close Bubble Window**; choosing it hides only the bubble, not the character, app, or Herdr session |
-| Full-window click-through | Pass clicks through both the pet and bubble windows, disabling their interaction |
-| Alpha click-through | Pass clicks through transparent artwork regions |
+| Full-window click-through | Pass clicks through both the character and bubble windows, disabling their interaction even when the bubble is standalone |
+| Alpha click-through | Pass clicks through transparent character artwork regions only; the bubble remains interactive |
+
+Character visibility (`show`/`hide`/`toggle`) and **Bubble → Bubble visible** (`show_bubble`/`hide_bubble`) are independent:
+
+| Character visible | Bubble visible | Result |
+| --- | --- | --- |
+| Yes | Yes | Bubble attached to the character |
+| Yes | No | Character only |
+| No | Yes | Tailless, movable standalone bubble; session cards and replies still work |
+| No | No | Neither window shown; app and Herdr session remain running; use the existing menu-bar settings to show a window |
+
+Hiding the character does not change the saved bubble visibility preference. On first detachment, the standalone bubble starts where the attached bubble body was; drag its background to move it without moving the character. Its origin is saved separately from the character's position. Showing the character reattaches the visible bubble; hiding it again restores the standalone origin. Switching between compact and expanded views, opening replies, and remeasuring the bubble keep its origin unless it must be clamped onto a screen. If a display is unplugged or its layout changes, an offscreen standalone bubble is recovered onto a remaining screen. Card selection, expanded/compact and reply state, drafts, keyboard focus, and active IME composition survive character hide/show within the running app; drafts are not restored after restart. Bubble placement commands/settings changed while standalone take effect when it reattaches, without moving the standalone bubble. **Reset** resets the character position and clears/reseeds the standalone position without changing either visibility setting.
+
+If the app starts with the character hidden and no saved standalone origin, the first standalone position is derived from the normal attached layout. Reset reseeds from that layout when needed; it never copies the character position into the standalone preference.
 
 The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Close Bubble Window** is disabled during active IME composition; finish composition and open the menu again to close. Reopen from **Bubble → Bubble visible** in the menu-bar panel. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
 

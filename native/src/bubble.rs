@@ -168,6 +168,47 @@ pub(crate) fn place_bubble(
     }
 }
 
+/// Places a tailless bubble independently of the pet. `body_origin` is the
+/// requested screen-space bottom-left of the visible body, not the window.
+/// Resizing keeps that origin unless the window must be clamped to the screen.
+pub(crate) fn place_standalone_bubble(
+    body_origin: (f64, f64),
+    body_size: (f64, f64),
+    visible: Rect,
+) -> BubbleGeometry {
+    let visible = normalize_rect(visible);
+    let requested_body = (
+        finite_non_negative(body_size.0),
+        finite_non_negative(body_size.1),
+    );
+    let (body_width, body_height) = body_size_for_extent(requested_body, visible);
+    let (width, height) = window_size(body_width, body_height);
+    let window = clamp_to_visible(
+        Rect {
+            x: saturating_sub(finite_coordinate(body_origin.0), BUBBLE_WINDOW_INSET),
+            y: saturating_sub(finite_coordinate(body_origin.1), BUBBLE_WINDOW_INSET),
+            width,
+            height,
+        },
+        visible,
+    );
+    let (width_reserve, height_reserve) = body_reserve();
+    let body_width = body_capacity(window.width, width_reserve).min(requested_body.0);
+    let body_height = body_capacity(window.height, height_reserve).min(requested_body.1);
+    let body = Rect {
+        x: clamp_body_cross(BUBBLE_WINDOW_INSET, window.width, body_width),
+        y: clamp_body_cross(BUBBLE_WINDOW_INSET, window.height, body_height),
+        width: body_width,
+        height: body_height,
+    };
+    BubbleGeometry {
+        window,
+        body,
+        tail: None,
+        side: None,
+    }
+}
+
 fn candidate_window(side: BubbleSide, pet: Rect, body_size: (f64, f64), visible: Rect) -> Rect {
     let (body_width, body_height) = body_size_for_extent(body_size, visible);
     let (window_width, window_height) = window_size(body_width, body_height);
@@ -578,6 +619,53 @@ mod tests {
             geometry.window.x + tail.tip.0,
             geometry.window.y + tail.tip.1,
         )
+    }
+
+    #[test]
+    fn standalone_keeps_visible_body_origin_and_has_no_pet_tail() {
+        let visible = rect(-900.0, -600.0, 1400.0, 1000.0);
+        for size in [(120.0, 40.0), (300.0, 180.0), (80.0, 32.0)] {
+            let geometry = place_standalone_bubble((-250.0, -180.0), size, visible);
+            assert_eq!(geometry.tail, None);
+            assert_eq!(geometry.side, None);
+            assert_eq!(geometry.body.width, size.0);
+            assert_eq!(geometry.body.height, size.1);
+            assert_eq!(
+                (
+                    geometry.window.x + geometry.body.x,
+                    geometry.window.y + geometry.body.y,
+                ),
+                (-250.0, -180.0)
+            );
+            assert_bounded(geometry.window, visible);
+            assert_local_body(geometry);
+        }
+    }
+
+    #[test]
+    fn standalone_clamps_offscreen_origins_and_shrinks_on_tiny_displays() {
+        for visible in [
+            rect(-1920.0, -1080.0, 1920.0, 1080.0),
+            rect(-15.0, -8.0, 20.0, 15.0),
+            rect(-2.0, -3.0, 3.0, 2.0),
+        ] {
+            for origin in [
+                (-f64::MAX, f64::MAX),
+                (f64::MAX, -f64::MAX),
+                (f64::NAN, f64::INFINITY),
+            ] {
+                let geometry = place_standalone_bubble(origin, (10_000.0, 50.0), visible);
+                assert_eq!(geometry.tail, None);
+                assert_eq!(geometry.side, None);
+                assert_bounded(geometry.window, visible);
+                assert_local_body(geometry);
+            }
+        }
+        let tiny = rect(-2.0, -3.0, 3.0, 2.0);
+        let geometry = place_standalone_bubble((-2.0, -3.0), (100.0, 50.0), tiny);
+        assert_eq!(geometry.window, tiny);
+        assert_eq!(geometry.body.width, 0.0);
+        assert_eq!(geometry.body.height, 0.0);
     }
 
     #[test]

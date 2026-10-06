@@ -1,6 +1,17 @@
 Herdr Desktop Pet 0.1.11; native bubble close menu
 ===================================================
 
+Unreleased: independent character and bubble visibility
+- Hiding the character leaves an enabled bubble as a movable tailless panel;
+  showing the character reattaches it. The four visibility combinations remain
+  independent, and the standalone origin is saved separately and restored on
+  later detachments. Card/reply state, drafts, focus and active IME survive
+  hide/show during this run; drafts do not survive restart.
+- Full passthrough applies to both windows; alpha passthrough applies only to
+  character art. Standalone placement changes wait for reattachment. Reset
+  resets both positions without changing visibility; Close Bubble Window still
+  hides only the bubble.
+
 Unreleased bug fix: standalone and remote-only watcher startup
 - A valid local plugin_list without desktop-pet on first observation is not
   disable: keep local snapshots/subscription available and remote polling alive.
