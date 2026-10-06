@@ -151,6 +151,7 @@ impl Snapshot {
 pub(crate) enum PluginAvailability {
     Enabled,
     Disabled,
+    Missing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -578,6 +579,7 @@ pub(crate) fn parse_plugin_availability(
         .get("plugins")
         .and_then(Value::as_array)
         .ok_or_else(|| ProtocolError::InvalidResponse("plugin_list has no plugins".to_owned()))?;
+    let mut found_present = false;
     let mut found_enabled = false;
     for value in plugins {
         let plugin = value.as_object().ok_or_else(|| {
@@ -590,14 +592,19 @@ pub(crate) fn parse_plugin_availability(
             .ok_or_else(|| {
                 ProtocolError::InvalidResponse("plugin enabled must be a boolean".to_owned())
             })?;
-        if plugin_id == "desktop-pet" && enabled {
-            found_enabled = true;
+        if plugin_id == "desktop-pet" {
+            found_present = true;
+            if enabled {
+                found_enabled = true;
+            }
         }
     }
     Ok(if found_enabled {
         PluginAvailability::Enabled
-    } else {
+    } else if found_present {
         PluginAvailability::Disabled
+    } else {
+        PluginAvailability::Missing
     })
 }
 
@@ -860,22 +867,65 @@ mod tests {
     }
 
     #[test]
-    fn empty_plugin_list_is_confirmed_disabled_but_malformed_is_unknown() {
-        let response = parse_response_line(
-            r#"{"id":"plugin-1","result":{"type":"plugin_list","plugins":[]}}"#,
-            "plugin-1",
-        )
-        .unwrap();
-        assert_eq!(
-            parse_plugin_availability(response).unwrap(),
-            PluginAvailability::Disabled
-        );
-        let malformed = parse_response_line(
-            r#"{"id":"plugin-2","result":{"type":"plugin_list"}}"#,
-            "plugin-2",
-        )
-        .unwrap();
-        assert!(parse_plugin_availability(malformed).is_err());
+    fn plugin_availability_distinguishes_missing_disabled_and_enabled() {
+        let cases = [
+            (serde_json::json!([]), PluginAvailability::Missing),
+            (
+                serde_json::json!([{"plugin_id": "other", "enabled": true}]),
+                PluginAvailability::Missing,
+            ),
+            (
+                serde_json::json!([{"plugin_id": "desktop-pet", "enabled": false}]),
+                PluginAvailability::Disabled,
+            ),
+            (
+                serde_json::json!([{"plugin_id": "desktop-pet", "enabled": true}]),
+                PluginAvailability::Enabled,
+            ),
+            (
+                serde_json::json!([
+                    {"plugin_id": "desktop-pet", "enabled": false},
+                    {"plugin_id": "desktop-pet", "enabled": true}
+                ]),
+                PluginAvailability::Enabled,
+            ),
+        ];
+        for (plugins, expected) in cases {
+            let response = Response::Success {
+                result: serde_json::json!({"type": "plugin_list", "plugins": plugins}),
+            };
+            assert_eq!(parse_plugin_availability(response).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn malformed_plugin_lists_and_api_errors_do_not_report_availability() {
+        let invalid_results = [
+            serde_json::json!({"type": "session_snapshot", "plugins": []}),
+            serde_json::json!({"type": "plugin_list"}),
+            serde_json::json!({"type": "plugin_list", "plugins": [false]}),
+            serde_json::json!({"type": "plugin_list", "plugins": [{"enabled": true}]}),
+            serde_json::json!({"type": "plugin_list", "plugins": [
+                {"plugin_id": "desktop-pet", "enabled": "true"}
+            ]}),
+            serde_json::json!({"type": "plugin_list", "plugins": [
+                {"plugin_id": "desktop-pet", "enabled": true},
+                {"plugin_id": "other", "enabled": null}
+            ]}),
+        ];
+        for result in invalid_results {
+            assert!(matches!(
+                parse_plugin_availability(Response::Success { result }),
+                Err(ProtocolError::InvalidResponse(_))
+            ));
+        }
+        assert!(matches!(
+            parse_plugin_availability(Response::Error {
+                code: "unavailable".to_owned(),
+                message: "retry later".to_owned(),
+            }),
+            Err(ProtocolError::Remote { .. })
+        ));
     }
 
     #[test]

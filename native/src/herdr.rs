@@ -504,6 +504,7 @@ pub(crate) struct Endpoint {
     next_reconcile: Instant,
     backoff: Duration,
     disabled: bool,
+    seen_plugin_present: bool,
     observation_epoch: Option<u64>,
 }
 
@@ -637,6 +638,7 @@ impl Endpoint {
             next_reconcile: Instant::now(),
             backoff: INITIAL_BACKOFF,
             disabled: false,
+            seen_plugin_present: false,
             observation_epoch: None,
         }
     }
@@ -1323,40 +1325,31 @@ fn connect_endpoint(
     now: Instant,
 ) {
     endpoint.begin_generation(shared);
-    let generation = endpoint.generation;
-    let result = (|| -> Result<(SubscriptionReader, herdr_protocol::Snapshot), ProtocolError> {
-        let ping = request(endpoint, request_counter, "ping", serde_json::json!({}))?.result()?;
-        if ping.get("type").and_then(serde_json::Value::as_str) != Some("pong") {
-            return Err(ProtocolError::InvalidResponse(
-                "expected pong result".to_owned(),
-            ));
-        }
-        let first = herdr_snapshot(endpoint, request_counter)?;
-        endpoint.replace_snapshot(first.clone());
-        match herdr_plugin(endpoint, request_counter)? {
-            PluginAvailability::Enabled => {}
-            PluginAvailability::Disabled => {
-                return Err(ProtocolError::InvalidResponse("plugin disabled".to_owned()))
+    let result =
+        (|| -> Result<Option<(SubscriptionReader, herdr_protocol::Snapshot)>, ProtocolError> {
+            let ping =
+                request(endpoint, request_counter, "ping", serde_json::json!({}))?.result()?;
+            if ping.get("type").and_then(serde_json::Value::as_str) != Some("pong") {
+                return Err(ProtocolError::InvalidResponse(
+                    "expected pong result".to_owned(),
+                ));
             }
-        }
-        converge_subscription(endpoint, request_counter, first)
-    })();
+            let first = herdr_snapshot(endpoint, request_counter)?;
+            endpoint.replace_snapshot(first.clone());
+            let availability = herdr_plugin(endpoint, request_counter)?;
+            if !plugin_allows_observation(endpoint, availability) {
+                return Ok(None);
+            }
+            converge_subscription(endpoint, request_counter, first).map(Some)
+        })();
 
     match result {
-        Ok((stream, snapshot)) => {
+        Ok(Some((stream, snapshot))) => {
             endpoint.replace_snapshot(snapshot);
             endpoint.stream = Some(stream);
             endpoint.mark_connected(shared, now);
         }
-        Err(ProtocolError::InvalidResponse(message)) if message == "plugin disabled" => {
-            endpoint.stream = None;
-            endpoint.disabled = true;
-            endpoint.set_registration_disabled(true);
-            if let Ok(mut state) = shared.lock() {
-                let _ = state.remove_source(&endpoint.source, generation);
-            }
-            wake_ui();
-        }
+        Ok(None) => detach_endpoint(endpoint, shared),
         Err(_) => endpoint.mark_retry(shared, now),
     }
 }
@@ -1367,13 +1360,13 @@ fn reconcile_endpoint(
     request_counter: &mut u64,
     now: Instant,
 ) {
-    let plugin = herdr_plugin(endpoint, request_counter);
-    match plugin {
-        Ok(PluginAvailability::Disabled) => {
-            detach_endpoint(endpoint, shared);
-            return;
+    match herdr_plugin(endpoint, request_counter) {
+        Ok(availability) => {
+            if !plugin_allows_observation(endpoint, availability) {
+                detach_endpoint(endpoint, shared);
+                return;
+            }
         }
-        Ok(PluginAvailability::Enabled) => {}
         Err(_) => {
             endpoint.mark_retry(shared, now);
             return;
@@ -1419,6 +1412,19 @@ fn converge_subscription(
     Err(ProtocolError::InvalidResponse(
         "pane set did not converge after subscription rebuilds".to_owned(),
     ))
+}
+fn plugin_allows_observation(endpoint: &mut Endpoint, availability: PluginAvailability) -> bool {
+    match availability {
+        PluginAvailability::Enabled => {
+            endpoint.seen_plugin_present = true;
+            true
+        }
+        PluginAvailability::Disabled => {
+            endpoint.seen_plugin_present = true;
+            false
+        }
+        PluginAvailability::Missing => !endpoint.seen_plugin_present,
+    }
 }
 fn detach_endpoint(endpoint: &mut Endpoint, shared: &Arc<Mutex<AppState>>) {
     endpoint.stream = None;
@@ -1636,6 +1642,245 @@ mod tests {
         assert_eq!(shared.lock().unwrap().lifecycle_settings(), settings(false));
         assert_eq!(watchers.policy.lock().unwrap().settings, settings(false));
         watchers.shutdown();
+    }
+
+    #[test]
+    fn missing_plugin_can_observe_until_membership_is_seen_across_registrations() {
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let registry: RegistrationState = Arc::new(Mutex::new(HashMap::new()));
+        let policy = Arc::new(Mutex::new(ExitPolicy::new(settings(false), Instant::now())));
+        let stop = Arc::new(AtomicBool::new(false));
+        let path = PathBuf::from("/tmp/missing-membership.sock");
+        let mut endpoints = HashMap::new();
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        let endpoint = endpoints.get_mut(&path).unwrap();
+        assert!(plugin_allows_observation(
+            endpoint,
+            PluginAvailability::Missing
+        ));
+        endpoint.replace_snapshot(snapshot(
+            &["pane"],
+            vec![record("terminal", "pane", AgentStatus::Working)],
+        ));
+        endpoint.publish(&shared, true);
+        assert_eq!(shared.lock().unwrap().scene().working, 1);
+        assert!(!endpoint.disabled);
+        assert!(!all_endpoints_disabled(&endpoints));
+
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        let endpoint = endpoints.get_mut(&path).unwrap();
+        assert!(plugin_allows_observation(
+            endpoint,
+            PluginAvailability::Enabled
+        ));
+        endpoint.begin_generation(&shared);
+        endpoint.mark_retry(&shared, Instant::now());
+        assert!(!plugin_allows_observation(
+            endpoint,
+            PluginAvailability::Missing
+        ));
+        detach_endpoint(endpoint, &shared);
+        assert_eq!(registry.lock().unwrap().get(&path), Some(&true));
+        assert_eq!(shared.lock().unwrap().scene().working, 0);
+        assert!(all_endpoints_disabled(&endpoints));
+
+        for _ in 0..2 {
+            registry.lock().unwrap().insert(path.clone(), false);
+            handle_command(
+                Command::Register(path.clone()),
+                &shared,
+                &mut endpoints,
+                &stop,
+                &registry,
+                &policy,
+            );
+            let endpoint = endpoints.get_mut(&path).unwrap();
+            assert!(!endpoint.disabled);
+            assert!(endpoint.seen_plugin_present);
+            assert!(!plugin_allows_observation(
+                endpoint,
+                PluginAvailability::Missing
+            ));
+            detach_endpoint(endpoint, &shared);
+            assert_eq!(registry.lock().unwrap().get(&path), Some(&true));
+        }
+        registry.lock().unwrap().insert(path.clone(), false);
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        let endpoint = endpoints.get_mut(&path).unwrap();
+        assert!(plugin_allows_observation(
+            endpoint,
+            PluginAvailability::Enabled
+        ));
+        endpoint.replace_snapshot(snapshot(
+            &["pane"],
+            vec![record("terminal", "pane", AgentStatus::Working)],
+        ));
+        endpoint.publish(&shared, true);
+        assert_eq!(shared.lock().unwrap().scene().working, 1);
+        assert!(!endpoint.disabled);
+        assert_eq!(registry.lock().unwrap().get(&path), Some(&false));
+    }
+
+    #[test]
+    fn initial_disabled_membership_survives_reactivation_and_finalized_policy() {
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let registry: RegistrationState = Arc::new(Mutex::new(HashMap::new()));
+        let policy = Arc::new(Mutex::new(ExitPolicy::new(settings(false), Instant::now())));
+        let stop = Arc::new(AtomicBool::new(false));
+        let path = PathBuf::from("/tmp/disabled-membership.sock");
+        let mut endpoints = HashMap::new();
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        let endpoint = endpoints.get_mut(&path).unwrap();
+        assert!(!plugin_allows_observation(
+            endpoint,
+            PluginAvailability::Disabled
+        ));
+        detach_endpoint(endpoint, &shared);
+        assert!(endpoint.seen_plugin_present);
+        assert!(all_endpoints_disabled(&endpoints));
+
+        registry.lock().unwrap().insert(path.clone(), false);
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        let endpoint = endpoints.get_mut(&path).unwrap();
+        assert!(!endpoint.disabled);
+        assert!(!plugin_allows_observation(
+            endpoint,
+            PluginAvailability::Missing
+        ));
+        detach_endpoint(endpoint, &shared);
+        registry.lock().unwrap().insert(path.clone(), false);
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        {
+            let endpoint = endpoints.get_mut(&path).unwrap();
+            assert!(plugin_allows_observation(
+                endpoint,
+                PluginAvailability::Enabled
+            ));
+            endpoint.replace_snapshot(snapshot(
+                &["pane"],
+                vec![record("terminal", "pane", AgentStatus::Working)],
+            ));
+            endpoint.publish(&shared, true);
+        }
+        assert_eq!(shared.lock().unwrap().scene().working, 1);
+        assert!(!all_endpoints_disabled(&endpoints));
+        detach_endpoint(endpoints.get_mut(&path).unwrap(), &shared);
+        assert!(claim_shutdown(
+            &shared,
+            &policy,
+            Instant::now(),
+            all_endpoints_disabled(&endpoints)
+        ));
+        handle_command(
+            Command::Register(path.clone()),
+            &shared,
+            &mut endpoints,
+            &stop,
+            &registry,
+            &policy,
+        );
+        assert!(endpoints.get(&path).unwrap().disabled);
+        assert!(shared.lock().unwrap().scene().shutdown);
+    }
+
+    #[test]
+    fn explicit_local_disable_overrides_healthy_empty_remote_but_mixed_sets_do_not() {
+        let now = Instant::now();
+        for exit_with_herdr in [false, true] {
+            let (shared, remote, _) = selected_remote();
+            assert!(shared.lock().unwrap().begin_source(remote.clone(), 1));
+            let empty: [AgentRecord; 0] = [];
+            assert!(shared.lock().unwrap().publish_source_snapshot(
+                &remote,
+                1,
+                empty.iter(),
+                SourceCounts::default(),
+                &[],
+                now,
+            ));
+            assert!(shared.lock().unwrap().has_healthy_observed_remote());
+            let policy = Arc::new(Mutex::new(ExitPolicy::new(settings(exit_with_herdr), now)));
+            let registry: RegistrationState = Arc::new(Mutex::new(HashMap::new()));
+            let mut endpoints = HashMap::new();
+            let disabled_path = PathBuf::from("/tmp/explicit-disable.sock");
+            let mut disabled =
+                Endpoint::with_registry(disabled_path.clone(), Arc::clone(&registry));
+            disabled.begin_generation(&shared);
+            assert!(!plugin_allows_observation(
+                &mut disabled,
+                PluginAvailability::Disabled
+            ));
+            detach_endpoint(&mut disabled, &shared);
+            endpoints.insert(disabled_path, disabled);
+            let pending_path = PathBuf::from("/tmp/initially-missing.sock");
+            let mut pending = Endpoint::with_registry(pending_path.clone(), Arc::clone(&registry));
+            pending.begin_generation(&shared);
+            assert!(plugin_allows_observation(
+                &mut pending,
+                PluginAvailability::Missing
+            ));
+            endpoints.insert(pending_path.clone(), pending);
+            assert!(!all_endpoints_disabled(&endpoints));
+            assert!(!claim_shutdown(
+                &shared,
+                &policy,
+                now + DISCONNECTION_GRACE,
+                false
+            ));
+            assert!(!policy.lock().unwrap().finalized);
+            let pending = endpoints.get_mut(&pending_path).unwrap();
+            assert!(!plugin_allows_observation(
+                pending,
+                PluginAvailability::Disabled
+            ));
+            detach_endpoint(pending, &shared);
+            assert!(all_endpoints_disabled(&endpoints));
+            assert!(claim_shutdown(&shared, &policy, now, true));
+            assert!(policy.lock().unwrap().finalized);
+            assert!(shared.lock().unwrap().scene().shutdown);
+        }
     }
 
     fn record(terminal_id: &str, pane_id: &str, status: AgentStatus) -> AgentRecord {

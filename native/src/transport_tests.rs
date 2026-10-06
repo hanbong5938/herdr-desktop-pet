@@ -576,3 +576,547 @@ mod prompt {
         worker.join().unwrap();
     }
 }
+
+mod watcher_lifecycle {
+    use crate::herdr::Watchers;
+    use crate::lifecycle::LifecycleSettings;
+    use crate::session_view::{Availability, SessionFilter};
+    use crate::state::AppState;
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration, Instant};
+
+    static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+    // A connected watcher rechecks plugin availability on a five-second timer.
+    // Leave room for the full interval and worker scheduling.
+    const DEADLINE: Duration = Duration::from_secs(12);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Plugin {
+        Missing,
+        Enabled,
+        Disabled,
+        Malformed,
+        Error,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct PendingPluginObservation {
+        plugin: Plugin,
+        connected_sources: usize,
+        disconnected_sources: usize,
+        shutdown: bool,
+    }
+
+    enum Command {
+        Set(Plugin, Sender<()>),
+        ArmCapture(
+            Arc<Mutex<AppState>>,
+            Sender<PendingPluginObservation>,
+            Sender<()>,
+        ),
+        Reconcile(Sender<()>),
+        Stop,
+    }
+
+    struct Server {
+        path: PathBuf,
+        commands: Sender<Command>,
+        queries: Receiver<Plugin>,
+        join: Option<JoinHandle<()>>,
+        terminal: String,
+        pane: String,
+    }
+
+    impl Server {
+        fn new(initial: Plugin, label: &str) -> Self {
+            let path = PathBuf::from("/tmp").join(format!(
+                "herdr-watch-{}-{}.sock",
+                std::process::id(),
+                NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
+            ));
+            let listener = UnixListener::bind(&path).expect("bind fixture socket");
+            let (commands, rx) = mpsc::channel();
+            let (query_tx, queries) = mpsc::channel();
+            let terminal = format!("{label}-terminal");
+            let pane = format!("{label}-pane");
+            let server_terminal = terminal.clone();
+            let server_pane = pane.clone();
+            let join = thread::spawn(move || {
+                let mut plugin = initial;
+                let mut capture: Option<(Arc<Mutex<AppState>>, Sender<PendingPluginObservation>)> =
+                    None;
+                let mut subscriptions: Vec<UnixStream> = Vec::new();
+                loop {
+                    while let Ok(command) = rx.try_recv() {
+                        match command {
+                            Command::Set(next, ack) => {
+                                plugin = next;
+                                ack.send(()).expect("fixture mode ack");
+                            }
+                            Command::ArmCapture(shared, sender, ack) => {
+                                assert!(capture.is_none(), "fixture capture already armed");
+                                capture = Some((shared, sender));
+                                ack.send(()).expect("fixture capture ack");
+                            }
+                            Command::Reconcile(ack) => {
+                                let event = json!({
+                                    "event": "pane.agent_status_changed",
+                                    "data": {
+                                        "pane_id": server_pane,
+                                        "workspace_id": "workspace",
+                                        "agent_status": "idle"
+                                    }
+                                });
+                                subscriptions
+                                    .retain_mut(|stream| writeln!(stream, "{event}").is_ok());
+                                assert!(!subscriptions.is_empty(), "fixture lost subscription");
+                                ack.send(()).expect("fixture event ack");
+                            }
+                            Command::Stop => return,
+                        }
+                    }
+                    let (mut stream, _) = listener.accept().expect("accept fixture request");
+                    let deadline = Instant::now() + DEADLINE;
+                    let mut line = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        let available =
+                            (crate::herdr_protocol::MAX_FRAME_BYTES - line.len()).min(chunk.len());
+                        assert!(available > 0, "fixture request too large");
+                        let read = crate::socket::read_with_deadline(
+                            &mut stream,
+                            &mut chunk[..available],
+                            deadline,
+                        )
+                        .expect("read fixture request before deadline");
+                        if read == 0 {
+                            assert!(line.is_empty(), "truncated fixture request");
+                            break; // command wake-up, not a protocol request
+                        }
+                        if let Some(newline) = chunk[..read].iter().position(|byte| *byte == b'\n')
+                        {
+                            assert_eq!(
+                                newline + 1,
+                                read,
+                                "multiple fixture requests on one socket"
+                            );
+                            line.extend_from_slice(&chunk[..read]);
+                            break;
+                        }
+                        line.extend_from_slice(&chunk[..read]);
+                    }
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let request: Value = serde_json::from_slice(&line).expect("request JSON");
+                    let response = match request["method"].as_str().expect("request method") {
+                        "ping" => json!({"type": "pong"}),
+                        "session.snapshot" => json!({
+                            "type": "session_snapshot",
+                            "snapshot": {
+                                "panes": [{"pane_id": server_pane}],
+                                "agents": [{
+                                    "terminal_id": server_terminal,
+                                    "pane_id": server_pane,
+                                    "agent_status": "idle"
+                                }]
+                            }
+                        }),
+                        "plugin.list" => {
+                            if let Some((shared, sender)) = capture.take() {
+                                let observation = {
+                                    let scene = shared.lock().unwrap().scene();
+                                    PendingPluginObservation {
+                                        plugin,
+                                        connected_sources: scene.connected_sources,
+                                        disconnected_sources: scene.disconnected_sources,
+                                        shutdown: scene.shutdown,
+                                    }
+                                };
+                                sender
+                                    .send(observation)
+                                    .expect("report captured fixture query");
+                            } else {
+                                query_tx.send(plugin).expect("report fixture query");
+                            }
+                            match plugin {
+                                Plugin::Missing => json!({"type": "plugin_list", "plugins": []}),
+                                Plugin::Enabled | Plugin::Disabled => json!({
+                                    "type": "plugin_list",
+                                    "plugins": [{"plugin_id": "desktop-pet", "enabled": matches!(plugin, Plugin::Enabled)}]
+                                }),
+                                Plugin::Malformed => {
+                                    json!({"type": "plugin_list", "plugins": [{}]})
+                                }
+                                Plugin::Error => {
+                                    writeln!(stream, "{}", json!({
+                                        "id": request["id"],
+                                        "error": {"code": "unavailable", "message": "query failed"}
+                                    })).expect("write plugin error");
+                                    continue;
+                                }
+                            }
+                        }
+                        "events.subscribe" => {
+                            assert_eq!(
+                                request["params"]["subscriptions"],
+                                json!([{"type": "pane.agent_status_changed", "pane_id": server_pane}])
+                            );
+                            writeln!(
+                                stream,
+                                "{}",
+                                json!({
+                                    "id": request["id"],
+                                    "result": {"type": "subscription_started"}
+                                })
+                            )
+                            .expect("subscription ack");
+                            subscriptions.push(stream);
+                            continue;
+                        }
+                        method => panic!("unexpected fixture request: {method}"),
+                    };
+                    writeln!(
+                        stream,
+                        "{}",
+                        json!({"id": request["id"], "result": response})
+                    )
+                    .expect("write response");
+                }
+            });
+            Self {
+                path,
+                commands,
+                join: Some(join),
+                queries,
+                terminal,
+                pane,
+            }
+        }
+
+        fn wake(&self) -> UnixStream {
+            let stream = UnixStream::connect(&self.path).expect("wake fixture");
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .expect("wake EOF");
+            stream
+        }
+
+        fn command(&self, make: impl FnOnce(Sender<()>) -> Command) {
+            let (ack, received) = mpsc::channel();
+            self.commands.send(make(ack)).expect("fixture command");
+            let _wake = self.wake();
+            received
+                .recv_timeout(DEADLINE)
+                .expect("fixture command ack");
+        }
+
+        fn set(&self, mode: Plugin) {
+            self.command(|ack| Command::Set(mode, ack));
+        }
+        fn capture_next_plugin(
+            &self,
+            shared: &Arc<Mutex<AppState>>,
+        ) -> Receiver<PendingPluginObservation> {
+            let (sender, receiver) = mpsc::channel();
+            self.command(|ack| Command::ArmCapture(Arc::clone(shared), sender, ack));
+            receiver
+        }
+
+        fn reconcile(&self) {
+            self.command(Command::Reconcile);
+        }
+
+        fn query(&self) -> Plugin {
+            self.queries
+                .recv_timeout(DEADLINE)
+                .expect("fixture plugin query")
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.commands.send(Command::Stop);
+            // Keep the EOF peer open until the accept loop has consumed Stop.
+            let _wake = UnixStream::connect(&self.path).ok().and_then(|stream| {
+                stream.shutdown(std::net::Shutdown::Write).ok()?;
+                Some(stream)
+            });
+            let result = self.join.take().unwrap().join();
+            let removed = fs::remove_file(&self.path);
+            if !thread::panicking() {
+                result.expect("fixture thread");
+                removed.expect("remove fixture socket");
+            }
+        }
+    }
+
+    fn watchers(exit_with_herdr: bool) -> (Arc<Mutex<AppState>>, Watchers) {
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        shared
+            .lock()
+            .unwrap()
+            .set_lifecycle_settings(LifecycleSettings {
+                auto_start: true,
+                exit_with_herdr,
+            });
+        let watchers = Watchers::new(Arc::clone(&shared));
+        (shared, watchers)
+    }
+
+    fn until(label: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + DEADLINE;
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {label}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn register_and_capture(
+        watchers: &Watchers,
+        shared: &Arc<Mutex<AppState>>,
+        server: &Server,
+        survivor: &Server,
+        expected: Plugin,
+    ) -> PendingPluginObservation {
+        {
+            let state = shared.lock().unwrap();
+            let scene = state.scene();
+            let rows = state.session_snapshot(SessionFilter::All, None).rows;
+            assert_eq!(scene.connected_sources, 1, "survivor baseline");
+            assert_eq!(scene.disconnected_sources, 0, "survivor baseline");
+            assert!(!scene.shutdown, "survivor baseline");
+            assert!(
+                rows.iter()
+                    .all(|row| row.key.terminal_id != server.terminal),
+                "target already has a row before registration"
+            );
+            assert!(
+                rows.iter().any(|row| {
+                    row.key.terminal_id == survivor.terminal
+                        && row.pane_id == survivor.pane
+                        && row.availability == Availability::Live
+                }),
+                "survivor has no live row before registration"
+            );
+        }
+        let captured = server.capture_next_plugin(shared);
+        watchers
+            .register(server.path.clone())
+            .expect("register target");
+        let observation = captured
+            .recv_timeout(DEADLINE)
+            .expect("captured target plugin query");
+        assert_eq!(observation.plugin, expected, "unexpected captured plugin");
+        observation
+    }
+
+    fn live(shared: &Arc<Mutex<AppState>>, server: &Server) -> Option<u64> {
+        let state = shared.lock().unwrap();
+        let scene = state.scene();
+        state
+            .session_snapshot(SessionFilter::All, None)
+            .rows
+            .into_iter()
+            .find(|row| {
+                row.key.terminal_id == server.terminal
+                    && row.pane_id == server.pane
+                    && row.availability == Availability::Live
+                    && scene.connected_sources > 0
+                    && !scene.shutdown
+            })
+            .map(|row| row.key.generation)
+    }
+
+    fn until_detached(
+        shared: &Arc<Mutex<AppState>>,
+        server: &Server,
+        survivor: &Server,
+        observation: PendingPluginObservation,
+    ) {
+        assert_eq!(observation.connected_sources, 1, "pending target baseline");
+        assert_eq!(observation.disconnected_sources, 1, "target never began");
+        assert!(!observation.shutdown, "shutdown before plugin response");
+        // The captured pending generation existed before the response; a later
+        // missing target row therefore proves removal, not mere non-creation.
+        until("target source removed after plugin response", || {
+            let scene = shared.lock().unwrap().scene();
+            scene.disconnected_sources == 0 || scene.connected_sources != 1 || scene.shutdown
+        });
+        let state = shared.lock().unwrap();
+        let scene = state.scene();
+        assert_eq!(scene.connected_sources, 1, "survivor disconnected");
+        assert_eq!(
+            scene.disconnected_sources, 0,
+            "target source remained pending"
+        );
+        assert!(!scene.shutdown, "watcher shut down");
+        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        assert!(
+            rows.iter()
+                .all(|row| row.key.terminal_id != server.terminal),
+            "detached target became a card"
+        );
+        assert!(
+            rows.iter().any(|row| {
+                row.key.terminal_id == survivor.terminal
+                    && row.pane_id == survivor.pane
+                    && row.availability == Availability::Live
+            }),
+            "survivor lost its live row"
+        );
+    }
+
+    #[test]
+    fn missing_plugin_still_publishes_standalone_agent() {
+        let server = Server::new(Plugin::Missing, "standalone");
+        let (shared, watchers) = watchers(true);
+        watchers.register(server.path.clone()).unwrap();
+        until("standalone live card", || live(&shared, &server).is_some());
+        let scene = shared.lock().unwrap().scene();
+        assert_eq!(scene.connected_sources, 1);
+        assert_eq!(scene.sessions, 1);
+        assert!(!scene.shutdown);
+        drop(watchers);
+    }
+
+    #[test]
+    fn explicit_disable_waits_for_initially_missing_survivor() {
+        let disabled = Server::new(Plugin::Disabled, "disabled");
+        let missing = Server::new(Plugin::Missing, "survivor");
+        let probe = Server::new(Plugin::Missing, "post-disable-probe");
+        let (shared, watchers) = watchers(false);
+        watchers.register(missing.path.clone()).unwrap();
+        until("missing survivor", || live(&shared, &missing).is_some());
+        let observation =
+            register_and_capture(&watchers, &shared, &disabled, &missing, Plugin::Disabled);
+        until_detached(&shared, &disabled, &missing, observation);
+        // A fresh registration can only be handled after the disabled target's
+        // pass has made its shutdown decision; the existing survivor is no barrier.
+        watchers.register(probe.path.clone()).unwrap();
+        until("post-disable probe live", || {
+            live(&shared, &probe).is_some()
+        });
+        let state = shared.lock().unwrap();
+        let scene = state.scene();
+        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        assert_eq!(scene.connected_sources, 2);
+        assert_eq!(scene.disconnected_sources, 0);
+        assert!(!scene.shutdown);
+        assert!(rows
+            .iter()
+            .all(|row| row.key.terminal_id != disabled.terminal));
+        for server in [&missing, &probe] {
+            assert!(rows.iter().any(|row| {
+                row.key.terminal_id == server.terminal
+                    && row.pane_id == server.pane
+                    && row.availability == Availability::Live
+            }));
+        }
+        drop(state);
+        drop(watchers);
+    }
+
+    #[test]
+    fn sole_explicit_disable_requests_immediate_shutdown() {
+        let server = Server::new(Plugin::Disabled, "sole-disabled");
+        let (shared, watchers) = watchers(false);
+        watchers.register(server.path.clone()).unwrap();
+        assert!(matches!(server.query(), Plugin::Disabled));
+        until("confirmed disable shutdown", || {
+            shared.lock().unwrap().scene().shutdown
+        });
+        assert!(live(&shared, &server).is_none());
+        assert!(watchers.register(server.path.clone()).is_err());
+        drop(watchers);
+    }
+
+    #[test]
+    fn observed_unlink_detaches_and_re_registration_restores_agent() {
+        let server = Server::new(Plugin::Enabled, "unlink");
+        let survivor = Server::new(Plugin::Missing, "other");
+        let (shared, watchers) = watchers(false);
+        watchers.register(survivor.path.clone()).unwrap();
+        watchers.register(server.path.clone()).unwrap();
+        until("both live cards", || {
+            live(&shared, &survivor).is_some() && live(&shared, &server).is_some()
+        });
+        let generation = live(&shared, &server).unwrap();
+        assert_eq!(server.query(), Plugin::Enabled);
+        server.set(Plugin::Missing);
+        // An idle event schedules reconciliation within a worker tick (100 ms),
+        // rather than waiting for the ordinary five-second interval.
+        server.reconcile();
+        until("unlinked source removed", || {
+            let state = shared.lock().unwrap();
+            state.scene().connected_sources == 1
+                && state
+                    .session_snapshot(SessionFilter::All, None)
+                    .rows
+                    .iter()
+                    .all(|row| row.key.terminal_id != server.terminal)
+        });
+        assert_eq!(server.query(), Plugin::Missing);
+        let observation =
+            register_and_capture(&watchers, &shared, &server, &survivor, Plugin::Missing);
+        until_detached(&shared, &server, &survivor, observation);
+        server.set(Plugin::Enabled);
+        watchers.register(server.path.clone()).unwrap();
+        assert_eq!(server.query(), Plugin::Enabled);
+        until("re-registered source restored", || {
+            live(&shared, &server).is_some_and(|next| next > generation)
+                && live(&shared, &survivor).is_some()
+                && shared.lock().unwrap().scene().connected_sources == 2
+        });
+        drop(watchers);
+    }
+
+    #[test]
+    fn initial_disable_then_missing_remains_detached_until_enabled() {
+        let server = Server::new(Plugin::Disabled, "formerly-disabled");
+        let survivor = Server::new(Plugin::Missing, "healthy");
+        let (shared, watchers) = watchers(false);
+        watchers.register(survivor.path.clone()).unwrap();
+        until("healthy source", || live(&shared, &survivor).is_some());
+        let disabled =
+            register_and_capture(&watchers, &shared, &server, &survivor, Plugin::Disabled);
+        until_detached(&shared, &server, &survivor, disabled);
+        server.set(Plugin::Missing);
+        let missing = register_and_capture(&watchers, &shared, &server, &survivor, Plugin::Missing);
+        until_detached(&shared, &server, &survivor, missing);
+        server.set(Plugin::Enabled);
+        watchers.register(server.path.clone()).unwrap();
+        assert_eq!(server.query(), Plugin::Enabled);
+        until("enabled re-registration live", || {
+            live(&shared, &server).is_some()
+                && live(&shared, &survivor).is_some()
+                && shared.lock().unwrap().scene().connected_sources == 2
+        });
+        assert!(!shared.lock().unwrap().scene().shutdown);
+        drop(watchers);
+    }
+
+    #[test]
+    fn malformed_and_api_plugin_queries_retry_instead_of_disabling() {
+        for (index, mode) in [Plugin::Malformed, Plugin::Error].into_iter().enumerate() {
+            let server = Server::new(mode, &format!("retry-{index}"));
+            let (shared, watchers) = watchers(false);
+            watchers.register(server.path.clone()).unwrap();
+            assert!(matches!(server.query(), Plugin::Malformed | Plugin::Error));
+            server.set(Plugin::Enabled);
+            until("retry reaches live card", || {
+                live(&shared, &server).is_some()
+            });
+            assert!(!shared.lock().unwrap().scene().shutdown);
+            drop(watchers);
+        }
+    }
+}

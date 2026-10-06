@@ -1,6 +1,26 @@
 Herdr Desktop Pet 0.1.11; native bubble close menu
 ===================================================
 
+Unreleased bug fix: standalone and remote-only watcher startup
+- A valid local plugin_list without desktop-pet on first observation is not
+  disable: keep local snapshots/subscription available and remote polling alive.
+  Explicit enabled:false detaches; missing after a previously present enabled
+  or disabled row detaches as observed unlink. Membership history survives
+  rechecks/reconnects within the daemon, not a new daemon.
+- Every registered local endpoint confirmed disabled/unlinked still quits
+  immediately, even with a healthy remote or exit_with_herdr off. Initially
+  missing is not terminal; other lost-health cases keep the 30-second grace.
+- Remote-only: local Mac pet, authenticate a saved machine and explicitly select
+  its enabled profile under Observation sources; the remote server needs no
+  desktop-pet plugin. Optionally set exit_with_herdr off via the native CLI
+  before first start with no healthy local server, and enable it after healthy
+  remote polling. Local observation off excludes display data, not lifecycle.
+  Diagnose inherited socket versus CLI executable/version separately. No
+  plugin auto-install, new configuration, or SSH transport change.
+- Watcher transport regressions capture pending-source state without delaying
+  plugin responses. A fresh source proves worker survival after the disable
+  decision; membership history and actual Enabled restoration remain checked.
+
 v0.1.11: native bubble close menu
 - Right-click or Control-click the bubble background or a session card header
   to open the localized Close Bubble Window / 대화창 닫기 native menu. Closing
@@ -276,8 +296,10 @@ Lifecycle settings and plugin actions
   startup, not auto_start; restart manually relaunches, preserving settings.
   When auto_start stays on, later qualifying startup/attach can relaunch.
   Plugin disable/unlink is a separate host feature; disabled plugins cannot
-  run hooks/actions. Confirmed disable across all registered endpoints ends
-  an already-running pet immediately.
+  run hooks/actions. A newly observed local endpoint with no desktop-pet row
+  can still provide snapshots; explicit disabled or missing after an observed
+  present row detaches. Confirmed disable/unlink across all registered local
+  endpoints ends the pet immediately, even with healthy remote or exit off.
 - With exit_with_herdr on, initial server absence or loss of the last
   healthy server starts a 30-second grace; healthy reconnection cancels it.
   One remaining healthy server prevents exit. Client detach is not server
