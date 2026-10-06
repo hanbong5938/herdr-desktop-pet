@@ -81,6 +81,12 @@ pub struct Scene {
     pub shutdown: bool,
 }
 
+impl Scene {
+    pub(crate) fn needs_recovery_entry(&self) -> bool {
+        !self.shutdown && (self.passthrough || (!self.visible && !self.bubble_visible))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SourceCounts {
     pub sessions: usize,
@@ -456,6 +462,12 @@ impl AppState {
             let _ = self.outcomes.pop_front();
         }
         self.outcomes.push_back(observation);
+    }
+
+    /// Restore an interactive character without changing the bubble or other settings.
+    pub(crate) fn recover_interaction(&mut self) {
+        self.visible = true;
+        self.passthrough = false;
     }
 
     pub fn apply_control(&mut self, action: &str) -> Result<(), String> {
@@ -1570,5 +1582,83 @@ mod tests {
         assert_eq!(state.scene().bubble_placement, BubblePlacement::Auto);
         assert!(!state.scene().passthrough);
         assert!(!state.scene().alpha_passthrough);
+    }
+
+    #[test]
+    fn recovery_entry_requires_missing_interactive_surfaces_or_full_passthrough() {
+        for (visible, bubble_visible, passthrough, shutdown, expected) in [
+            (true, true, false, false, false),
+            (true, false, false, false, false),
+            (false, true, false, false, false),
+            (false, false, false, false, true),
+            (true, true, true, false, true),
+            (true, false, true, false, true),
+            (false, true, true, false, true),
+            (false, false, true, false, true),
+            (true, true, false, true, false),
+            (false, false, false, true, false),
+            (false, true, true, true, false),
+        ] {
+            for alpha_passthrough in [false, true] {
+                let mut state = AppState::new();
+                state.visible = visible;
+                state.bubble_visible = bubble_visible;
+                state.passthrough = passthrough;
+                state.alpha_passthrough = alpha_passthrough;
+                state.shutdown = shutdown;
+                assert_eq!(
+                    state.scene().needs_recovery_entry(),
+                    expected,
+                    "visible={visible}, bubble_visible={bubble_visible}, passthrough={passthrough}, shutdown={shutdown}, alpha_passthrough={alpha_passthrough}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_restores_character_interaction_without_changing_other_settings() {
+        for bubble_visible in [false, true] {
+            let mut state = AppState::new();
+            state.visible = false;
+            state.passthrough = true;
+            state.alpha_passthrough = true;
+            state.bubble_visible = bubble_visible;
+            state.bubble_placement = BubblePlacement::Left;
+            state.scale = 0.873125;
+            state.reset_position_revision = 7;
+            let lifecycle = LifecycleSettings {
+                auto_start: false,
+                exit_with_herdr: false,
+            };
+            state.set_lifecycle_settings(lifecycle);
+
+            state.recover_interaction();
+
+            let scene = state.scene();
+            assert!(scene.visible);
+            assert!(!scene.passthrough);
+            assert_eq!(scene.bubble_visible, bubble_visible);
+            assert!(scene.alpha_passthrough);
+            assert_eq!(scene.bubble_placement, BubblePlacement::Left);
+            assert_eq!(scene.scale, 0.873125);
+            assert_eq!(scene.reset_position_revision, 7);
+            assert_eq!(state.lifecycle_settings(), lifecycle);
+        }
+    }
+
+    #[test]
+    fn show_control_does_not_disable_full_passthrough() {
+        let mut state = AppState::new();
+        state.visible = false;
+        state.passthrough = true;
+        state.bubble_visible = false;
+
+        assert!(state.apply_control("show").is_ok());
+
+        let scene = state.scene();
+        assert!(scene.visible);
+        assert!(scene.passthrough);
+        assert!(!scene.bubble_visible);
+        assert!(scene.needs_recovery_entry());
     }
 }

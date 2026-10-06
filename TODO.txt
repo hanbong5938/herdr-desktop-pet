@@ -15,6 +15,20 @@ Unreleased: compact observation settings
   Registration help and folded diagnostics are read-only; reconnect copies a
   shell-quoted command with native clipboard feedback, never executes it.
 
+Unreleased: contextual settings and conditional rescue
+- Right-click or Control-click the character, or the bubble background/card
+  header, for Settings… in the same full three-tab panel. Bubble Close remains
+  bubble-only; native text/control menus remain intact. Disable and recheck
+  bubble Settings… and Close Bubble Window while IME marked text is active.
+- A small menu-bar rescue icon appears only when both windows are hidden or
+  full-window passthrough is on, including after restart and while Settings is
+  open; normal both-visible, character-only and interactive bubble-only states
+  use no slot. A standalone bubble can show the character via its own menu.
+  Alpha pointer polling alone never toggles the icon. Its Show and Enable
+  Character / 캐릭터 표시·조작 복구 shows the character and turns off full
+  passthrough without changing bubble visibility or alpha passthrough; the
+  menu also offers Settings… and Quit.
+
 Unreleased: independent character and bubble visibility
 - Hiding the character leaves an enabled bubble as a movable tailless panel;
   showing the character reattaches it. The four visibility combinations remain
@@ -143,9 +157,12 @@ Inline interaction changes included in v0.1.6
   live status and localized Korean/English hints with submission disabled.
 
 Controls
-- Use the menu-bar icon for character selection and dialogue editing, observation
-  sources, bubble and lifecycle settings, and language. Local observation is on
-  by default; Remote is opt-in.
+- Open the full settings panel through character right-click/Control-click →
+  Settings… or bubble background/card header right-click/Control-click →
+  Settings…. Choose characters/dialogue, observation sources, bubble and
+  lifecycle settings, and language there. Local observation is on by default;
+  Remote is opt-in. Only both-hidden/full-passthrough states show the rescue
+  menu-bar icon; use it for Show and Enable Character, Settings… or Quit.
 - Tap the head/body for reactions; move back and forth on the head to pet it.
 - Drag the body/background to move; Option-drag anywhere also moves.
 - Use the bottom-right grip to resize.
@@ -210,10 +227,11 @@ Custom dialogue
   session counts, state transitions, reaction timing or disconnected-host notices.
 
 Observation sources
-- Local is on and Remote is off by default. Opt into Remote under the menu-bar
-  settings, then select enabled saved machine profiles. Each profile observes
-  its saved remote Herdr session, not every session on its host; session cards
-  identify the Local source or the machine name. Remote observation needs a
+- Local is on and Remote is off by default. Open Settings… via the character
+  or bubble background/card header context menu and opt into Remote under
+  Observation sources, then select enabled saved machine profiles. Each profile
+  observes its saved remote Herdr session, not every session on its host;
+  session cards identify the Local source or the machine name. Remote observation needs a
   compatible remote Herdr server and local CLI with saved-machine API forwarding
   (documented in Herdr 0.9.2), not just the 0.9.0 local observation baseline.
 - Set up SSH and add/authenticate saved machines in an interactive Herdr

@@ -15,7 +15,7 @@ use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBox,
     NSBoxType, NSButton, NSButtonType, NSCellImagePosition, NSColor, NSControl, NSControlSize,
     NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSPanel, NSPopUpButton, NSScreen,
+    NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSPanel, NSPopUpButton,
     NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSwitch, NSTextAlignment, NSTextField,
     NSUserInterfaceItemIdentification, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
@@ -1052,15 +1052,15 @@ impl MenuPanel {
         panel
     }
 
-    pub(crate) fn toggle(&self, anchor: &NSView) {
-        if self.panel.isVisible() {
-            self.hide();
-            return;
+    pub(crate) fn show_at(&self, anchor_screen_rect: NSRect, visible_frame: NSRect) {
+        self.reanchor_at(anchor_screen_rect, visible_frame);
+        if !self.panel.isVisible() {
+            self.panel.makeKeyAndOrderFront(None);
+            let first = &self.tabs[self.selected_tab];
+            self.panel.makeFirstResponder(Some(&**first));
+        } else {
+            self.panel.makeKeyAndOrderFront(None);
         }
-        self.reanchor(anchor);
-        self.panel.makeKeyAndOrderFront(None);
-        let first = &self.tabs[self.selected_tab];
-        self.panel.makeFirstResponder(Some(&**first));
     }
 
     pub(crate) fn hide(&self) {
@@ -1781,16 +1781,9 @@ impl MenuPanel {
         self.layout_root();
     }
 
-    pub(crate) fn reanchor(&self, anchor: &NSView) {
-        let Some(window) = anchor.window() else {
-            return;
-        };
-        let Some(screen) = window.screen().or_else(|| NSScreen::mainScreen(self.mtm)) else {
-            return;
-        };
-        let visible = screen.visibleFrame();
-        let height = PANEL_HEIGHT.min((visible.size.height - 16.0).max(1.0));
-        let width = PANEL_WIDTH.min((visible.size.width - 16.0).max(1.0));
+    pub(crate) fn reanchor_at(&self, anchor_screen_rect: NSRect, visible_frame: NSRect) {
+        let height = PANEL_HEIGHT.min((visible_frame.size.height - 16.0).max(1.0));
+        let width = PANEL_WIDTH.min((visible_frame.size.width - 16.0).max(1.0));
         self.panel.setContentSize(NSSize::new(width, height));
         self.root.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
@@ -1798,25 +1791,25 @@ impl MenuPanel {
         ));
         self.layout_root();
 
-        let anchor_window_rect = anchor.convertRect_toView(anchor.bounds(), None);
-        let anchor_screen_rect = window.convertRectToScreen(anchor_window_rect);
         let panel_size = self.panel.frame().size;
         let mut x =
             anchor_screen_rect.origin.x + (anchor_screen_rect.size.width - panel_size.width) * 0.5;
         let below = anchor_screen_rect.origin.y - panel_size.height - 6.0;
         let above = anchor_screen_rect.origin.y + anchor_screen_rect.size.height + 6.0;
-        let y = if below >= visible.origin.y {
+        let y = if below >= visible_frame.origin.y {
             below
         } else {
             above
         };
         x = x.clamp(
-            visible.origin.x,
-            (visible.origin.x + visible.size.width - panel_size.width).max(visible.origin.x),
+            visible_frame.origin.x,
+            (visible_frame.origin.x + visible_frame.size.width - panel_size.width)
+                .max(visible_frame.origin.x),
         );
         let y = y.clamp(
-            visible.origin.y,
-            (visible.origin.y + visible.size.height - panel_size.height).max(visible.origin.y),
+            visible_frame.origin.y,
+            (visible_frame.origin.y + visible_frame.size.height - panel_size.height)
+                .max(visible_frame.origin.y),
         );
         self.panel.setFrameOrigin(NSPoint::new(x, y));
     }

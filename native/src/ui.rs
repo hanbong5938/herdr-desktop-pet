@@ -51,7 +51,7 @@ use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBorderType, NSButton, NSCell, NSColor,
     NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition,
     NSEvent, NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType,
-    NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
     NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem,
     NSModalPanelRunLoopMode, NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
     NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
@@ -768,6 +768,10 @@ struct Ui {
     bubble_fade: Option<BubbleFade>,
     reduced_motion: bool,
     _status_item: Retained<NSStatusItem>,
+    recovery_menu: Retained<NSMenu>,
+    recovery_menu_tracking: bool,
+    context_anchor: Option<NSRect>,
+    settings_anchor: Option<NSRect>,
     _menu_target: Retained<MenuTarget>,
     _menu_event_monitors: Vec<Retained<AnyObject>>,
     _window_delegate: Retained<WindowDelegate>,
@@ -892,8 +896,17 @@ define_class!(
             }
         }
 
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.show_character_context_menu(event);
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            if event.modifierFlags().contains(NSEventModifierFlags::Control) {
+                self.show_character_context_menu(event);
+                return;
+            }
             if !pointer_event_allowed(event, true) { return; }
             let Some(window) = self.window() else {
                 return;
@@ -1094,33 +1107,53 @@ impl BubblePanel {
         {
             return false;
         }
-        // Copy only the state needed for this invocation. Menu tracking can
-        // synchronously invoke the target, so no UI RefCell borrow may survive.
-        let Some((locale, composing, target, mtm)) = UI.with(|cell| {
-            let slot = cell.try_borrow().ok()?;
-            let ui = slot.as_ref()?;
-            Some((
+        // Tracking invokes actions synchronously: snapshot and release the UI borrow first.
+        let Some((locale, visible, composing, target, mtm)) = with_ui_read(|ui| {
+            (
                 ui.locale,
+                ui.last_scene.visible,
                 ui.composer_marked(),
                 ui._menu_target.clone(),
                 ui.mtm,
-            ))
+            )
         }) else {
             return false;
         };
+        let anchor = NSRect::new(self.convertPointToScreen(location), NSSize::new(1.0, 1.0));
+        with_ui_mut(|ui| ui.context_anchor = Some(anchor));
         let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
         menu.setAutoenablesItems(false);
-        let close = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &NSString::from_str(text(locale, Message::CloseBubbleWindow)),
-                Some(sel!(closeBubbleWindow:)),
-                &NSString::from_str(""),
-            )
-        };
-        unsafe { close.setTarget(Some(target.as_ref())) };
-        close.setEnabled(!composing);
-        menu.addItem(&close);
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            Message::ContextSettings,
+            sel!(openContextSettings:),
+            !composing,
+        );
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            if visible {
+                Message::ContextHideCharacter
+            } else {
+                Message::ContextShowCharacter
+            },
+            if visible { sel!(hide:) } else { sel!(show:) },
+            true,
+        );
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            Message::CloseBubbleWindow,
+            sel!(closeBubbleWindow:),
+            !composing,
+        );
         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &root);
         true
     }
@@ -1467,9 +1500,79 @@ define_class!(
             with_ui_mut(|ui| ui.commit_bubble_appearance(BubbleAppearance::default()));
         }
 
-        #[unsafe(method(toggleMenuPanel:))]
-        fn toggle_menu_panel(&self, _sender: Option<&AnyObject>) {
-            with_ui_mut(|ui| ui.toggle_menu_panel());
+        #[unsafe(method(openContextSettings:))]
+        fn open_context_settings(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| {
+                if !ui.composer_marked() {
+                    if let Some(anchor) = ui.context_anchor {
+                        ui.open_settings_at(anchor);
+                    }
+                }
+            });
+        }
+
+        #[unsafe(method(showRecoveryMenu:))]
+        fn show_recovery_menu(&self, _sender: Option<&AnyObject>) {
+            let Some((menu, button, event)) = with_ui_read(|ui| {
+                let button = ui._status_item.button(ui.mtm)?;
+                let event = NSApplication::sharedApplication(ui.mtm)
+                    .currentEvent()
+                    .filter(|event| {
+                        matches!(
+                            event.r#type(),
+                            NSEventType::LeftMouseDown
+                                | NSEventType::LeftMouseUp
+                                | NSEventType::RightMouseDown
+                                | NSEventType::RightMouseUp
+                        ) && (NSProcessInfo::processInfo().systemUptime() - event.timestamp())
+                            .abs() < 2.0
+                            && event.window(ui.mtm).is_some_and(|window| {
+                            button.window().is_some_and(|status_window| {
+                                window.windowNumber() == status_window.windowNumber()
+                                    && point_in_rect(
+                                        event.locationInWindow(),
+                                        button.convertRect_toView(button.bounds(), None),
+                                    )
+                            })
+                        })
+                    });
+                Some((ui.recovery_menu.clone(), button, event))
+            }).flatten() else { return };
+            if let Some(settings) = menu.itemAtIndex(1) {
+                settings.setEnabled(!with_ui_read(|ui| ui.composer_marked()).unwrap_or(true));
+            }
+            with_ui_mut(|ui| {
+                ui.recovery_menu_tracking = true;
+                ui.context_anchor = status_button_rect(&button);
+            });
+            if let Some(event) = event {
+                NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &button);
+            } else {
+                // AXPress and keyboard actions have no mouse event. Anchor the
+                // same native menu directly to the status button's lower edge.
+                let _ = menu.popUpMenuPositioningItem_atLocation_inView(
+                    None,
+                    button.bounds().origin,
+                    Some(&button),
+                );
+            }
+            with_ui_mut(|ui| {
+                ui.recovery_menu_tracking = false;
+                if let Ok(state) = ui.shared.lock() {
+                    let needed = state.scene().needs_recovery_entry();
+                    ui.sync_recovery_entry(needed);
+                }
+            });
+        }
+
+        #[unsafe(method(recoverCharacterInteraction:))]
+        fn recover_character_interaction(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| {
+                if let Ok(mut state) = ui.shared.lock() {
+                    state.recover_interaction();
+                }
+                ui.refresh();
+            });
         }
 
         #[unsafe(method(selectMenuTab:))]
@@ -1741,6 +1844,85 @@ impl PetView {
         this.ivars().tracking_area.replace(Some(tracking));
         this.ivars().grip.setHidden(true);
         this
+    }
+
+    fn show_character_context_menu(&self, event: &NSEvent) {
+        if !pointer_event_allowed(event, true) || self.ivars().drag.get().is_some() {
+            return;
+        }
+        let local = event.locationInWindow();
+        if grip_hit_test(local, self.bounds().size) {
+            return;
+        }
+        let Some(window) = self.window() else { return };
+        let anchor = NSRect::new(window.convertPointToScreen(local), NSSize::new(1.0, 1.0));
+        let Some((locale, bubble_visible, composing, target, mtm)) = with_ui_read(|ui| {
+            if !ui.last_scene.visible
+                || ui.last_scene.passthrough
+                || !ui.character_hit(local).is_some_and(|hit| hit.opaque)
+            {
+                return None;
+            }
+            Some((
+                ui.locale,
+                ui.last_scene.bubble_visible,
+                ui.composer_marked(),
+                ui._menu_target.clone(),
+                ui.mtm,
+            ))
+        })
+        .flatten() else {
+            return;
+        };
+        with_ui_mut(|ui| ui.context_anchor = Some(anchor));
+        let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
+        menu.setAutoenablesItems(false);
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            Message::ContextSettings,
+            sel!(openContextSettings:),
+            !composing,
+        );
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            if bubble_visible {
+                Message::ContextHideBubble
+            } else {
+                Message::ContextShowBubble
+            },
+            if bubble_visible {
+                sel!(closeBubbleWindow:)
+            } else {
+                sel!(showBubble:)
+            },
+            !bubble_visible || !composing,
+        );
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            Message::ContextHideCharacter,
+            sel!(hide:),
+            true,
+        );
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add_context_item(
+            &menu,
+            mtm,
+            &target,
+            locale,
+            Message::MenuQuit,
+            sel!(quit:),
+            true,
+        );
+        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
     }
 
     fn set_gesture_visuals(&self, kind: Option<GestureKind>) {
@@ -2268,6 +2450,33 @@ fn pointer_event_allowed(event: &NSEvent, begins: bool) -> bool {
             })
         })
 }
+fn add_context_item(
+    menu: &NSMenu,
+    mtm: MainThreadMarker,
+    target: &MenuTarget,
+    locale: UiLocale,
+    title: Message,
+    action: objc2::runtime::Sel,
+    enabled: bool,
+) {
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(text(locale, title)),
+            Some(action),
+            &NSString::from_str(""),
+        )
+    };
+    unsafe { item.setTarget(Some(target)) };
+    item.setEnabled(enabled);
+    menu.addItem(&item);
+}
+
+fn status_button_rect(button: &NSView) -> Option<NSRect> {
+    let window = button.window()?;
+    Some(window.convertRectToScreen(button.convertRect_toView(button.bounds(), None)))
+}
+
 fn menu_event_is_inside(event: &NSEvent, ui: &Ui) -> bool {
     let Some(event_window) = event.window(ui.mtm) else {
         // Events without a window are not actionable outside clicks.
@@ -2920,14 +3129,55 @@ impl Ui {
         menu_panel.set_show_status_indicators(prefs.show_status_indicators());
         let status_bar = NSStatusBar::systemStatusBar();
         let status_item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
+        let recovery_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
+        recovery_menu.setAutoenablesItems(false);
+        add_context_item(
+            &recovery_menu,
+            mtm,
+            &menu_target,
+            locale,
+            Message::RecoverCharacterInteraction,
+            sel!(recoverCharacterInteraction:),
+            true,
+        );
+        add_context_item(
+            &recovery_menu,
+            mtm,
+            &menu_target,
+            locale,
+            Message::ContextSettings,
+            sel!(openContextSettings:),
+            true,
+        );
+        recovery_menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add_context_item(
+            &recovery_menu,
+            mtm,
+            &menu_target,
+            locale,
+            Message::MenuQuit,
+            sel!(quit:),
+            true,
+        );
         if let Some(button) = status_item.button(mtm) {
-            button.setTitle(&NSString::from_str("Herdr"));
+            if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str("arrow.uturn.backward.circle"),
+                Some(&NSString::from_str(text(
+                    locale,
+                    Message::RecoveryMenuTitle,
+                ))),
+            ) {
+                image.setTemplate(true);
+                button.setImage(Some(&image));
+            }
             unsafe {
                 button.setTarget(Some(menu_target.as_ref()));
-                button.setAction(Some(sel!(toggleMenuPanel:)));
+                button.setAction(Some(sel!(showRecoveryMenu:)));
             }
-            set_accessibility_label(&button, text(locale, Message::MenuPanelTitle));
+            set_accessibility_label(&button, text(locale, Message::RecoveryMenuTitle));
+            set_accessibility_identifier(&button, "pet-recovery-menu");
         }
+        status_item.setVisible(scene.needs_recovery_entry());
 
         let window_delegate = WindowDelegate::new(mtm);
         panel.setDelegate(Some(ProtocolObject::from_ref(&*window_delegate)));
@@ -3043,6 +3293,10 @@ impl Ui {
             bubble_fade: None,
             reduced_motion,
             _status_item: status_item,
+            recovery_menu,
+            recovery_menu_tracking: false,
+            context_anchor: None,
+            settings_anchor: None,
             _menu_target: menu_target,
             _menu_event_monitors: Vec::new(),
             _window_delegate: window_delegate,
@@ -3270,7 +3524,16 @@ impl Ui {
             .setTitle(&NSString::from_str(text(locale, Message::ComposerSend)));
         set_accessibility_label(&self.composer_view, text(locale, Message::ComposerInput));
         if let Some(button) = self._status_item.button(self.mtm) {
-            set_accessibility_label(&button, text(locale, Message::MenuPanelTitle));
+            set_accessibility_label(&button, text(locale, Message::RecoveryMenuTitle));
+        }
+        for (index, title) in [
+            (0, Message::RecoverCharacterInteraction),
+            (1, Message::ContextSettings),
+            (3, Message::MenuQuit),
+        ] {
+            if let Some(item) = self.recovery_menu.itemAtIndex(index) {
+                item.setTitle(&NSString::from_str(text(locale, title)));
+            }
         }
         self.menu_panel.set_locale(locale);
         self.cards.set_composition_active(self.composer_marked());
@@ -4391,6 +4654,7 @@ impl Ui {
             }
             self.hide_bubble_panel();
             self.last_scene = scene;
+            self.sync_recovery_entry(false);
             self.did_present = true;
             stop_application(self.mtm);
             return;
@@ -4419,7 +4683,9 @@ impl Ui {
         } else if bubble_changed {
             let _ = self.prefs.save();
         }
+        let needed = scene.needs_recovery_entry();
         self.last_scene = scene.clone();
+        self.sync_recovery_entry(needed);
         self.did_present = true;
         self.render(&scene, completed, None);
     }
@@ -4616,18 +4882,13 @@ impl Ui {
             return;
         }
         let fade_active = self.bubble_fade.is_some();
-        let gesture_locked = self.interaction.is_active()
-            || self.root.ivars().drag.get().is_some()
-            || self.bubble_root.ivars().drag.get().is_some();
-        if gesture_locked {
+        if self.explicit_gesture_active() {
             self.panel.setIgnoresMouseEvents(!scene.visible);
             self.bubble_panel
                 .setIgnoresMouseEvents(!scene.bubble_visible || fade_active);
             return;
         }
-        // Keep the hit-test target stable for the complete native/AppKit
-        // tracking sequence.  In particular, changing ignoresMouseEvents
-        // while a popup or scroller is pressed would cancel its tracking.
+        // Native controls must retain their target throughout tracking.
         if NSEvent::pressedMouseButtons() != 0 || appkit_event_tracking_active() {
             return;
         }
@@ -4644,10 +4905,11 @@ impl Ui {
             grip_hit_test(panel_point, self.root.bounds().size)
                 || (NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option)
                     && point_in_rect(panel_point, self.root.bounds()))
-                || self.character_hit(panel_point).is_some_and(|hit| hit.opaque)
+                || self
+                    .character_hit(panel_point)
+                    .is_some_and(|hit| hit.opaque)
         };
         self.panel.setIgnoresMouseEvents(!pet_hit);
-
         let bubble_hit = scene.bubble_visible && self.bubble_contains_screen(screen);
         self.bubble_panel
             .setIgnoresMouseEvents(!bubble_hit || fade_active);
@@ -4905,8 +5167,21 @@ impl Ui {
             RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
                 let event_ptr = event.as_ptr();
                 let event = unsafe { event.as_ref() };
+                let context_opening = (event.r#type() == NSEventType::RightMouseDown
+                    || (event.r#type() == NSEventType::LeftMouseDown
+                        && event
+                            .modifierFlags()
+                            .contains(NSEventModifierFlags::Control)))
+                    && with_ui_read(|ui| {
+                        event.window(ui.mtm).is_some_and(|window| {
+                            window.windowNumber() == ui.panel.windowNumber()
+                                || window.windowNumber() == ui.bubble_panel.windowNumber()
+                        })
+                    })
+                    .unwrap_or(false);
                 with_ui_mut(|ui| {
-                    if ui.reply_open
+                    if !context_opening
+                        && ui.reply_open
                         && event.window(ui.mtm).is_some_and(|window| {
                             window.windowNumber() != ui.bubble_panel.windowNumber()
                         })
@@ -4918,7 +5193,7 @@ impl Ui {
                     ui.menu_panel.is_visible() && menu_event_is_inside(event, ui)
                 })
                 .unwrap_or(false);
-                if !inside {
+                if !inside && !context_opening {
                     with_ui_mut(|ui| {
                         if ui.menu_panel.is_visible() {
                             ui.menu_panel.hide();
@@ -5116,7 +5391,8 @@ impl Ui {
                 if target == DragTarget::StandaloneBubble {
                     let frame = NSRect::new(origin, drag.start_frame.size);
                     let visible = standalone_visible_frame(self.mtm, frame)?;
-                    self.bubble_panel.setFrameOrigin(clamp_window_origin(frame, visible));
+                    let origin = clamp_window_origin(frame, visible);
+                    self.bubble_panel.setFrameOrigin(origin);
                 } else {
                     self.panel.setFrameOrigin(origin);
                     self.clamp_panel();
@@ -5233,13 +5509,13 @@ impl Ui {
             drag.map(|drag| self.drag_frame(drag.target))
                 .unwrap_or(self.panel.frame()),
         ) {
+            // The moving window entered another display; mouse-up commits it.
             return;
         }
         self.cancel_gesture();
         self.cancel_pointer();
         self.set_hover(false, false);
-        // Clamp against the presented scene only. Unseen shared-state changes,
-        // including scale, belong to the refresh that their own wake queues.
+        // Clamp against the presented scene only; unseen state belongs to refresh.
         self.clamp_panel();
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
@@ -6383,24 +6659,29 @@ impl Ui {
         let local = self.bubble_panel.convertPointFromScreen(screen);
         self.bubble_root.contains_local_point(local)
     }
-    fn toggle_menu_panel(&mut self) {
-        if let Some(button) = self._status_item.button(self.mtm) {
-            if !self.menu_panel.is_visible() {
-                let app = NSApplication::sharedApplication(self.mtm);
-                if !app.isActive() {
-                    if app.respondsToSelector(sel!(activate)) {
-                        app.activate();
-                    } else {
-                        // macOS 13 predates NSApplication.activate().
-                        let _ = NSRunningApplication::currentApplication()
-                            .activateWithOptions(NSApplicationActivationOptions::empty());
-                    }
+    fn open_settings_at(&mut self, anchor: NSRect) {
+        self.settings_anchor = Some(anchor);
+        if !self.menu_panel.is_visible() {
+            let app = NSApplication::sharedApplication(self.mtm);
+            if !app.isActive() {
+                if app.respondsToSelector(sel!(activate)) {
+                    app.activate();
+                } else {
+                    // macOS 13 predates NSApplication.activate().
+                    let _ = NSRunningApplication::currentApplication()
+                        .activateWithOptions(NSApplicationActivationOptions::empty());
                 }
             }
-            self.menu_panel.toggle(&button);
-            if self.menu_panel.is_visible() {
-                self.refresh_character_menu();
-            }
+        }
+        if let Some(frame) = anchor_visible_frame(self.mtm, anchor) {
+            self.menu_panel.show_at(anchor, frame);
+            self.refresh_character_menu();
+        }
+    }
+
+    fn sync_recovery_entry(&self, needed: bool) {
+        if !self.recovery_menu_tracking && self._status_item.isVisible() != needed {
+            self._status_item.setVisible(needed);
         }
     }
 
@@ -6818,8 +7099,12 @@ impl Ui {
     }
 
     fn reanchor_menu_panel(&self) {
-        if let Some(button) = self._status_item.button(self.mtm) {
-            self.menu_panel.reanchor(&button);
+        if self.menu_panel.is_visible() {
+            if let Some(anchor) = self.settings_anchor {
+                if let Some(frame) = anchor_visible_frame(self.mtm, anchor) {
+                    self.menu_panel.reanchor_at(anchor, frame);
+                }
+            }
         }
     }
 
@@ -7021,6 +7306,24 @@ fn screen_overlap(frame: NSRect, visible: NSRect) -> f64 {
     (right - left).max(0.0) * (top - bottom).max(0.0)
 }
 
+fn anchor_visible_frame(mtm: MainThreadMarker, anchor: NSRect) -> Option<NSRect> {
+    let screens = NSScreen::screens(mtm);
+    let center = NSPoint::new(
+        anchor.origin.x + anchor.size.width * 0.5,
+        anchor.origin.y + anchor.size.height * 0.5,
+    );
+    for screen in screens.iter() {
+        if point_in_rect(center, screen.frame()) {
+            return Some(screen.visibleFrame());
+        }
+    }
+    // The originating display was removed. Use a remaining display, not
+    // the now offscreen status button or pet window.
+    NSScreen::mainScreen(mtm)
+        .or_else(|| screens.firstObject())
+        .map(|screen| screen.visibleFrame())
+}
+
 fn standalone_visible_frame(mtm: MainThreadMarker, frame: NSRect) -> Option<NSRect> {
     let screens = NSScreen::screens(mtm);
     let mut best = None;
@@ -7036,7 +7339,6 @@ fn standalone_visible_frame(mtm: MainThreadMarker, frame: NSRect) -> Option<NSRe
     best.or_else(|| NSScreen::mainScreen(mtm).map(|screen| screen.visibleFrame()))
         .or_else(|| screens.firstObject().map(|screen| screen.visibleFrame()))
 }
-
 fn panel_visible_frame(panel: &NSPanel, mtm: MainThreadMarker) -> Option<NSRect> {
     panel
         .screen()
@@ -7643,7 +7945,8 @@ mod tests {
         assert!(screen_overlap(crossing, right) > screen_overlap(crossing, left));
 
         let leftward = NSRect::new(NSPoint::new(-1250.0, -210.0), NSSize::new(300.0, 120.0));
-        assert_eq!(clamp_window_origin(leftward, left), NSPoint::new(-1200.0, -200.0));
+        let clamped = clamp_window_origin(leftward, left);
+        assert_eq!(clamped, NSPoint::new(-1200.0, -200.0));
         let offscreen = NSRect::new(NSPoint::new(-6000.0, 100.0), crossing.size);
         assert_eq!(screen_overlap(offscreen, left), 0.0);
         assert_eq!(screen_overlap(offscreen, right), 0.0);
