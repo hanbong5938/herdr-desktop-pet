@@ -16,7 +16,7 @@ A tag alone is also not a published binary release. v0.1.5 is the historical exa
 
 These are forward-looking release decisions, not a claim that historical releases already followed this policy. The [0.1 overview](0.1.md) records earlier changes, including the v0.1.4 → v0.1.6 reply transition.
 
-**No version bump is made by this documentation work.** `0.2.0` is only a candidate for a future minor release if the pending changes are selected and reviewed for shipment. It is not an assigned next version, release commitment, schedule, tag, or download. Unreleased stays unversioned until that decision is made.
+**This working copy remains version 0.1.11.** Independent visibility, selectable menu-bar behavior and images, and linked-worktree removal add capabilities, meeting the pre-1.0 minor criterion above. An explicitly selected isolated snapshot may use app version `0.2.0-beta.1` and tag `beta/0.2.0-beta.1` for manual prerelease testing; it does not ship stable `0.2.0`, change public `main`, latest, Homebrew, default installation, or assign an automatic update. The prerelease is not publication evidence until its assets and GitHub record actually exist.
 
 ## Keep compatibility dimensions separate
 
@@ -49,6 +49,6 @@ Each minor line has an `X.Y.md` overview and individual `vX.Y.Z.md` notes; add a
 
 ## 한국어 핵심 원칙
 
-커밋이나 태그만으로 배포 완료가 되지 않습니다. 앱 버전은 0.1.11로 유지합니다. 이번 main 반영은 문서·도구만이며 네이티브·플러그인·통합 코드는 그대로입니다. 네 가지 네이티브 변경은 로컬 `worktree/rapid-harbor-d2a6`의 `bf23ced1649fd0074aec8736644c8f02aa0c492b`에 병합되지 않은 채 남습니다. main의 `--source` 빌드와 공개 v0.1.11에는 포함되지 않으며, 이 브랜치·커밋 표기는 공개 fetch나 다운로드를 보장하지 않습니다. Unreleased에서 두 범위를 구분합니다. 0.2.0은 향후 minor 후보일 뿐 다음 버전 지정이나 출시 약속이 아닙니다. patch는 기존 계약을 보존하는 수정, 1.0 이전 minor는 기능·동작·호환성 변경과 그에 필요한 마이그레이션 안내에 사용합니다.
+커밋·태그만으로 배포 완료가 되지 않습니다. 현재 작업본 앱 버전은 0.1.11이며 공개 `main`·안정판·latest·Homebrew·기본 설치는 그대로입니다. 독립 표시·메뉴 막대 모드/이미지·연결 워크트리 삭제는 기능 추가이므로 1.0 이전 minor 기준에 해당합니다. 수동 선택형 격리 스냅샷만 `0.2.0-beta.1` 앱 버전과 `beta/0.2.0-beta.1` 태그를 사용할 수 있습니다. 안정판 `0.2.0`은 아직 출시하지 않았고 실제 GitHub 기록과 자산 없이는 시험판 게시 완료도 아닙니다. 원래 네 네이티브 변경은 로컬 `worktree/rapid-harbor-d2a6`의 `bf23ced1649fd0074aec8736644c8f02aa0c492b`에서 시작했고 공개 `main`의 소스 빌드나 v0.1.11에 포함되지 않습니다. patch는 기존 계약을 보존하는 수정이고 minor는 기능·동작·호환성 변경 및 마이그레이션 안내에 사용합니다.
 
 앱 버전, Herdr 호스트의 실제 기능, 캐릭터 팩 v5, 내장 `default@0`는 서로 다른 기준입니다. 호스트 최소 버전만 보고 `client.attached`나 프롬프트 API 지원을 가정하지 마세요. 원격 관찰은 읽기 전용이고 로컬 프롬프트 접수 확인은 에이전트 작업 완료가 아닙니다. 설치·실행은 [한국어 루트 안내](../../readme.ko.md), 로컬 pending 브랜치 전환은 [한국어 업그레이드 안내](../migrations/unreleased.ko.md)를 따르세요. 릴리스 계열을 보관해도 LTS·EOL·백포트·지원 기간을 약속하지 않습니다.

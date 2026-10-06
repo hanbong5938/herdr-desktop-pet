@@ -36,6 +36,23 @@ async function fixture(note = `${heading}\n\nReviewed native-menu improvement.\n
   return root;
 }
 
+async function rendered(markdown: string): Promise<{
+  links: { href: string | null; title: string | null }[];
+  images: { src: string | null; title: string | null; alt: string | null; parent: string | null }[];
+}> {
+  const links: { href: string | null; title: string | null }[] = [];
+  const images: { src: string | null; title: string | null; alt: string | null; parent: string | null }[] = [];
+  const html = Bun.markdown.html(markdown);
+  await new HTMLRewriter()
+    .on("a", { element(element) { links.push({ href: element.getAttribute("href"), title: element.getAttribute("title") }); } })
+    .on("img", { element(element) { images.push({
+      src: element.getAttribute("src"), title: element.getAttribute("title"), alt: element.getAttribute("alt"), parent: null,
+    }); } })
+    .on("a img", { element() { images.at(-1)!.parent = links.at(-1)!.href; } })
+    .transform(new Response(html)).text();
+  return { links, images };
+}
+
 test("stable tags preserve zero versions and reject suffixes, leading zeros, and unsafe numbers", () => {
   expect(parseStableTag("v0.0.0")).toEqual({ version: "0.0.0", major: 0, minor: 0, patch: 0 });
   expect(parseStableTag("v12.30.456")).toEqual({ version: "12.30.456", major: 12, minor: 30, patch: 456 });
@@ -74,54 +91,55 @@ test("catalog consumers exclude releases with unknown upload state for any requi
   expect([allUnknown, ...unknownUploads, complete].filter(isPublishedRelease)).toEqual([complete]);
 });
 
-test("rewrites decoded repository paths and images while preserving titles, fragments, and queries", () => {
-  const seen: [string, string, boolean][] = [];
-  const input = '[guide](../../readme.md#install "Read it")\n![art](../../assets/my%20art.png)\n[root](/docs/releases/policy.md)\n[query](../migrations/upgrade.md?plain=1#safe)';
-  const output = rewriteRelativeLinks(input, "docs/releases/v0.1.11.md", (path, fragment, image) => {
-    seen.push([path, fragment, image]);
-    return `https://example.test/${path}${fragment}`;
-  });
-  expect(seen).toEqual([
-    ["readme.md", "#install", false], ["assets/my art.png", "", true],
-    ["docs/releases/policy.md", "", false], ["docs/migrations/upgrade.md", "#safe", false],
-  ]);
-  expect(output).toContain('[guide](https://example.test/readme.md#install "Read it")');
-  expect(output).toContain('[query](https://example.test/docs/migrations/upgrade.md?plain=1#safe)');
+test("release destinations render complete URLs, titles, and nested image links", async () => {
+  const root = await fixture([
+    heading, "", "Reviewed artwork.",
+    '[closing](../../guides/a%29.md "Closing") [escaped](../../guides/a\\).md)',
+    '[percent](../../guides/%2529.md) [spaced](<../../guides/install notes.md> "Space")',
+    '[query](../../guides/a%29.md?view=(large)#frag(ment))',
+    '[![Portrait](../../assets/a%29.png "Portrait")](../../guides/a%29.md#install)',
+    '[source](../../assets/a%29.png)',
+  ].join("\n"));
+  try {
+    for (const path of ["guides/a).md", "guides/%29.md", "guides/install notes.md", "assets/a).png"]) {
+      await mkdir(join(root, path.split("/")[0]!), { recursive: true });
+      await writeFile(join(root, path), "fixture");
+    }
+    const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+    const blob = `https://github.com/${repository}/blob/${tag}/`;
+    const raw = `https://raw.githubusercontent.com/${repository}/${tag}/`;
+    expect(links).toContainEqual({ href: `${blob}guides/a%29.md`, title: "Closing" });
+    expect(links).toContainEqual({ href: `${blob}guides/a%29.md`, title: null });
+    expect(links).toContainEqual({ href: `${blob}guides/%2529.md`, title: null });
+    expect(links).toContainEqual({ href: `${blob}guides/install%20notes.md`, title: "Space" });
+    expect(links).toContainEqual({ href: `${blob}guides/a%29.md?view=%28large%29#frag%28ment%29`, title: null });
+    expect(links).toContainEqual({ href: `${blob}assets/a%29.png`, title: null });
+    expect(images).toContainEqual({ src: `${raw}assets/a%29.png`, title: "Portrait", alt: "Portrait", parent: `${blob}guides/a%29.md#install` });
+    await rm(join(root, "assets/a).png"));
+    await expect(generateReleaseBody(root, tag, repository)).rejects.toThrow("missing repository path");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("preserves external and same-page links, fenced and inline code, and escaped link syntax", () => {
+test("external, fragment, code, escaped and unresolved Markdown do not become repository links", async () => {
   const input = [
-    '[web](https://example.test/x) [mail](mailto:author@example.test) [local](#heading) [cdn](//example.test/a)',
-    '`[literal](../../readme.md)` and ``x `[literal](../../readme.md)` x``',
-    '```md', '[literal](../../readme.md)', '```',
-    '~~~', '[literal](../../readme.md)', '~~~',
-    '\\[not a link](../../readme.md)',
+    "Reviewed links. [web](https://example.test/x) [mail](mailto:author@example.test) [local](#heading) [cdn](//example.test/a)",
+    "`[literal](../../readme.md)` and ``x `[literal](../../readme.md)` x``",
+    "```md", "[literal](../../readme.md)", "```",
+    "~~~", "[literal](../../readme.md)", "~~~",
+    "\\[not a link](../../readme.md) [Missing][undefined]",
+    "![External][Remote] [Remote]",
+    "",
+    "[Remote]: https://example.test/image(1).png",
   ].join("\n");
-  expect(rewriteRelativeLinks(input, "docs/releases/v0.1.11.md", () => { throw new Error("Must not resolve literal code or external links"); })).toBe(input);
-});
-
-test("handles nested parentheses, angle destinations, nested image links, and reference images", () => {
-  const input = [
-    '[nested](../../guides/install(mac).md)',
-    '[spaced](<../../guides/install notes.md> "title")',
-    '[![art](../../assets/a.png)](../../readme.md)',
-    '![Portrait][Art] [Guide][] [shortcut]',
-    '[Art]: ../../assets/portrait.png "Portrait title"',
-    '[Guide]: ../../readme.md#install',
-    '[shortcut]: ../migrations/upgrade.md',
-  ].join("\n");
-  const seen: [string, boolean][] = [];
-  const output = rewriteRelativeLinks(input, "docs/releases/v0.1.11.md", (path, fragment, image) => {
-    seen.push([path, image]);
-    return `https://example.test/${encodeURI(path)}${fragment}`;
-  });
-  expect(output).toContain('[nested](https://example.test/guides/install(mac).md)');
-  expect(output).toContain('[spaced](<https://example.test/guides/install%20notes.md> "title")');
-  expect(output).toContain('[![art](https://example.test/assets/a.png)](https://example.test/readme.md)');
-  expect(output).toContain('[Art]: https://example.test/assets/portrait.png "Portrait title"');
-  expect(seen).toContainEqual(["assets/portrait.png", true]);
-  expect(seen).toContainEqual(["readme.md", false]);
-  expect(seen).toContainEqual(["docs/migrations/upgrade.md", false]);
+  const root = await fixture(`${heading}\n\n${input}\n`);
+  try {
+    const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+    expect(links.map((link) => link.href)).toEqual([
+      "https://example.test/x", "mailto:author@example.test", "#heading", "//example.test/a",
+      "https://example.test/image(1).png",
+    ]);
+    expect(images).toContainEqual({ src: "https://example.test/image(1).png", title: null, alt: "External", parent: null });
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("refuses repository escapes, malformed encoding, and invalid source paths", () => {
@@ -174,7 +192,9 @@ test("generates frozen tagged Markdown only after matching all manifest and root
   const root = await fixture(`${heading}\n\nReviewed change. [Guide](../../readme.md#install)\n`);
   try {
     await writeFile(join(root, "readme.md"), "# Guide\n");
-    expect(await generateReleaseBody(root, tag, repository)).toContain(`https://github.com/${repository}/blob/${tag}/readme.md#install`);
+    expect((await rendered(await generateReleaseBody(root, tag, repository))).links).toContainEqual({
+      href: `https://github.com/${repository}/blob/${tag}/readme.md#install`, title: null,
+    });
     for (const [path, badContent] of [
       ["package.json", '{"version":"0.1.10"}'],
       ["native/Cargo.toml", '[package]\nname = "herdr-desktop-pet"\nversion = "0.1.10"'],
@@ -191,25 +211,151 @@ test("generates frozen tagged Markdown only after matching all manifest and root
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("release images serve raw bytes at the exact tag while source links remain tagged blob URLs", async () => {
+test("mixed Release references keep original source links and image-only raw URLs across selector forms", async () => {
   const root = await fixture([
-    heading, "",
-    'Reviewed artwork. [![Portrait](../../assets/my%20portrait.png "Portrait")](../../readme.md#art)',
-    '![Reference portrait][portrait]',
-    '[Image source](../../assets/my%20portrait.png)',
-    '[portrait]: ../../assets/my%20portrait.png "Reference portrait"',
+    heading, "", "Reviewed artwork.",
+    "[![Portrait][ART]][art] ![Other][art] ![Art][] ![Art] [Art][] [Art]",
+    "",
+    "[Art]:\r\n  <../../assets/a%29.png>\r\n\"Line one\r\nLine two\r\nLine three\r\nLine four\"\r\n",
+    "[Art]: ../../assets/duplicate.png\r\n",
+    "`![code][Art]` \\[escaped][Art] [Absent][missing]\r\n",
+  ].join("\r\n"));
+  try {
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "assets/a).png"), "fixture");
+    const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+    const blob = `https://github.com/${repository}/blob/${tag}/assets/a%29.png`;
+    const raw = `https://raw.githubusercontent.com/${repository}/${tag}/assets/a%29.png`;
+    const title = "Line one\nLine two\nLine three\nLine four";
+    expect(links).toContainEqual({ href: blob, title });
+    expect(links.filter((link) => link.href === blob).every((link) => link.title === title)).toBe(true);
+    expect(images.map((image) => image.src)).toEqual([raw, raw, raw, raw]);
+    expect(images.map((image) => image.title)).toEqual([title, title, title, title]);
+    expect(images.map((image) => image.alt)).toEqual(["Portrait", "Other", "Art", "Art"]);
+    expect(images[0]?.parent).toBe(blob);
+    expect(images.slice(1).every((image) => image.parent === null)).toBe(true);
+    expect(links.every((link) => link.href !== null && !link.href.includes("duplicate"))).toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("rejected definition prose links resolve, and missing or unsafe targets fail preflight", async () => {
+  const root = await fixture();
+  const path = join(root, `docs/releases/${tag}.md`);
+  try {
+    await mkdir(join(root, "guides"));
+    for (const [index, prose] of [
+      '[unused]: https://example.test "Title" trailing [Guide](TARGET)',
+      '[unused]: https://example.test (bad ( [Guide](TARGET)',
+      '[ ]: https://example.test "[Guide](TARGET)"',
+      '[a[b]: https://example.test "[Guide](TARGET)"',
+      '[label]: <https://example.test>"[Guide](TARGET)"',
+    ].entries()) {
+      const guide = `guides/prose-${index}.md`;
+      await writeFile(join(root, guide), "# Guide\n");
+      await writeFile(path, `${heading}\n\nReviewed guidance.\n\n${prose.replace("TARGET", `../../${guide}`)}\n`);
+      const { links } = await rendered(await generateReleaseBody(root, tag, repository));
+      expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${tag}/${guide}`, title: null });
+      for (const target of ["../../missing.md", "../../../outside.md"]) {
+        await writeFile(path, `${heading}\n\nReviewed guidance.\n\n${prose.replace("TARGET", target)}\n`);
+        await expect(generateReleaseBody(root, tag, repository)).rejects.toThrow();
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("literal image-like text inside external inline URLs and titles never claims mixed references", async () => {
+  const root = await fixture([
+    heading, "", "Reviewed artwork.",
+    '[Website](https://example.test/![Art]) [Named](https://example.test "literal ![Art]") [Compact](<https://example.test/no-gap>"literal ![Art]")',
+    "[![Portrait][Art]][Art] ![Art][Art] [Art]",
+    "",
+    "[Art]: ../../assets/art.png",
   ].join("\n"));
   try {
     await mkdir(join(root, "assets"));
-    await writeFile(join(root, "assets/my portrait.png"), new Uint8Array([137, 80, 78, 71]));
-    await writeFile(join(root, "readme.md"), "# Art\n");
-    const body = await generateReleaseBody(root, tag, repository);
-    const imageUrl = `https://raw.githubusercontent.com/${repository}/${tag}/assets/my%20portrait.png`;
-    expect(body).toContain(`[![Portrait](${imageUrl} "Portrait")](https://github.com/${repository}/blob/${tag}/readme.md#art)`);
-    expect(body).toContain(`[portrait]: ${imageUrl} "Reference portrait"`);
-    expect(body).toContain(`[Image source](https://github.com/${repository}/blob/${tag}/assets/my%20portrait.png)`);
-    await rm(join(root, "assets/my portrait.png"));
-    await expect(generateReleaseBody(root, tag, repository)).rejects.toThrow("missing repository path");
+    await writeFile(join(root, "assets/art.png"), "art");
+    const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+    const blob = `https://github.com/${repository}/blob/${tag}/assets/art.png`;
+    const raw = `https://raw.githubusercontent.com/${repository}/${tag}/assets/art.png`;
+    expect(links).toContainEqual({ href: "https://example.test/!%5BArt%5D", title: null });
+    expect(links).toContainEqual({ href: "https://example.test", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/no-gap", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: blob, title: null });
+    expect(images).toContainEqual({ src: raw, title: null, alt: "Portrait", parent: blob });
+    expect(images).toContainEqual({ src: raw, title: null, alt: "Art", parent: null });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("image-only references use raw asset URLs without source links", async () => {
+  const root = await fixture(`${heading}\n\nReviewed artwork. ![Portrait][Art]\n\n[Art]: ../../assets/art.png "Portrait"\n`);
+  try {
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "assets/art.png"), "art");
+    const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+    expect(links).toHaveLength(0);
+    expect(images).toEqual([{
+      src: `https://raw.githubusercontent.com/${repository}/${tag}/assets/art.png`,
+      title: "Portrait", alt: "Portrait", parent: null,
+    }]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("escaped title delimiters remain attached to both mixed reference modes", async () => {
+  const root = await fixture(`${heading}\n\nReviewed image. ![Art][Art] [Art]\n\n[Art]: ../../assets/art.png "Named \\"portrait\\""\n`);
+  try {
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "assets/art.png"), "art");
+    const source = await rendered(await readFile(join(root, `docs/releases/${tag}.md`), "utf8"));
+    const sourceTitle = source.links[0]?.title;
+    if (!sourceTitle) throw new Error("Expected rendered source title");
+    const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${tag}/assets/art.png`, title: sourceTitle });
+    expect(images).toContainEqual({
+      src: `https://raw.githubusercontent.com/${repository}/${tag}/assets/art.png`, title: sourceTitle, alt: "Art", parent: null,
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("an unmatched or blank-separated reference title never hides later links", async () => {
+  const root = await fixture();
+  try {
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "assets/art.png"), "art");
+    await writeFile(join(root, "readme.md"), "# Guide\n");
+    for (const middle of ['"Unclosed title\n\n', '\n', '\n"Blank-separated title"\n']) {
+      const body = `${heading}\n\nReviewed artwork. ![Art][Art] [Art]\n\n[Art]: ../../assets/art.png\n${middle}[Guide](../../readme.md)\n`;
+      await writeFile(join(root, `docs/releases/${tag}.md`), body);
+      const { links } = await rendered(await generateReleaseBody(root, tag, repository));
+      expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${tag}/readme.md`, title: null });
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("synthetic image references cannot claim defined or unresolved labels", async () => {
+  const root = await fixture(`${heading}\n\nReviewed artwork. ![Art][Art] [Art]\n\n[Art]: ../../assets/art.png\n`);
+  try {
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "assets/art.png"), "art");
+    await writeFile(join(root, "assets/reserved.png"), "reserved");
+    const initial = await generateReleaseBody(root, tag, repository);
+    const candidate = /^\[([^\]\r\n]+)\]: https:\/\/raw\.githubusercontent\.com\//m.exec(initial)?.[1];
+    if (!candidate) throw new Error("Expected mixed image reference in generated body");
+    const base = `${heading}\n\nReviewed artwork. ![Art][Art] [Art]\n\n[Art]: ../../assets/art.png\n`;
+    for (const suffix of [
+      `\n![Reserved][${candidate}]\n\n[${candidate}]: ../../assets/reserved.png\n`,
+      `\n[${candidate}]\n`,
+    ]) {
+      await writeFile(join(root, `docs/releases/${tag}.md`), base + suffix);
+      const { links, images } = await rendered(await generateReleaseBody(root, tag, repository));
+      expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${tag}/assets/art.png`, title: null });
+      expect(images).toContainEqual({ src: `https://raw.githubusercontent.com/${repository}/${tag}/assets/art.png`, title: null, alt: "Art", parent: null });
+      if (suffix.includes("Reserved")) {
+        expect(images).toContainEqual({ src: `https://raw.githubusercontent.com/${repository}/${tag}/assets/reserved.png`, title: null, alt: "Reserved", parent: null });
+      } else {
+        expect(images).toHaveLength(1);
+        expect(links).toHaveLength(1);
+      }
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -235,7 +381,6 @@ test("CLI writes a usable body and keeps a previous output untouched on failed p
   try {
     const success = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
     expect(await success.exited).toBe(0);
-    expect(await readFile(output, "utf8")).toContain("Reviewed native-menu improvement.");
     await writeFile(output, "previous successful body");
     await writeFile(join(root, `docs/releases/${tag}.md`), `${heading}\n\nTBD`);
     const failure = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });

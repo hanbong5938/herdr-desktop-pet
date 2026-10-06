@@ -156,23 +156,70 @@ export function rewriteRelativeLinks(
   }
   const mask = codeMask(markdown);
   const changes: { start: number; end: number; value: string }[] = [];
-  const references = new Map<string, { destination: Destination; image: boolean; link: boolean }>();
-  const definitionStarts = new Set<number>();
+  type Reference = { destination: Destination; start: number; end: number; labelStart: number; labelEnd: number; images: { start: number; end: number }[]; link: boolean };
+  const references = new Map<string, Reference>();
+  const reserved = new Set<string>();
+  const lineEnd = (at: number): number => {
+    const newline = markdown.indexOf("\n", at);
+    return newline < 0 ? markdown.length : newline + 1;
+  };
+  const lineContentEnd = (at: number): number => {
+    const end = lineEnd(at);
+    return markdown[end - 1] === "\n" ? end - (markdown[end - 2] === "\r" ? 2 : 1) : end;
+  };
+  // A title belongs to a definition only if its closing delimiter and the
+  // remainder of its final line are valid. Never consume unrelated paragraphs.
+  // A rejected header is ordinary prose, not a definition to mask or rewrite.
+  const definitionEnd = (destination: Destination): number | undefined => {
+    const destinationLineEnd = lineEnd(destination.after);
+    const contentEnd = lineContentEnd(destination.after);
+    let opener = destination.after;
+    while (opener < contentEnd && /[ \t]/.test(markdown[opener]!)) opener++;
+    const sameLine = opener < contentEnd;
+    if (sameLine && opener === destination.after) return undefined;
+    if (!sameLine && destinationLineEnd < markdown.length) {
+      opener = destinationLineEnd;
+      while (opener < lineContentEnd(opener) && /[ \t]/.test(markdown[opener]!)) opener++;
+    }
+    if (!["\"", "'", "("].includes(markdown[opener] ?? "")) return sameLine ? undefined : destinationLineEnd;
+    const closing = markdown[opener] === "(" ? ")" : markdown[opener]!;
+    for (let i = opener + 1; i < markdown.length; i++) {
+      if (markdown[i] === "\n" && !markdown.slice(i + 1, lineContentEnd(i + 1)).trim()) return sameLine ? undefined : destinationLineEnd;
+      if (closing === ")" && markdown[i] === "(" && !escaped(markdown, i)) return sameLine ? undefined : destinationLineEnd;
+      if (markdown[i] !== closing || escaped(markdown, i)) continue;
+      if (markdown.slice(i + 1, lineContentEnd(i + 1)).trim()) return sameLine ? undefined : destinationLineEnd;
+      return lineEnd(i);
+    }
+    return sameLine ? undefined : destinationLineEnd;
+  };
   let offset = 0;
   for (const line of markdown.split(/(?<=\n)/)) {
     const match = /^ {0,3}\[([^\]\r\n]+)\]:[ \t]*/.exec(line);
     if (match && !mask[offset] && !match[1]!.startsWith("^")) {
-      const destination = destinationAt(markdown, offset + match[0].length);
       const id = referenceId(match[1]!);
-      if (destination && !references.has(id)) references.set(id, { destination, image: false, link: false });
-      definitionStarts.add(offset + line.indexOf("["));
+      reserved.add(id);
+      let validLabel = id.length > 0;
+      for (let i = 0; validLabel && i < match[1]!.length; i++) {
+        if (match[1]![i] === "[" && !escaped(match[1]!, i)) validLabel = false;
+      }
+      const start = offset + match[0].length;
+      const candidate = destinationAt(markdown, start);
+      const destination = candidate && (markdown.slice(start, candidate.start).match(/\n/g)?.length ?? 0) <= 1 ? candidate : undefined;
+      const end = validLabel && destination ? definitionEnd(destination) : undefined;
+      if (end !== undefined && destination) {
+        mask.fill(1, offset, end);
+        if (!references.has(id)) {
+          const labelStart = offset + match[0].indexOf("[") + 1;
+          references.set(id, { destination, start: offset, end, labelStart, labelEnd: labelStart + match[1]!.length, images: [], link: false });
+        }
+      }
     }
     offset += line.length;
   }
-  const rewrite = (destination: Destination, isImage: boolean): void => {
+  const resolveDestination = (destination: Destination, isImage: boolean): string | undefined => {
     const raw = markdown.slice(destination.start, destination.end);
     const target = raw.replace(/\\([^\w\s])/g, "$1").replace(/&amp;/g, "&");
-    if (!target || target.startsWith("#") || target.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return;
+    if (!target || target.startsWith("#") || target.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return undefined;
     const hash = target.indexOf("#");
     const fragment = hash < 0 ? "" : target.slice(hash);
     const beforeHash = hash < 0 ? target : target.slice(0, hash);
@@ -187,13 +234,16 @@ export function rewriteRelativeLinks(
     const resolved = resolveLink(repoPath, fragment, isImage);
     const resolvedHash = resolved.indexOf("#");
     const value = query ? (resolvedHash < 0 ? resolved + query : resolved.slice(0, resolvedHash) + query + resolved.slice(resolvedHash)) : resolved;
-    changes.push({ start: destination.start, end: destination.end, value });
+    return value.replace(/\(/g, "%28").replace(/\)/g, "%29");
   };
+  const consumedSelectors = new Set<number>();
   for (let i = 0; i < markdown.length; i++) {
-    if (mask[i] || markdown[i] !== "[" || escaped(markdown, i) || definitionStarts.has(i)) continue;
+    if (mask[i] || markdown[i] !== "[" || escaped(markdown, i) || consumedSelectors.has(i)) continue;
     const end = labelEnd(markdown, i, mask);
     if (end < 0) continue;
     const isImage = i > 0 && markdown[i - 1] === "!" && !escaped(markdown, i - 1);
+    const text = markdown.slice(i + 1, end);
+    reserved.add(referenceId(text));
     if (markdown[end + 1] === "(") {
       const destination = destinationAt(markdown, end + 2);
       if (destination) {
@@ -206,27 +256,58 @@ export function rewriteRelativeLinks(
           close = titleEnd + 1;
           while (close < markdown.length && /\s/.test(markdown[close]!)) close++;
         }
-        if (markdown[close] === ")") rewrite(destination, isImage);
+        if (markdown[close] === ")") {
+          // The outer link's destination and title are not Markdown usages.
+          // Keep its label unmasked so nested images and links are still visited.
+          mask.fill(1, end + 1, close + 1);
+          const value = resolveDestination(destination, isImage);
+          if (value !== undefined) changes.push({ start: destination.start, end: destination.end, value });
+        }
       }
     } else {
-      let label = markdown.slice(i + 1, end);
+      let label = text;
+      let selector = { start: end + 1, end: end + 1 };
       if (markdown[end + 1] === "[") {
         const referenceEnd = labelEnd(markdown, end + 1, mask);
         if (referenceEnd >= 0) {
-          label = markdown.slice(end + 2, referenceEnd) || label;
-          i = referenceEnd;
+          consumedSelectors.add(end + 1);
+          label = markdown.slice(end + 2, referenceEnd) || text;
+          selector = { start: end + 1, end: referenceEnd + 1 };
+          reserved.add(referenceId(markdown.slice(end + 2, referenceEnd)));
         }
       }
       const reference = references.get(referenceId(label));
       if (reference) {
-        if (isImage) reference.image = true;
+        if (isImage) reference.images.push(selector);
         else reference.link = true;
       }
     }
-    // Keep scanning labels so embedded image links are also rewritten.
+    // Scan inside labels as well: [![alt][art]][art] has two uses.
   }
-  for (const reference of references.values()) rewrite(reference.destination, reference.image && !reference.link);
-  changes.sort((left, right) => left.start - right.start);
+  let nextImageId = 1;
+  for (const reference of references.values()) {
+    const { destination } = reference;
+    const linkValue = reference.link || !reference.images.length ? resolveDestination(destination, false) : undefined;
+    const imageValue = reference.images.length ? resolveDestination(destination, true) : undefined;
+    if (reference.images.length && reference.link && linkValue !== undefined) {
+      if (imageValue !== undefined && imageValue !== linkValue) {
+        let id: string;
+        do { id = `herdr-image-reference-${nextImageId++}`; } while (reserved.has(referenceId(id)));
+        reserved.add(referenceId(id));
+        for (const selector of reference.images) {
+          changes.push({ start: selector.start, end: selector.end, value: `[${id}]` });
+        }
+        const clone = markdown.slice(reference.start, reference.labelStart) + id
+          + markdown.slice(reference.labelEnd, destination.start) + imageValue
+          + markdown.slice(destination.end, reference.end);
+        const newline = markdown.slice(reference.start, reference.end).includes("\r\n") ? "\r\n" : "\n";
+        changes.push({ start: reference.start, end: reference.start, value: clone.endsWith("\n") ? clone : clone + newline });
+      }
+    }
+    const value = reference.images.length && !reference.link ? imageValue : linkValue;
+    if (value !== undefined) changes.push({ start: destination.start, end: destination.end, value });
+  }
+  changes.sort((left, right) => left.start - right.start || left.end - right.end);
   let result = "";
   let cursor = 0;
   for (const change of changes) {

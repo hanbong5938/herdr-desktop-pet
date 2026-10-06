@@ -49,8 +49,8 @@ use objc2::{
     MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance, NSAppearanceNameAqua,
-    NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
     NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBorderType, NSButton, NSButtonCell, NSCell,
     NSColor, NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections,
@@ -881,6 +881,9 @@ struct Ui {
     bubble_mode: BubbleMode,
     bubble_layout: BubbleLayout,
     bubble_geometry: Option<BubbleGeometry>,
+    // The last successfully applied geometry can be tailless and still attached.
+    bubble_geometry_attached: bool,
+    pending_standalone_body_origin: Option<(f64, f64)>,
     bubble_content_dirty: bool,
     pending_bubble_scene: Option<Scene>,
     pending_bubble_content: bool,
@@ -1107,7 +1110,7 @@ define_class!(
             if !pointer_event_allowed(event, false) { return; }
             let drag = self.ivars().drag.get();
             with_ui_mut(|ui| {
-                ui.cancel_gesture_for(drag);
+                ui.cancel_gesture_for(drag, true);
                 ui.cancel_pointer();
             });
             self.ivars().drag.set(None);
@@ -1423,7 +1426,7 @@ define_class!(
                 return;
             }
             let drag = self.ivars().drag.get();
-            with_ui_mut(|ui| ui.cancel_gesture_for(drag));
+            with_ui_mut(|ui| ui.cancel_gesture_for(drag, true));
             self.ivars().drag.set(None);
             self.set_drag_visuals(false);
         }
@@ -2803,6 +2806,58 @@ where
     })
 }
 
+// Local monitors retain their handler. Drop the token before interpreting a
+// modal answer so neither its alert controls nor its window outlive the modal.
+struct AlertEscapeMonitor {
+    token: Retained<AnyObject>,
+    _main_thread: MainThreadMarker,
+}
+
+impl Drop for AlertEscapeMonitor {
+    fn drop(&mut self) {
+        unsafe { NSEvent::removeMonitor(&*self.token) };
+    }
+}
+
+fn install_alert_escape_monitor(
+    mtm: MainThreadMarker,
+    alert: &NSAlert,
+    cancel: &NSButton,
+) -> Option<AlertEscapeMonitor> {
+    let window = alert.window();
+    let cancel = objc2::Message::retain(cancel);
+    let app = NSApplication::sharedApplication(mtm);
+    let local: RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> =
+        RcBlock::new(move |event: NonNull<NSEvent>| {
+            let pointer = event.as_ptr();
+            let event = unsafe { event.as_ref() };
+            let modifiers = NSEventModifierFlags::Command
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option
+                | NSEventModifierFlags::Shift;
+            if event.keyCode() == 53
+                && !event.modifierFlags().intersects(modifiers)
+                && event
+                    .window(mtm)
+                    .is_some_and(|current| current.windowNumber() == window.windowNumber())
+                && window.isKeyWindow()
+                && app
+                    .modalWindow()
+                    .is_some_and(|current| current.windowNumber() == window.windowNumber())
+            {
+                unsafe { cancel.performClick(None) };
+                std::ptr::null_mut()
+            } else {
+                pointer
+            }
+        });
+    unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &*local) }
+        .map(|token| AlertEscapeMonitor {
+            token,
+            _main_thread: mtm,
+        })
+}
+
 fn begin_worktree_remove(target: WorktreeRemoveTarget) {
     let mut reserved = false;
     with_ui_mut(|ui| {
@@ -2857,13 +2912,11 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
         target.worktree.pane_count,
     )));
     let cancel = alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::Cancel)));
-    cancel.setKeyEquivalent(&NSString::from_str("\u{1b}"));
     alert.addButtonWithTitle(&NSString::from_str(text(
         locale,
         Message::WorktreeRemoveAction,
     )));
-    // Escape's key equivalent can displace AppKit's automatic first-button
-    // default. Assign the non-destructive Return/Enter default after layout.
+    // Keep Cancel as the default for Return, including when Delete has focus.
     alert.layout();
     let Some(cell) = cancel
         .cell()
@@ -2881,7 +2934,20 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
         return;
     };
     alert.window().setDefaultButtonCell(Some(&cell));
+    let Some(monitor) = install_alert_escape_monitor(mtm, &alert, &cancel) else {
+        with_ui_mut(|ui| {
+            ui.worktree_confirming = false;
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(
+                target,
+                Err(WorktreeRemoveError::Other(
+                    text(locale, Message::WorktreeConfirmUnavailable).to_owned(),
+                )),
+            ));
+        });
+        return;
+    };
     let answer = alert.runModal();
+    drop(monitor);
     with_ui_mut(|ui| {
         ui.worktree_confirming = false;
         if answer != NSAlertSecondButtonReturn || ui.composer_marked() {
@@ -3743,6 +3809,8 @@ impl Ui {
             bubble_mode: BubbleMode::Compact,
             bubble_layout: BubbleLayout::default(),
             bubble_geometry: None,
+            bubble_geometry_attached: false,
+            pending_standalone_body_origin: None,
             bubble_content_dirty: true,
             pending_bubble_scene: None,
             pending_bubble_content: false,
@@ -4351,8 +4419,9 @@ impl Ui {
                 });
             }
             Ok(true) => {
-                self.cancel_gesture();
-                self.cancel_pointer();
+                self.prepare_bubble_transition(&scene);
+                self.cancel_gesture(false);
+                self.cancel_pointer_state();
                 if let PreparedCharacter::Rig(old) = &mut self.active {
                     old.set_visible(false);
                     old.view().removeFromSuperview();
@@ -4380,7 +4449,7 @@ impl Ui {
                     self.display_geometry.size(scene.scale),
                 );
                 self.set_content_frame(frame, scene.scale, false);
-                self.clamp_panel_for(scene.bubble_placement);
+                self.clamp_panel_origin();
                 self.persist_geometry(&scene, self.panel.frame());
                 self.cached_anchor = None;
                 self.displayed_frame = None;
@@ -5143,6 +5212,26 @@ impl Ui {
         self.refresh_character_menu();
     }
 
+    fn applied_attached_body_origin(&self) -> Option<(f64, f64)> {
+        attached_body_origin(self.bubble_geometry, self.bubble_geometry_attached)
+    }
+
+    fn prepare_bubble_transition(&mut self, scene: &Scene) {
+        if scene.visible
+            || scene.shutdown
+            || scene.reset_position_revision != self.last_reset_position_revision
+        {
+            self.pending_standalone_body_origin = None;
+        } else if self.pending_standalone_body_origin.is_none()
+            && self.prefs.standalone_bubble_position().is_none()
+            && self.did_present
+            && self.last_scene.visible
+            && self.last_scene.bubble_visible
+        {
+            self.pending_standalone_body_origin = self.applied_attached_body_origin();
+        }
+    }
+
     fn refresh_event(&mut self, scene: Scene, completed: bool) {
         let scale_changed = (scene.scale - self.last_scene.scale).abs() > f64::EPSILON;
         let presentation_changed = !self.did_present
@@ -5162,13 +5251,17 @@ impl Ui {
             || (self.prefs.show_status_indicators() && summary != self.status_summary);
         self.status_summary = summary;
 
+        // Read the applied geometry before any cancellation, reset or resize
+        // can publish an older pending placement or invalidate its provenance.
+        self.prepare_bubble_transition(&scene);
+
         if presentation_changed
             || bubble_changed
             || reset_position_changed
             || (phase_changed && self.active.metadata().is_none())
         {
-            self.cancel_gesture();
-            self.cancel_pointer();
+            self.cancel_gesture(false);
+            self.cancel_pointer_state();
         }
         if !scene.visible || scene.passthrough {
             self.set_hover(false, false);
@@ -5182,12 +5275,12 @@ impl Ui {
             self.prefs.set_bubble_placement(scene.bubble_placement);
         }
         if reset_position_changed {
-            self.reset_position(scene.bubble_placement);
+            self.reset_position();
 
             self.last_reset_position_revision = scene.reset_position_revision;
         }
         if scale_changed {
-            self.resize(scene.scale, scene.bubble_placement);
+            self.resize(scene.scale);
         }
         if status_changed {
             self.bubble_content_dirty = true;
@@ -5387,11 +5480,8 @@ impl Ui {
             return;
         };
         if scene.shutdown
-            || scene.visible != self.last_scene.visible
-            || scene.passthrough != self.last_scene.passthrough
-            || scene.alpha_passthrough != self.last_scene.alpha_passthrough
-            || scene.bubble_visible != self.last_scene.bubble_visible
-            || scene.bubble_placement != self.last_scene.bubble_placement
+            || !presentation_matches_scene(&scene, &self.last_scene)
+            || status_fields_changed(&scene, &self.last_scene)
         {
             self.refresh();
             return;
@@ -5413,12 +5503,27 @@ impl Ui {
         if self.bubble_content_tracking_locked() || self.composer_marked() {
             return;
         }
+        if !self.pending_bubble_content && self.pending_bubble_scene.is_none() {
+            return;
+        }
+        let Ok(state) = self.shared.lock() else {
+            return;
+        };
+        let current = state.scene();
+        drop(state);
+        if current.shutdown
+            || !presentation_matches_scene(&current, &self.last_scene)
+            || status_fields_changed(&current, &self.last_scene)
+        {
+            return;
+        }
         if self.pending_bubble_content {
             let scene = self.last_scene.clone();
             self.bubble_content_dirty = true;
             self.refresh_bubble_content(&scene);
         }
-        if let Some(scene) = self.pending_bubble_scene.take() {
+        if self.pending_bubble_scene.take().is_some() {
+            let scene = self.last_scene.clone();
             self.apply_bubble_frame_scene(&scene);
         }
     }
@@ -5781,19 +5886,46 @@ impl Ui {
         let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) else {
             return;
         };
-        self.render(&scene, completed, reaction);
+        if scene.shutdown
+            || !presentation_matches_scene(&scene, &self.last_scene)
+            || status_fields_changed(&scene, &self.last_scene)
+        {
+            self.refresh();
+            if scene.shutdown {
+                return;
+            }
+            let Some(current) = self.shared.lock().ok().map(|state| state.scene()) else {
+                return;
+            };
+            if current.shutdown
+                || !presentation_matches_scene(&current, &self.last_scene)
+                || status_fields_changed(&current, &self.last_scene)
+            {
+                return;
+            }
+            self.render(&current, completed, reaction);
+        } else {
+            self.render(&scene, completed, reaction);
+        }
     }
 
-    fn cancel_pointer(&mut self) {
+    fn cancel_pointer_state(&mut self) {
         self.pointer_event_started_at = None;
         self.interaction.cancel();
         self.pointer_press = None;
+    }
+
+    fn cancel_pointer(&mut self) {
+        self.cancel_pointer_state();
         if self.did_present {
             self.render_current(false, None);
         }
     }
 
     fn shutdown(&mut self) {
+        self.pending_standalone_body_origin = None;
+        self.pending_bubble_scene = None;
+        self.pending_bubble_content = false;
         self.stop_timer();
         self.remove_menu_event_monitors();
         self.stop_prepare_timer();
@@ -5912,7 +6044,7 @@ impl Ui {
         {
             Ok(scene) => scene,
             Err(_) => {
-                self.cancel_gesture();
+                self.cancel_gesture(true);
                 return None;
             }
         };
@@ -5921,7 +6053,7 @@ impl Ui {
             || !scene_matches_drag(&scene, &drag)
             || !rect_nearly_equal(self.drag_frame(drag.target), drag.expected_frame)
         {
-            self.cancel_gesture();
+            self.cancel_gesture(false);
             self.refresh();
             return None;
         }
@@ -5986,22 +6118,21 @@ impl Ui {
                 {
                     Ok(Some(scene)) => scene,
                     Ok(None) => {
-                        self.cancel_gesture();
+                        self.cancel_gesture(false);
                         self.refresh();
                         return None;
                     }
                     Err(_) => {
-                        self.cancel_gesture();
+                        self.cancel_gesture(true);
                         return None;
                     }
                 };
                 let frame = resize_frame(self.display_geometry, drag.start_top_left, scene.scale);
                 self.set_content_frame(frame, scene.scale, false);
-                self.update_bubble_frame_for(scene.bubble_placement);
-
                 updated.expected_frame = self.panel.frame();
                 updated.expected_scale = scene.scale;
                 self.last_scene.scale = scene.scale;
+                self.update_bubble_frame_scene(&self.last_scene.clone());
             }
         }
         Some(updated)
@@ -6024,7 +6155,7 @@ impl Ui {
             return;
         };
         if !valid {
-            self.cancel_gesture_for(Some(drag));
+            self.cancel_gesture_for(Some(drag), false);
             self.refresh();
             return;
         }
@@ -6046,6 +6177,18 @@ impl Ui {
     fn handle_screen_change(&mut self) {
         SCREEN_CHANGE_PENDING.with(|pending| pending.set(false));
         self.reanchor_menu_panel();
+        let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) else {
+            return;
+        };
+        if scene.shutdown
+            || !presentation_matches_scene(&scene, &self.last_scene)
+            || status_fields_changed(&scene, &self.last_scene)
+        {
+            self.refresh();
+            if scene.shutdown {
+                return;
+            }
+        }
         let drag = self
             .root
             .ivars()
@@ -6060,32 +6203,28 @@ impl Ui {
             // The moving window entered another display; mouse-up commits it.
             return;
         }
-        self.cancel_gesture();
-        self.cancel_pointer();
+        self.cancel_gesture(false);
+        self.cancel_pointer_state();
         self.set_hover(false, false);
-        // Clamp against the presented scene only; unseen state belongs to refresh.
+        // Refresh above reconciles unseen source changes before clamping.
         self.clamp_panel();
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
-        let scene = self.last_scene.clone();
-        if !scene.visible && scene.bubble_visible {
-            self.update_bubble_frame_scene(&scene);
-        }
         let _ = self.prefs.save();
     }
 
-    fn cancel_gesture(&mut self) {
+    fn cancel_gesture(&mut self, drain_pending: bool) {
         let drag = self
             .root
             .ivars()
             .drag
             .get()
             .or_else(|| self.bubble_root.ivars().drag.get());
-        self.cancel_gesture_for(drag);
+        self.cancel_gesture_for(drag, drain_pending);
     }
-    fn cancel_gesture_for(&mut self, drag: Option<DragState>) {
+    fn cancel_gesture_for(&mut self, drag: Option<DragState>, drain_pending: bool) {
         let accepted_frame = drag.map(|drag| self.drag_frame(drag.target));
-        let scene = self.shared.lock().ok().map(|state| state.scene());
+        let scene = drag.and_then(|_| self.shared.lock().ok().map(|state| state.scene()));
         self.root.ivars().drag.set(None);
         self.bubble_root.ivars().drag.set(None);
         self.root.set_gesture_visuals(None);
@@ -6105,7 +6244,9 @@ impl Ui {
         {
             self.persist_drag_geometry(&scene, drag.target, drag.expected_frame);
         }
-        self.apply_pending_bubble_updates();
+        if drain_pending {
+            self.apply_pending_bubble_updates();
+        }
     }
 
     fn drag_frame(&self, target: DragTarget) -> NSRect {
@@ -6122,6 +6263,7 @@ impl Ui {
                     frame.origin.x + body.body.x,
                     frame.origin.y + body.body.y,
                 )));
+                self.pending_standalone_body_origin = None;
                 let _ = self.prefs.save();
             }
         } else {
@@ -6141,7 +6283,7 @@ impl Ui {
         let _ = self.prefs.save();
     }
 
-    fn resize(&mut self, scale: f64, bubble_placement: BubblePlacement) {
+    fn resize(&mut self, scale: f64) {
         let frame = self.panel.frame();
         let old_canvas = self.display_geometry.canvas_frame(self.last_scene.scale);
         let old_center = NSPoint::new(
@@ -6157,7 +6299,7 @@ impl Ui {
             self.display_geometry.size(scale),
         );
         self.set_content_frame(new_frame, scale, true);
-        self.clamp_panel_for(bubble_placement);
+        self.clamp_panel_origin();
     }
 
     fn set_content_frame(&mut self, frame: NSRect, scale: f64, animate: bool) {
@@ -6172,7 +6314,6 @@ impl Ui {
         }
         self.root.grip().setFrame(grip_hit_rect(size));
         self.bubble_content_dirty = true;
-        self.update_bubble_frame_for(self.last_scene.bubble_placement);
         let dialogue = self.presentation.dialogue;
         self.presentation = Presentation {
             offset_x: 0.0,
@@ -6183,14 +6324,17 @@ impl Ui {
             effect: self.presentation.effect,
         };
     }
-    fn reset_position(&mut self, bubble_placement: BubblePlacement) {
+    fn reset_position(&mut self) {
         let size = self.panel.frame().size;
         let origin = default_origin(size, self.mtm);
         self.panel.setFrameOrigin(origin);
         self.prefs.set_standalone_bubble_position(None);
+        self.pending_standalone_body_origin = None;
         self.bubble_geometry = None;
+        self.bubble_geometry_attached = false;
+        self.pending_bubble_scene = None;
         self.bubble_content_dirty = true;
-        self.clamp_panel_for(bubble_placement);
+        self.clamp_panel_origin();
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
     }
@@ -6199,6 +6343,11 @@ impl Ui {
     }
 
     fn clamp_panel_for(&mut self, bubble_placement: BubblePlacement) {
+        self.clamp_panel_origin();
+        self.update_bubble_frame_for(bubble_placement);
+    }
+
+    fn clamp_panel_origin(&mut self) {
         let Some(visible) = panel_visible_frame(&self.panel, self.mtm) else {
             return;
         };
@@ -6214,7 +6363,6 @@ impl Ui {
         if origin.x != frame.origin.x || origin.y != frame.origin.y {
             self.panel.setFrameOrigin(origin);
         }
-        self.update_bubble_frame_for(bubble_placement);
     }
     fn update_bubble_frame(&mut self) {
         self.update_bubble_frame_for(self.last_scene.bubble_placement);
@@ -6326,17 +6474,15 @@ impl Ui {
         let geometry = if scene.visible {
             self.attached_bubble_geometry(scene.bubble_placement)
         } else {
-            let origin = self.prefs.standalone_bubble_position().or_else(|| {
-                let attached = if self.did_present && self.last_scene.visible {
-                    self.bubble_geometry
-                } else {
-                    None
-                }
-                .or_else(|| self.attached_bubble_geometry(scene.bubble_placement))?;
-                Some((
-                    attached.window.x + attached.body.x,
-                    attached.window.y + attached.body.y,
-                ))
+            let origin = preferred_standalone_origin(
+                self.prefs.standalone_bubble_position(),
+                self.pending_standalone_body_origin,
+                self.bubble_geometry,
+                self.bubble_geometry_attached,
+            )
+            .or_else(|| {
+                self.attached_bubble_geometry(scene.bubble_placement)
+                    .map(bubble_body_origin)
             });
             origin.and_then(|origin| {
                 let body = self.bubble_layout.body_size;
@@ -6350,16 +6496,8 @@ impl Ui {
             })
         };
         let Some(geometry) = geometry else { return };
-        if !scene.visible {
-            let body_origin = (
-                geometry.window.x + geometry.body.x,
-                geometry.window.y + geometry.body.y,
-            );
-            if self.prefs.standalone_bubble_position() != Some(body_origin) {
-                self.prefs.set_standalone_bubble_position(Some(body_origin));
-                let _ = self.prefs.save();
-            }
-        }
+        // Only a successfully applied, screen-clamped hidden body becomes a
+        // preference. Failed placement leaves the captured origin available.
         let frame = NSRect::new(
             NSPoint::new(geometry.window.x, geometry.window.y),
             NSSize::new(geometry.window.width, geometry.window.height),
@@ -6375,6 +6513,15 @@ impl Ui {
             .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
         self.bubble_root.set_geometry(geometry);
         self.bubble_geometry = Some(geometry);
+        self.bubble_geometry_attached = scene.visible;
+        if !scene.visible {
+            let body_origin = bubble_body_origin(geometry);
+            if self.prefs.standalone_bubble_position() != Some(body_origin) {
+                self.prefs.set_standalone_bubble_position(Some(body_origin));
+                let _ = self.prefs.save();
+            }
+            self.pending_standalone_body_origin = None;
+        }
         if !local_unchanged || self.bubble_layout_dirty {
             self.layout_bubble_children();
         }
@@ -6565,14 +6712,13 @@ impl Ui {
             panel_visible_frame(&self.panel, self.mtm)
         } else {
             let body = self.bubble_layout.body_size;
-            let origin = self
-                .prefs
-                .standalone_bubble_position()
-                .or_else(|| {
-                    self.bubble_geometry
-                        .map(|g| (g.window.x + g.body.x, g.window.y + g.body.y))
-                })
-                .unwrap_or((self.panel.frame().origin.x, self.panel.frame().origin.y));
+            let origin = preferred_standalone_origin(
+                self.prefs.standalone_bubble_position(),
+                self.pending_standalone_body_origin,
+                self.bubble_geometry,
+                self.bubble_geometry_attached,
+            )
+            .unwrap_or((self.panel.frame().origin.x, self.panel.frame().origin.y));
             standalone_visible_frame(
                 self.mtm,
                 NSRect::new(NSPoint::new(origin.0, origin.1), body),
@@ -7769,8 +7915,9 @@ impl Ui {
     }
 
     fn quit(&mut self) {
-        self.cancel_gesture();
-        self.cancel_pointer();
+        self.pending_standalone_body_origin = None;
+        self.cancel_gesture(false);
+        self.cancel_pointer_state();
         self.shutdown();
         if let Ok(mut state) = self.shared.lock() {
             state.request_shutdown();
@@ -7944,6 +8091,28 @@ fn bubble_rect(frame: NSRect) -> BubbleRect {
         width: frame.size.width,
         height: frame.size.height,
     }
+}
+
+fn bubble_body_origin(geometry: BubbleGeometry) -> (f64, f64) {
+    (
+        geometry.window.x + geometry.body.x,
+        geometry.window.y + geometry.body.y,
+    )
+}
+
+fn attached_body_origin(geometry: Option<BubbleGeometry>, attached: bool) -> Option<(f64, f64)> {
+    geometry.filter(|_| attached).map(bubble_body_origin)
+}
+
+fn preferred_standalone_origin(
+    saved: Option<(f64, f64)>,
+    pending: Option<(f64, f64)>,
+    geometry: Option<BubbleGeometry>,
+    attached: bool,
+) -> Option<(f64, f64)> {
+    saved
+        .or(pending)
+        .or_else(|| attached_body_origin(geometry, attached))
 }
 
 fn clamp_window_origin(frame: NSRect, visible: NSRect) -> NSPoint {
@@ -8567,6 +8736,45 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1.0e-9
+    }
+
+    #[test]
+    fn applied_attachment_provenance_distinguishes_clipped_from_standalone_tailless_body() {
+        let visible = BubbleRect {
+            x: -500.0,
+            y: 100.0,
+            width: 240.0,
+            height: 180.0,
+        };
+        let attached = place_bubble(visible, (150.0, 90.0), visible, BubblePlacement::Above);
+        assert!(attached.side.is_none() && attached.tail.is_none());
+        let body_origin = bubble_body_origin(attached);
+        assert_eq!(
+            attached_body_origin(Some(attached), true),
+            Some(body_origin)
+        );
+        let standalone = place_standalone_bubble(body_origin, (150.0, 90.0), visible);
+        assert!(standalone.side.is_none() && standalone.tail.is_none());
+        assert_eq!(attached_body_origin(Some(standalone), false), None);
+        assert_eq!(attached_body_origin(None, true), None);
+        let saved = (-310.0, 156.0);
+        let pending = (-400.0, 180.0);
+        assert_eq!(
+            preferred_standalone_origin(Some(saved), Some(pending), Some(attached), true),
+            Some(saved)
+        );
+        assert_eq!(
+            preferred_standalone_origin(None, Some(pending), Some(attached), true),
+            Some(pending)
+        );
+        assert_eq!(
+            preferred_standalone_origin(None, None, Some(attached), true),
+            Some(body_origin)
+        );
+        assert_eq!(
+            preferred_standalone_origin(None, None, Some(standalone), false),
+            None
+        );
     }
 
     #[test]
