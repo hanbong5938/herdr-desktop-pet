@@ -6,7 +6,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 > **Public `main` source builds and the pinned public app v0.1.11 use the baseline menu-bar UI described below.** The four pending native commits are local-branch previews only: they are **not merged into `main` and not included in any public v0.1.11 binary**. The menu-bar additions and worktree removal described as current-working-copy features below are later, uncommitted changes, not part of those four commits. `--source` builds the checkout you already have; it does not obtain these changes. See [v0.1.11 notes](docs/releases/v0.1.11.md), [local pending notes](docs/releases/unreleased.md), and the [local-checkout guide](docs/migrations/unreleased.md) ([한국어](docs/migrations/unreleased.ko.md)).
 
-The optional beta channel below is separate from public `main` and stable v0.1.11: its planned artifact is built from an isolated snapshot of this working copy (including the four commits and later local additions). References to “current working copy only” below also describe that opt-in beta snapshot, **not** the stable installer or Homebrew app.
+The published `beta/0.2.0-beta.2` remains separate from public `main` and stable v0.1.11. This working copy also supplies the reply clipboard fix selected for `beta/0.2.0-beta.3`; until beta3 publication and verification, the rolling beta formula still installs beta2. “Current working copy only” features are not in the stable installer or Homebrew app.
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
@@ -96,7 +96,7 @@ brew install hanbong5938/tap/herdr-desktop-pet
 
 ## Opt-in beta UI test (not the stable install)
 
-For Apple Silicon on macOS 13+, the selected `beta/0.2.0-beta.2` prerelease is an opt-in test channel, not an update to public `main`, stable v0.1.11, the manifest, `--prebuilt`, the stable Homebrew formula, or normal plugin install. Once the beta2 release is published and the separate beta tap formula advances to beta2, use the [beta2 release page](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.2) and install its pinned 0.2.0-beta.2 asset and distinct CLI. The immutable beta1 archive and historical beta1 formula revision contain the reply-clipping issue; beta2 includes the reply-clipping and malformed-link scanner fixes, without implying physical GUI/IME verification.
+For Apple Silicon on macOS 13+, [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3) is the planned opt-in test release; use its download only after publication and verification. The separate rolling beta Homebrew formula still installs 0.2.0-beta.2 until it is updated after that release. Neither channel changes public `main`, stable v0.1.11, the manifest, `--prebuilt`, the stable Homebrew formula, or normal plugin install. Immutable beta1 has reply clipping; beta2 fixes clipping and the malformed-link scanner but lacks reply Command-A/C/X/V clipboard dispatch. Selected beta3 source adds that native clipboard fix. Physical keyboard/IME verification remains outstanding.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet-beta
@@ -105,17 +105,19 @@ herdr-desktop-pet-beta start
 herdr-desktop-pet-beta status
 ```
 
-The beta formula installs `HerdrDesktopPetBeta.app` inside Homebrew's prefix, **not** `/Applications`; `herdr-desktop-pet-beta` is separate from the stable `herdr-desktop-pet` CLI. Once beta2 is available, existing beta users should run `brew update && brew upgrade herdr-desktop-pet-beta` (not upgrade the stable formula); remove only beta with `brew uninstall herdr-desktop-pet-beta`. As a manual fallback after publication, download `HerdrDesktopPet-v0.2.0-beta.2-macos-arm64.tar.gz` and its `.sha256` checksum from the beta2 release page and verify SHA-256 before unpacking:
+The beta formula installs `HerdrDesktopPetBeta.app` inside Homebrew's prefix, **not** `/Applications`; `herdr-desktop-pet-beta` is separate from the stable CLI. It currently reports `0.2.0-beta.2`; after the verified beta3 formula update it should report `0.2.0-beta.3`. New users can use the install command above; existing beta users can run `brew update && brew upgrade herdr-desktop-pet-beta` **after** that update (not upgrade the stable formula). Remove only beta with `brew uninstall herdr-desktop-pet-beta`. After beta3 assets are published, manually download `HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz` and its `.sha256` (or `SHA256SUMS`) from the linked beta3 release and verify SHA-256 before unpacking:
 
 ```sh
 mkdir -p "$HOME/HerdrBeta"
-tar -xzf "$HOME/Downloads/HerdrDesktopPet-v0.2.0-beta.2-macos-arm64.tar.gz" -C "$HOME/HerdrBeta"
+tar -xzf "$HOME/Downloads/HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz" -C "$HOME/HerdrBeta"
 BETA="$HOME/HerdrBeta/HerdrDesktopPetBeta.app/Contents/MacOS/herdr-desktop-pet"
 "$BETA" --version
 "$BETA" start
 ```
 
 Adjust the download path if necessary. Before either beta `start`, quit the running stable pet and back up its configuration and state, including `preferences.json`, `lifecycle.json`, `characters/`, and managed `menu-bar-icons/`. Unless explicitly using isolated config **and** state directories, beta and stable share the same profile and control namespace: do not run them concurrently. The ad-hoc-signed, non-notarized manual download may require explicit macOS Gatekeeper approval. Only the isolated beta source snapshot changes version; this working copy remains v0.1.11. Follow the [manual UI checklist](docs/migrations/unreleased.md#optional-manual-beta-test) before testing deletion on a disposable linked worktree.
+
+Historical beta2 proof only (not beta3 verification): the public beta2 prerelease points to `9035c11e5acf76a1092ddf3a08d4360eac680495`; anonymous downloads confirmed its archive SHA-256 `ddb61fa2ff45aa0fcc603c175423667512b7fa043461b6ab5e9f2c37576a6432` against published checksums and GitHub digest, and its extracted app passed strict signature/version/arm64 checks. Isolated beta1 → beta2 upgrade and fresh beta2 install/test passed; extracted and upgraded beta2 reached UI/control/registration/data readiness against stock Herdr 0.9.3 with separate config and state. These are not beta3 publication/install proof or physical input, picker, alert-key, pointer, or VoiceOver verification.
 
 ## Install this checkout from source
 
@@ -142,7 +144,7 @@ Preview guidance here applies only if you **already have the appropriate local c
 
 This branch and these commits are local provenance, **not public checkout/download links**; their availability elsewhere is not guaranteed. They remain unmerged into `main`, and no public v0.1.11 binary contains them. Only from that existing local checkout, use the source-install commands above with your isolated patched host. Use explicit `--source` for the preview: `--prebuilt` never includes it, and optionless installation normally selects the pinned public binary (source fallback builds only the checkout already present). Do not use a public `main` checkout as a substitute.
 
-The four commits above describe the original local preview, whose status icon was conditional. The **selectable menu-bar policy, custom icon image, and worktree removal described below are additions in this current working copy**, not changes contained in `bf23ced` or a public release. A checkout at that commit alone retains its original conditional recovery behavior and does not provide worktree removal.
+The four commits above describe the original local preview, whose status icon was conditional. The **selectable menu-bar policy, custom icon image, and worktree removal described below are later additions in this working copy**, not changes contained in `bf23ced` or stable v0.1.11; they are included in the published beta2 snapshot. A checkout at that historical commit alone retains its original conditional recovery behavior and does not provide worktree removal.
 
 ### Shared installer behavior
 

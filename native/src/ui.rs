@@ -523,8 +523,29 @@ define_class!(
             self.normalize_committed_text();
         }
 
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            // Like the dialogue editor, this panel has no application Edit menu.
+            if self
+                .window()
+                .and_then(|window| window.firstResponder())
+                .is_some_and(|responder| {
+                    Retained::as_ptr(&responder).cast::<()>()
+                        == (self as *const Self).cast::<()>()
+                })
+                && self.handle_edit_shortcut(event)
+            {
+                return true.into();
+            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            // Some window dispatch paths bypass performKeyEquivalent:.
+            if self.handle_edit_shortcut(event) {
+                return;
+            }
             let marked: bool = unsafe { msg_send![self, hasMarkedText] };
             if !marked && matches!(event.keyCode(), 36 | 76) {
                 with_ui_mut(|ui| ui.submit_composer());
@@ -599,6 +620,34 @@ define_class!(
 );
 
 impl ComposerView {
+    fn handle_edit_shortcut(&self, event: &NSEvent) -> bool {
+        let modifiers = event.modifierFlags()
+            & (NSEventModifierFlags::Command
+                | NSEventModifierFlags::Shift
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option);
+        if modifiers != NSEventModifierFlags::Command || unsafe { msg_send![self, hasMarkedText] } {
+            return false;
+        }
+        let Some(key) = event.charactersIgnoringModifiers() else {
+            return false;
+        };
+        if key.length() != 1 {
+            return false;
+        }
+        let Ok(key) = u8::try_from(key.characterAtIndex(0)) else {
+            return false;
+        };
+        match key.to_ascii_lowercase() {
+            b'a' => unsafe { self.selectAll(None) },
+            b'c' => unsafe { self.copy(None) },
+            b'x' => unsafe { self.cut(None) },
+            b'v' => unsafe { msg_send![self, paste: None::<&AnyObject>] },
+            _ => return false,
+        }
+        true
+    }
+
     fn normalize_committed_text(&self) {
         let marked: bool = unsafe { msg_send![self, hasMarkedText] };
         if marked || self.ivars().normalizing.get() {

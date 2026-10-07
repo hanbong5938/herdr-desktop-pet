@@ -6,7 +6,7 @@
 
 > **공개 `main` 소스 빌드와 고정된 공개 앱 v0.1.11은 아래의 기본 메뉴 막대 UI를 사용합니다.** 미출시 네이티브 커밋 4개는 로컬 브랜치 프리뷰 전용이며 **`main`에 병합되지 않았고 공개 v0.1.11 바이너리에도 없습니다**. 아래의 현재 작업본 전용 메뉴 막대 추가 기능과 워크트리 삭제는 그 네 커밋 이후의 미커밋 변경입니다. `--source`는 이미 보유한 체크아웃을 빌드할 뿐 이 변경을 가져오지 않습니다. [v0.1.11 기록](docs/releases/v0.1.11.md) · [로컬 미출시 기록](docs/releases/unreleased.md) · [로컬 체크아웃 안내](docs/migrations/unreleased.ko.md) ([English](docs/migrations/unreleased.md)).
 
-아래의 선택형 베타 채널은 공개 `main`·안정판 v0.1.11과 별개입니다. 예정된 바이너리는 네 커밋과 이후 로컬 추가 기능을 모두 포함하는 현재 작업본의 격리된 스냅샷에서 빌드합니다. 아래 “현재 작업본 전용” 설명은 이 선택형 베타 스냅샷에도 해당하지만 안정판 설치 프로그램이나 Homebrew 앱에는 해당하지 않습니다.
+공개된 `beta/0.2.0-beta.2`는 공개 `main`·안정판 v0.1.11과 별개입니다. 현재 작업본에는 `beta/0.2.0-beta.3`에 반영할 답장 클립보드 수정도 있습니다. beta3 공개·검증과 포뮬러 갱신 전에는 순환 베타 포뮬러가 여전히 beta2를 설치합니다. “현재 작업본 전용” 기능은 안정판 설치 프로그램이나 Homebrew 앱에 없습니다.
 
 <img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">
 
@@ -95,7 +95,7 @@ brew install hanbong5938/tap/herdr-desktop-pet
 
 ## 선택형 베타 UI 테스트 (안정판 설치 아님)
 
-Apple Silicon·macOS 13 이상용으로 선택된 `beta/0.2.0-beta.2` 시험판은 선택형 테스트 채널입니다. 공개 `main`, 안정판 v0.1.11, 매니페스트, `--prebuilt`, 안정판 Homebrew 포뮬러, 일반 플러그인 설치는 변경하지 않습니다. beta2 릴리스가 게시되고 별도 베타 tap 포뮬러가 beta2로 갱신되면 [beta2 릴리스 페이지](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.2)의 0.2.0-beta.2 자산에 고정된 별도 CLI를 설치하세요. 변경 불가한 beta1 아카이브와 과거 beta1 포뮬러 리비전에는 답장 글자 잘림 문제가 남아 있습니다. beta2에는 답장 글자 잘림과 잘못된 링크 스캐너 수정이 포함되지만 물리적 GUI/IME 검증을 뜻하지는 않습니다.
+Apple Silicon·macOS 13 이상용 [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3)은 준비 중인 선택형 시험판입니다. 공개·검증 후에만 자산을 받으세요. 별도 순환 베타 Homebrew 포뮬러는 그 뒤 갱신하기 전까지 0.2.0-beta.2를 설치합니다. 공개 `main`, 안정판 v0.1.11, 매니페스트, `--prebuilt`, 안정판 포뮬러, 일반 플러그인 설치는 변경하지 않습니다. 변경 불가한 beta1에는 답장 글자 잘림이 있고 beta2에는 글자 잘림·잘못된 링크 스캐너 수정이 있으나 답장 Command-A/C/X/V 클립보드 연결은 없습니다. beta3 대상 소스에 네이티브 클립보드 수정이 추가됐으며 물리적 키보드·IME 검증은 남아 있습니다.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet-beta
@@ -104,17 +104,19 @@ herdr-desktop-pet-beta start
 herdr-desktop-pet-beta status
 ```
 
-베타 포뮬러는 `HerdrDesktopPetBeta.app`을 `/Applications`가 아닌 Homebrew 접두 경로(prefix)에 설치합니다. `herdr-desktop-pet-beta`는 안정판 `herdr-desktop-pet`과 별도 CLI입니다. beta2가 제공되면 기존 베타 사용자는 `brew update && brew upgrade herdr-desktop-pet-beta`로 베타만 갱신하고 안정판 포뮬러는 갱신하지 마세요. 베타만 제거하려면 `brew uninstall herdr-desktop-pet-beta`를 사용하세요. 게시 후 수동 대안으로 beta2 릴리스 페이지에서 `HerdrDesktopPet-v0.2.0-beta.2-macos-arm64.tar.gz`와 `.sha256`을 받아 압축을 풀기 전에 SHA-256을 검증하세요.
+베타 포뮬러는 `HerdrDesktopPetBeta.app`을 `/Applications`가 아닌 Homebrew 접두 경로에 설치합니다. 별도 `herdr-desktop-pet-beta` CLI는 현재 `0.2.0-beta.2`를 표시하며 검증된 beta3 포뮬러 갱신 후에는 `0.2.0-beta.3`을 표시해야 합니다. 새 사용자는 위 설치 명령을 쓰고 기존 사용자는 **포뮬러 갱신 후** `brew update && brew upgrade herdr-desktop-pet-beta`로 베타만 갱신하세요. 제거에는 `brew uninstall herdr-desktop-pet-beta`를 사용하세요. beta3 자산 공개 후 연결된 페이지에서 `HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz`와 `.sha256`(또는 `SHA256SUMS`)을 받아 압축 해제 전에 SHA-256을 검증하세요.
 
 ```sh
 mkdir -p "$HOME/HerdrBeta"
-tar -xzf "$HOME/Downloads/HerdrDesktopPet-v0.2.0-beta.2-macos-arm64.tar.gz" -C "$HOME/HerdrBeta"
+tar -xzf "$HOME/Downloads/HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz" -C "$HOME/HerdrBeta"
 BETA="$HOME/HerdrBeta/HerdrDesktopPetBeta.app/Contents/MacOS/herdr-desktop-pet"
 "$BETA" --version
 "$BETA" start
 ```
 
 다운로드 경로는 필요에 따라 수정하세요. 어느 베타 `start` 전에도 기존 안정판 앱을 종료하고 설정·상태 프로필(`preferences.json`, `lifecycle.json`, `characters/`, 관리되는 `menu-bar-icons/` 포함)을 백업하세요. 설정과 상태 디렉터리를 모두 명시적으로 격리하지 않으면 베타와 안정판은 프로필과 제어 네임스페이스를 공유하므로 동시에 실행하지 마세요. 수동 다운로드한 ad-hoc 서명·미공증 번들은 macOS Gatekeeper에서 명시적 실행 승인이 필요할 수 있습니다. 버전은 격리 베타 소스에만 적용되고 현재 작업본은 v0.1.11입니다. 삭제에는 폐기 가능한 연결 워크트리만 사용하고 [수동 UI 점검표](docs/migrations/unreleased.ko.md#선택형-수동-베타-테스트)를 따르세요.
+
+아래는 beta3 검증이 아닌 **과거 beta2만의 증거**입니다. 공개 beta2 태그는 `9035c11e5acf76a1092ddf3a08d4360eac680495`를 가리킵니다. 익명 다운로드한 beta2 압축 파일의 SHA-256 `ddb61fa2ff45aa0fcc603c175423667512b7fa043461b6ab5e9f2c37576a6432`는 공개 체크섬과 GitHub digest에 일치했고 압축 해제 앱은 엄격한 서명·버전·arm64 확인을 통과했습니다. 격리된 beta1 → beta2 업그레이드와 beta2 신규 설치·테스트를 통과했고, 압축 해제 앱과 업그레이드한 beta2는 분리된 설정·상태 및 순정 Herdr 0.9.3에서 UI/제어/등록/데이터 준비 상태에 도달했습니다. beta3 공개·설치나 물리적 입력·이미지 선택·확인 창 키·포인터·VoiceOver 검증은 아닙니다.
 
 ## 이 체크아웃 설치: 소스 빌드
 
@@ -141,7 +143,7 @@ bash scripts/install.sh --source
 
 브랜치·커밋 이름은 로컬 출처이며 **공개 체크아웃·다운로드 링크가 아닙니다**. 다른 곳에서의 접근 가능성은 보장되지 않습니다. `main`에는 병합되지 않았고 공개 v0.1.11 바이너리에도 없습니다. 이미 보유한 해당 로컬 체크아웃에서만 위 소스 설치 명령과 격리된 패치 호스트를 사용하세요. 프리뷰에는 `--source`를 명시하세요. `--prebuilt`에는 프리뷰가 없고 옵션 없는 설치는 보통 고정된 공개 바이너리를 선택합니다(소스 폴백은 이미 있는 체크아웃만 빌드). 공개 `main` 체크아웃으로 대체할 수 없습니다.
 
-위 네 커밋은 원래 로컬 프리뷰의 출처이며, 당시 메뉴 막대 아이콘은 조건부로 나타났습니다. 아래 **선택 가능한 메뉴 막대 정책·사용자 지정 아이콘 이미지·워크트리 삭제는 현재 작업본에서 추가한 기능**으로, `bf23ced` 자체나 안정판 공개 v0.1.11에는 포함되지 않습니다. 그 커밋의 체크아웃만 있다면 원래의 조건부 복구 동작을 사용하며 워크트리 삭제 기능은 없습니다.
+위 네 커밋은 원래 로컬 프리뷰의 출처이며, 당시 메뉴 막대 아이콘은 조건부로 나타났습니다. 아래 **선택 가능한 메뉴 막대 정책·사용자 지정 아이콘 이미지·워크트리 삭제는 현재 작업본에서 나중에 추가한 기능**으로, `bf23ced` 자체나 안정판 공개 v0.1.11에는 포함되지 않지만 공개된 beta2 스냅샷에는 포함됩니다. 그 과거 커밋의 체크아웃만 있다면 원래의 조건부 복구 동작을 사용하며 워크트리 삭제 기능은 없습니다.
 
 ### 공통 설치 프로그램 동작
 

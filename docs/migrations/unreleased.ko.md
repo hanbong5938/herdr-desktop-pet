@@ -8,7 +8,7 @@
 
 ## 선택형 수동 베타 테스트
 
-선택된 `beta/0.2.0-beta.2` 스냅샷은 직접 UI 확인용이며 물리적 GUI/IME 상호작용까지 검증했다는 뜻은 아닙니다. [GitHub beta2 시험판](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.2)과 별도 베타 tap 포뮬러가 게시되면 macOS 13+ arm64에서 고정된 베타와 별도 CLI를 설치하세요. 게시된 beta1의 설치·준비 상태·제거 확인은 과거 beta1 증거이며 beta2 게시·설치 증거가 아닙니다.
+공개된 [`beta/0.2.0-beta.2` 시험판](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.2)은 예정된 [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3)의 공개·검증과 이후 포뮬러 갱신 전까지 순환 베타 포뮬러의 현재 버전입니다. beta3은 macOS 13+ arm64에서 수동 UI 테스트용이며 물리적 GUI/IME 인증을 뜻하지 않습니다. beta2 태그는 `9035c11e5acf76a1092ddf3a08d4360eac680495`를 가리킵니다. beta1 설치·준비·제거 확인은 beta1만의 과거 증거입니다.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet-beta
@@ -17,7 +17,9 @@ herdr-desktop-pet-beta start
 herdr-desktop-pet-beta status
 ```
 
-베타 포뮬러는 `HerdrDesktopPetBeta.app`을 `/Applications`가 아닌 Homebrew 접두 경로(prefix)에 설치하며 안정판 CLI를 대체하지 않습니다. beta2가 제공되면 `brew update && brew upgrade herdr-desktop-pet-beta`로 베타만 갱신하고 `brew uninstall herdr-desktop-pet-beta`로 제거하세요. 이전 현재 소스 AppKit 실행에서는 실제 입력창 콜백·조합 문자·안정된 부착 프레임·확정 초안과 선택 위치를 관찰했으나 Window Server 가림 창 때문에 물리적 창 입력은 확인하지 못했습니다. 게시 후 수동 압축 파일 대안으로 beta2 릴리스에서 `HerdrDesktopPet-v0.2.0-beta.2-macos-arm64.tar.gz`와 `.sha256`을 받아 압축 해제 전에 SHA-256을 검증하고 `HerdrDesktopPetBeta.app`을 실행하세요. 태그는 `beta/0.2.0-beta.2`입니다. 수동 다운로드는 ad-hoc 서명·미공증이므로 Gatekeeper에서 명시적 승인이 필요할 수 있습니다.
+베타 포뮬러는 `HerdrDesktopPetBeta.app`을 `/Applications`가 아닌 Homebrew 접두 경로에 설치합니다. 별도 `herdr-desktop-pet-beta --version`은 현재 `0.2.0-beta.2`를 표시하고 beta3 포뮬러 갱신 후에만 `0.2.0-beta.3`을 표시해야 합니다. 신규 사용자는 위 설치 명령을, 기존 사용자는 갱신 후 `brew update && brew upgrade herdr-desktop-pet-beta`를 사용하세요. 베타만 제거하려면 `brew uninstall herdr-desktop-pet-beta`를 사용하세요. beta3 자산 공개 후 연결된 릴리스에서 `HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz`와 `.sha256`(또는 `SHA256SUMS`)을 받아 SHA-256 검증 뒤 압축을 풀고 `HerdrDesktopPetBeta.app` 또는 포함된 `Contents/MacOS/herdr-desktop-pet` CLI를 실행하세요. ad-hoc 서명·미공증이므로 Gatekeeper 승인이 필요할 수 있습니다.
+
+아래는 beta1과 별개의 **과거 beta2만의 증거**이며 beta3 공개·설치 증거가 아닙니다. 익명 다운로드한 beta2 압축 파일 SHA-256 `ddb61fa2ff45aa0fcc603c175423667512b7fa043461b6ab5e9f2c37576a6432`는 공개 체크섬 및 GitHub digest에 일치했고 앱은 엄격한 서명·버전·arm64·패키지 트리 검증을 통과했습니다. 격리된 beta1 → beta2 업그레이드와 beta2 신규 설치·테스트를 통과했고 압축 해제 앱과 업그레이드 beta2는 분리된 설정·상태와 순정 Herdr 0.9.3에서 UI/제어/등록/데이터 준비 상태에 도달했습니다. 이전 소스 AppKit 배치·입력창 확인은 물리적 키보드·IME·이미지 선택·확인 창 키·포인터·VoiceOver 검증이 아닙니다.
 
 버전 매니페스트는 격리 베타 소스에서만 바꾸며 현재 작업본은 0.1.11로 유지합니다. `main`, 안정판 v0.1.11, 공개 latest, **안정판** Homebrew 포뮬러, 기본 설치기는 베타로 바꾸지 않으며 베타 Homebrew 포뮬러는 별도입니다. 일반 설치기는 안정판 `v` 태그와 원래 앱 이름을 기대하므로 **기본 설치나 `--prebuilt`로 이 베타를 설치하지 마세요**. 아래 기존 프로필을 백업·보존하고 무시된 파일 삭제, 워크스페이스·패널·프로세스 영향, 강제 삭제·자동 재시도 금지, 원자적 작업공간 식별 검증(CAS) 부재 경고도 그대로 지키세요. [English beta guidance](unreleased.md#optional-manual-beta-test) · [베타 범위](../releases/unreleased.md#optional-beta-test-channel--선택형-베타-테스트-채널).
 
@@ -50,13 +52,17 @@ herdr-desktop-pet-beta status
 
 ## 현재 작업본 수정: 답장 입력 글자 잘림
 
-변경 불가한 `beta/0.2.0-beta.1` 아카이브와 과거 beta1 Homebrew formula 리비전에는 보고된 잘림 문제가 남아 있으며 이 체크아웃의 재빌드가 beta1을 갱신하지 않습니다. 게시 후에는 베타 포뮬러가 beta2로 갱신됩니다. 선택된 beta2 소스 스냅샷에는 이 답장 글자 잘림 수정과 잘못된 링크 스캐너 수정이 포함되지만 beta2 게시·설치는 별도 증거가 필요합니다. 두 수정 모두 `main`, 안정판 바이너리, 현재 작업본의 버전이나 프로필을 변경하지 않습니다.
+변경 불가한 `beta/0.2.0-beta.1` 아카이브와 과거 beta1 포뮬러에는 글자 잘림이 남아 있으며 이 체크아웃 재빌드로 beta1은 바뀌지 않습니다. 공개 beta2에는 답장 글자 잘림·잘못된 링크 스캐너 수정이 포함되고 순환 포뮬러는 beta3 검증·갱신 전까지 beta2입니다. beta3 대상 소스는 두 수정을 유지하고 답장 클립보드 단축키도 수정합니다. 위 beta2 공개·무결성·설치 증거는 beta2에만 해당합니다. `main`, 안정판 v0.1.11, 현재 작업본 버전, 프로필은 바뀌지 않습니다.
 
 답장 입력창은 네이티브 텍스트 한 줄과 테두리·스크롤러 공간을 함께 확보하고 그 높이를 답장 행·선택 카드·말풍선에 전달합니다. 문서 폭은 긴 글을 짧게 바꾸거나 비울 때도 현재 텍스트를 따라 줄어들며, 초안·선택을 다시 쓰지 않고 유효하지 않은 가로 스크롤 위치만 제한합니다. 조합 중에는 앱의 배치 변경을 보류하고, 짧은 화면에서는 선택 답장·주 메시지가 들어갈 수 있는 경우 여백부터 줄여 글자 공간을 확보합니다.
 
 자체 Herdr 0.9.3 백엔드·대기 중인 OMP 세션에 연결한 서명된 격리 실제 앱에서 보고된 초안의 Legacy 입력창 외부/내부 clip/문서 높이는 22/3/5 pt에서 43/24/24 pt로 바뀌었습니다. 16 pt 텍스트 줄이 네이티브 창 raster에서 보이고 상위 뷰의 clipping 범위 안에도 들어왔습니다. production 숨김·표시·초기화·배치 콜백에서 동일 입력창·초안·UTF-16 선택 범위·affinity가 유지됐고 네이티브 `insertText`로 선택 영역을 대체했습니다. marked/unmark 콜백에서도 조합·편집 상태를 유지했으며 실제 Overlay 스타일에서도 글자 공간을 확보했습니다. **프로세스 내부의 가상 260 pt 화면 높이 fixture**에서도 선택 답장과 주 메시지가 보였고 이후 원래 화면 구현을 복원했습니다. 물리적 모니터·키보드·IME·활성 포커스의 증거는 아닙니다.
 
 메인 스레드 AppKit 회귀 검증은 production 배치 구현으로 두 스크롤러 스타일, 95/220/390 pt 폭, 빈/짧은/긴 한글·영문·이모지, 긴 글 → 짧은 글/빈 글, 가로 이동, 재부착, 선택 대체, 조합 상태를 확인합니다. 실제 AppKit 디스플레이가 있는 macOS GUI 세션에서 `cargo test --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml --test composer_layout`로 실행하세요. 수동 GUI 점검은 긴 초안 가운데를 선택하고 캐릭터 숨김/표시·초기화·재배치 후 대체 입력하여 두 macOS 스크롤 막대 설정의 글자·커서 전체 높이, 가로 이동, 실제 IME·키보드 포커스를 확인하세요. 기존 프로필·백업 규칙은 위 안내를 유지합니다.
+
+## beta3 대상 소스 수정: 답장 복사·붙여넣기 단축키
+
+변경 불가한 공개 beta2에는 답장창 Command 클립보드 단축키 연결이 없습니다. beta3 대상 소스는 대사 편집창처럼 Command-A/C/X/V를 네이티브 responder 경로로 전달하고 한 줄 붙여넣기 정규화·UTF-16 선택을 유지합니다. 추가 Shift/Option/Control modifier와 조합 중 입력은 Cocoa/IME에 맡기므로 수동 확인 전 조합을 마치세요. 실제 production 입력창·패널과 사설 pasteboard를 쓴 AppKit smoke에서 한글·이모지·CRLF 붙여넣기, 선택 대체, 복사·잘라내기·전체 선택·포커스 보호를 확인했고 사용자 클립보드는 건드리지 않았습니다. 이는 소스 검증이지 beta3 공개·설치 또는 물리적 키보드·IME 인증이 아닙니다. beta2 자산·포뮬러와 원본 0.1.11 매니페스트는 유지하며 안정판 자동 갱신도 아닙니다.
 
 ## 설정과 과거 조건부 복구
 
