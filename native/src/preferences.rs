@@ -771,6 +771,7 @@ fn sync_directory(directory: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1028,20 +1029,73 @@ mod tests {
         }
     }
 
+    fn private_png_asset(
+        managed: &Path,
+        pixel: [u8; 4],
+    ) -> (MenuBarIconPreference, PathBuf, Vec<u8>) {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixel)
+                .unwrap();
+        }
+        let preference = MenuBarIconPreference {
+            asset: format!("icon-{:x}.png", Sha256::digest(&bytes)),
+        };
+        let path = managed.join(&preference.asset);
+        fs::write(&path, &bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        (preference, path, bytes)
+    }
+
+    fn assert_icon_state(
+        preferences: &Preferences,
+        path: &Path,
+        icon: Option<&MenuBarIconPreference>,
+        expected_disk: &Value,
+    ) {
+        assert_eq!(preferences.menu_bar_icon(), icon);
+        assert_eq!(preferences.menu_bar_mode(), MenuBarMode::RecoveryOnly);
+        assert_eq!(preferences.language(), LanguagePreference::En);
+        assert!(!preferences.visible());
+        assert!(preferences.passthrough());
+        assert_eq!(
+            preferences.extra["future_setting"],
+            serde_json::json!({"v": 2})
+        );
+        let disk: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(&disk, expected_disk);
+        let reloaded = Preferences::load_path(path).unwrap();
+        assert_eq!(reloaded.menu_bar_icon(), icon);
+        assert_eq!(reloaded.menu_bar_mode(), preferences.menu_bar_mode());
+        assert_eq!(reloaded.language(), preferences.language());
+        assert_eq!(reloaded.visible(), preferences.visible());
+        assert_eq!(reloaded.passthrough(), preferences.passthrough());
+        assert_eq!(reloaded.extra, preferences.extra);
+    }
+
     #[test]
-    fn icon_roundtrip_survives_other_saves_and_failed_reset_preserves_previous_asset() {
+    fn icon_replacement_and_reset_commit_before_cleaning_previous_asset() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
         let managed = directory.join("menu-bar-icons");
         fs::create_dir(&managed).unwrap();
         fs::set_permissions(&managed, fs::Permissions::from_mode(0o700)).unwrap();
-        let previous = MenuBarIconPreference {
-            asset: format!("icon-{}.png", "a".repeat(64)),
-        };
-        let old_path = managed.join(&previous.asset);
-        fs::write(&old_path, b"old asset").unwrap();
-        fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let (previous, old_path, old_bytes) = private_png_asset(&managed, [200, 20, 30, 255]);
+        let (replacement, new_path, new_bytes) = private_png_asset(&managed, [20, 140, 50, 255]);
+        let (unrelated, unrelated_path, unrelated_bytes) =
+            private_png_asset(&managed, [40, 60, 220, 255]);
         let mut prefs = Preferences::default();
+        prefs.set_visible(false);
+        prefs.set_passthrough(true);
+        prefs
+            .extra
+            .insert("future_setting".to_owned(), serde_json::json!({"v": 2}));
         prefs
             .save_menu_bar_icon_in_directory(Some(previous.clone()), &directory)
             .unwrap();
@@ -1052,27 +1106,69 @@ mod tests {
             .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
             .unwrap();
         let mut restarted = Preferences::load_path(&path).unwrap();
-        assert_eq!(restarted.menu_bar_icon(), Some(&previous));
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").unwrap();
-        let before = fs::read(&path).unwrap();
+        let previous_disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_icon_state(&restarted, &path, Some(&previous), &previous_disk);
+
+        // Block the actual preferences.json rename in the same root, after publishing
+        // the candidate asset. Moving the previous file aside preserves its exact bytes.
+        let backup = directory.join("preferences.backup");
+        let previous_bytes = fs::read(&path).unwrap();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
         restarted
-            .save_menu_bar_icon_in_directory(None, &blocked)
+            .save_menu_bar_icon_in_directory(Some(replacement.clone()), &directory)
             .unwrap_err();
         assert_eq!(restarted.menu_bar_icon(), Some(&previous));
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(old_path.exists());
+        assert_eq!(fs::read(&backup).unwrap(), previous_bytes);
+        assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert_icon_state(&restarted, &path, Some(&previous), &previous_disk);
+
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        restarted
+            .save_menu_bar_icon_in_directory(None, &directory)
+            .unwrap_err();
+        assert_eq!(restarted.menu_bar_icon(), Some(&previous));
+        assert_eq!(fs::read(&backup).unwrap(), previous_bytes);
+        assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert_icon_state(&restarted, &path, Some(&previous), &previous_disk);
+
+        restarted
+            .save_menu_bar_icon_in_directory(Some(replacement.clone()), &directory)
+            .unwrap();
+        let mut replacement_disk = previous_disk.clone();
+        replacement_disk["menu_bar_icon"] = serde_json::json!({"asset": replacement.asset});
+        assert_icon_state(&restarted, &path, Some(&replacement), &replacement_disk);
+        assert!(!old_path.exists());
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        assert_eq!(fs::read(&unrelated_path).unwrap(), unrelated_bytes);
+
         restarted
             .save_menu_bar_icon_in_directory(None, &directory)
             .unwrap();
-        assert!(restarted.menu_bar_icon().is_none());
-        assert!(Preferences::load_path(&path)
-            .unwrap()
-            .menu_bar_icon()
-            .is_none());
-        assert!(!old_path.exists());
-        let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert!(disk.get("menu_bar_icon").is_none());
+        let mut reset_disk = replacement_disk.clone();
+        reset_disk.as_object_mut().unwrap().remove("menu_bar_icon");
+        assert_icon_state(&restarted, &path, None, &reset_disk);
+        assert!(!new_path.exists());
+        assert_eq!(fs::read(&unrelated_path).unwrap(), unrelated_bytes);
+
+        // A previous asset that is not private is not ours to unlink, even if
+        // its name has the right digest and the preferences reset commits.
+        restarted
+            .save_menu_bar_icon_in_directory(Some(unrelated.clone()), &directory)
+            .unwrap();
+        fs::set_permissions(&unrelated_path, fs::Permissions::from_mode(0o644)).unwrap();
+        restarted
+            .save_menu_bar_icon_in_directory(None, &directory)
+            .unwrap();
+        assert_icon_state(&restarted, &path, None, &reset_disk);
+        assert_eq!(fs::read(&unrelated_path).unwrap(), unrelated_bytes);
         let _ = fs::remove_dir_all(directory);
     }
 

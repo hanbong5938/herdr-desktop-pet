@@ -61,6 +61,22 @@ async function note(root: string, tag: string, content = "Reviewed release evide
   await put(root, `docs/releases/${tag}.md`, `# Herdr Desktop Pet ${tag} release notes\n\n${content}\n`);
 }
 
+async function rendered(markdown: string): Promise<{
+  links: { href: string | null; title: string | null }[];
+  images: { src: string | null; title: string | null; alt: string | null; parent: string | null }[];
+}> {
+  const links: { href: string | null; title: string | null }[] = [];
+  const images: { src: string | null; title: string | null; alt: string | null; parent: string | null }[] = [];
+  await new HTMLRewriter()
+    .on("a", { element(element) { links.push({ href: element.getAttribute("href"), title: element.getAttribute("title") }); } })
+    .on("img", { element(element) { images.push({
+      src: element.getAttribute("src"), title: element.getAttribute("title"), alt: element.getAttribute("alt"), parent: null,
+    }); } })
+    .on("a img", { element() { images.at(-1)!.parent = links.at(-1)!.href; } })
+    .transform(new Response(Bun.markdown.html(markdown))).text();
+  return { links, images };
+}
+
 describe("publication states", () => {
   test("only complete actually published stable records receive published labels", () => {
     const complete = release("v0.1.11");
@@ -90,14 +106,93 @@ describe("Wiki projection", () => {
     const head = git(options.root, "rev-parse", "HEAD");
     const names = await generateWiki(options);
     expect(names).toContain("Release-Line-0.1.md");
-    const home = await readFile(join(options.output, "Home.md"), "utf8");
-    expect(home).toContain(`https://github.com/${repository}/wiki/Versioning-and-Compatibility#compatibility`);
-    expect(home).toContain(`https://github.com/${repository}/blob/${head}/README.md`);
-    expect(home).toContain(`![Icon](https://raw.githubusercontent.com/${repository}/${head}/assets/icon.png)`);
-    expect(home).toContain(`[Image source](https://github.com/${repository}/blob/${head}/assets/icon.png)`);
-    expect(home).toContain(`[Assets](https://github.com/${repository}/tree/${head}/assets)`);
+    const { links, images } = await rendered(await readFile(join(options.output, "Home.md"), "utf8"));
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/wiki/Versioning-and-Compatibility#compatibility`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${head}/README.md`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${head}/assets/icon.png`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/tree/${head}/assets`, title: null });
+    expect(images).toContainEqual({ src: `https://raw.githubusercontent.com/${repository}/${head}/assets/icon.png`, title: null, alt: "Icon", parent: null });
     expect((await readFile(join(options.output, ".wiki-managed-pages"), "utf8")).trim().split("\n")).toEqual(names);
     expect((await readdir(options.output)).filter((name) => name.endsWith(".md")).sort()).toEqual(names);
+  });
+
+  test("current Wiki renders mapped and configured-ref source, image and shared-reference destinations", async () => {
+    const options = await fixture();
+    await put(options.root, "assets/a).png", "image");
+    await put(options.root, "guides/a).md", "# Guide\n");
+    await put(options.root, "guides/%29.md", "# Encoded name\n");
+    await put(options.root, "docs/releases/README.md", [
+      "# Versions", "", "Reviewed current guidance.",
+      "[Policy](policy.md#compatibility) [Guide](../../guides/a%29.md?plain=(1)#part(2))",
+      "[Percent](../../guides/%2529.md) [Assets](../../assets)",
+      "[![Nested][Art]][Art] ![Art][] [Art] [External](https://example.test/a)",
+      "",
+      '[Art]: ../../assets/a%29.png "Current portrait"',
+      '[Art]: ../../assets/duplicate.png',
+      "`![Code][Art]` \\[Escaped][Art] [Missing][undefined]",
+    ].join("\n"));
+    commitFixture(options.root);
+    const head = git(options.root, "rev-parse", "HEAD");
+    await generateWiki(options);
+    const { links, images } = await rendered(await readFile(join(options.output, "Home.md"), "utf8"));
+    const blob = `https://github.com/${repository}/blob/${head}/assets/a%29.png`;
+    const raw = `https://raw.githubusercontent.com/${repository}/${head}/assets/a%29.png`;
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/wiki/Versioning-and-Compatibility#compatibility`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${head}/guides/a%29.md?plain=%281%29#part%282%29`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${head}/guides/%2529.md`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/tree/${head}/assets`, title: null });
+    expect(links).toContainEqual({ href: blob, title: "Current portrait" });
+    expect(links).toContainEqual({ href: "https://example.test/a", title: null });
+    expect(images).toContainEqual({ src: raw, title: "Current portrait", alt: "Nested", parent: blob });
+    expect(images).toContainEqual({ src: raw, title: "Current portrait", alt: "Art", parent: null });
+    expect(images.every((image) => image.src !== null && !image.src.includes("duplicate"))).toBe(true);
+  });
+
+  test("current Wiki keeps rejected definition prose links and literal external inline text", async () => {
+    const options = await fixture();
+    await put(options.root, "assets/art.png", "art");
+    for (const name of ["nested-title", "empty-label", "bracket-label", "tight-title", "bad-title", "inner-link"]) {
+      await put(options.root, `guides/${name}.md`, "# Guide\n");
+    }
+    await put(options.root, "docs/releases/README.md", [
+      "# Versions", "", "Reviewed guidance.",
+      '[unused]: https://example.test "Title" trailing [Guide](../../README.md)',
+      '[unused]: https://example.test (bad ( [Guide](../../guides/nested-title.md)',
+      '[ ]: https://example.test "[Guide](../../guides/empty-label.md)"',
+      '[a[b]: https://example.test "[Guide](../../guides/bracket-label.md)"',
+      '[label]: <https://example.test>"[Guide](../../guides/tight-title.md)"',
+      '[Website](https://example.test/![Art]) [Named](https://example.test "literal ![Art]") [Compact](<https://example.test/no-gap>"literal ![Art]")',
+      "[bad](https://example.test (bad ( [Guide](../../guides/bad-title.md)))",
+      '[outer [Guide](../../guides/inner-link.md)](https://example.test "![Art]")',
+      '[outer [Guide][g]](https://example.test/defined "literal reference")',
+      '[outer [Guide][undefined]](https://example.test/undefined "literal ![Art]")',
+      '[outer [Guide]](https://example.test/ordinary "literal ![Art]")',
+      "[![Portrait][Art]][Art] ![Art][Art] [Art]", "",
+      "[Art]:",
+      "  ../../assets/art.png",
+      '"Current portrait"',
+      "[g]: policy.md#compatibility",
+    ].join("\n"));
+    commitFixture(options.root);
+    const head = git(options.root, "rev-parse", "HEAD");
+    await generateWiki(options);
+    const { links, images } = await rendered(await readFile(join(options.output, "Home.md"), "utf8"));
+    const blob = `https://github.com/${repository}/blob/${head}/assets/art.png`;
+    const raw = `https://raw.githubusercontent.com/${repository}/${head}/assets/art.png`;
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${head}/README.md`, title: null });
+    for (const name of ["nested-title", "empty-label", "bracket-label", "tight-title", "bad-title", "inner-link"]) {
+      expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/${head}/guides/${name}.md`, title: null });
+    }
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/wiki/Versioning-and-Compatibility#compatibility`, title: null });
+    expect(links).toContainEqual({ href: "https://example.test/!%5BArt%5D", title: null });
+    expect(links).toContainEqual({ href: "https://example.test", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/no-gap", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/undefined", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/ordinary", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: blob, title: "Current portrait" });
+    expect(images).toContainEqual({ src: raw, title: "Current portrait", alt: "Portrait", parent: blob });
+    expect(images).toContainEqual({ src: raw, title: "Current portrait", alt: "Art", parent: null });
+    expect(images.filter((image) => image.src === raw && image.alt === "Art" && image.parent === null)).toHaveLength(2);
   });
 
   test("numeric semver determines newest; late old-tag trigger does not roll back current catalog", async () => {
@@ -111,18 +206,15 @@ describe("Wiki projection", () => {
       release("v0.1.10"), release("v0.1.11", { published_at: "2026-01-01T00:00:00Z" }),
     ];
     await generateWiki(options);
-    const index = await readFile(join(options.output, "Release-Status.md"), "utf8");
-    expect(index.indexOf("[v0.1.11]")).toBeLessThan(index.indexOf("[v0.1.10]"));
-    expect(index.indexOf("[v0.1.10]")).toBeLessThan(index.indexOf("[v0.1.9]"));
-    expect(index).toContain("Requested source ref: `v0.1.9`");
-    expect(index).toContain("Tagged only — packaging failed");
-    expect(index).toContain("Pending documentation");
-    expect(index).not.toContain("/releases/tag/v0.1.5");
-    expect(index).not.toContain("/releases/tag/v0.2.0");
-    const older = await readFile(join(options.output, "Older-Releases.md"), "utf8");
-    expect(older).toContain("Latest complete stable binary release: [v0.1.11]");
-    expect(older).toContain("[v0.1.10]");
-    expect(await readFile(join(options.output, "Release-v0.1.11.md"), "utf8")).toContain("Historical backfill");
+    const index = (await rendered(await readFile(join(options.output, "Release-Status.md"), "utf8"))).links.map((link) => link.href);
+    const ordered = ["v0.1.11", "v0.1.10", "v0.1.9"].map((tag) => `https://github.com/${repository}/wiki/Release-${tag}`);
+    const positions = ordered.map((href) => index.indexOf(href));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    for (const tag of ["v0.1.5", "v0.2.0"]) expect(index).not.toContain(`https://github.com/${repository}/releases/tag/${tag}`);
+    const older = (await rendered(await readFile(join(options.output, "Older-Releases.md"), "utf8"))).links.map((link) => link.href);
+    expect(older).toContain(`https://github.com/${repository}/releases/tag/v0.1.11`);
+    expect(older).toContain(`https://github.com/${repository}/wiki/Release-v0.1.10`);
   });
 
   test("draft, partial and prerelease records never become download recommendations", async () => {
@@ -130,37 +222,78 @@ describe("Wiki projection", () => {
     for (const tag of ["v0.1.9", "v0.1.10", "v0.1.11"]) await note(options.root, tag);
     options.releases = [release("v0.1.9", { draft: true }), release("v0.1.10", { prerelease: true }), release("v0.1.11", { assets: [] })];
     await generateWiki(options);
-    const index = await readFile(join(options.output, "Release-Status.md"), "utf8");
-    expect(index).toContain("Draft — not public");
-    expect(index).toContain("Prerelease — not a stable");
-    expect(index).toContain("Partial release");
-    expect(index).not.toContain("/releases/tag/v0.1.9");
-    expect(await readFile(join(options.output, "Older-Releases.md"), "utf8")).toContain("No complete stable binary release");
+    for (const page of ["Release-Status.md", "Older-Releases.md"]) {
+      const hrefs = (await rendered(await readFile(join(options.output, page), "utf8"))).links.map((link) => link.href);
+      for (const tag of ["v0.1.9", "v0.1.10", "v0.1.11"]) {
+        expect(hrefs).toContain(`https://github.com/${repository}/wiki/Release-${tag}`);
+      }
+      expect(hrefs).not.toContain(`https://github.com/${repository}/releases/tag/v0.1.9`);
+      for (const tag of ["v0.1.10", "v0.1.11"]) {
+        expect(hrefs).toContain(`https://github.com/${repository}/releases/tag/${tag}`);
+      }
+      expect(hrefs.some((href) => href?.startsWith(`https://github.com/${repository}/releases/download/`))).toBe(false);
+    }
   });
 
-  test("future published notes are frozen at their tag, not current main", async () => {
+  test("frozen Wiki uses tagged raw, blob, tree and mapped URLs after HEAD deletes assets", async () => {
     const options = await fixture();
-    await put(options.root, "upgrade.txt", "Tagged upgrade source");
-    await put(options.root, "assets/tagged icon.png", await readFile(join(options.root, "assets/icon.png")));
-    await note(options.root, "v0.2.0", "Shipped behavior. [Tagged guide](../../upgrade.txt). ![Tagged icon](../../assets/tagged%20icon.png)");
+    await put(options.root, "upgrade).txt", "Tagged upgrade source");
+    await put(options.root, "assets/tagged).png", await readFile(join(options.root, "assets/icon.png")));
+    for (const name of ["nested-title", "empty-label", "bracket-label", "tight-title", "bad-title", "inner-link"]) {
+      await put(options.root, `guides/${name}.md`, "# Tagged guide\n");
+    }
+    await note(options.root, "v0.2.0", [
+      "Shipped behavior. [Tagged guide](../../upgrade\\).txt?plain=(1)#part(2))",
+      "[Policy](policy.md) [Assets](../../assets) [![Tagged icon][Art]][Art] ![Art][]",
+      '[unused]: https://example.test "Title" trailing [Guide](../../README.md)',
+      '[unused]: https://example.test (bad ( [Guide](../../guides/nested-title.md)',
+      '[ ]: https://example.test "[Guide](../../guides/empty-label.md)"',
+      '[a[b]: https://example.test "[Guide](../../guides/bracket-label.md)"',
+      '[label]: <https://example.test>"[Guide](../../guides/tight-title.md)"',
+      '[Website](https://example.test/![Art]) [Named](https://example.test "literal ![Art]") [Compact](<https://example.test/no-gap>"literal ![Art]")',
+      "[bad](https://example.test (bad ( [Guide](../../guides/bad-title.md)))",
+      '[outer [Guide](../../guides/inner-link.md)](https://example.test "![Art]")',
+      '[outer [Guide][g]](https://example.test/defined "literal reference")',
+      '[outer [Guide][undefined]](https://example.test/undefined "literal ![Art]")',
+      '[outer [Guide]](https://example.test/ordinary "literal ![Art]")',
+      "",
+      "[Art]: ../../assets/tagged%29.png",
+      "[g]: policy.md#compatibility",
+    ].join("\n"));
     commitFixture(options.root);
     git(options.root, "tag", "v0.2.0");
     await note(options.root, "v0.2.0", "New main-only features that never shipped.");
-    await put(options.root, "upgrade.txt", "Main-only guidance");
-    await rm(join(options.root, "assets/tagged icon.png"));
+    await rm(join(options.root, "upgrade).txt"));
+    await rm(join(options.root, "assets/tagged).png"));
+    await rm(join(options.root, "guides"), { recursive: true });
     commitFixture(options.root);
     options.releases = [release("v0.2.0")];
     await generateWiki(options);
     const page = await readFile(join(options.output, "Release-v0.2.0.md"), "utf8");
-    expect(page).toContain("Shipped behavior");
-    expect(page).not.toContain("main-only");
-    expect(page).toContain(`https://github.com/${repository}/blob/v0.2.0/upgrade.txt`);
-    expect(page).toContain(`![Tagged icon](https://raw.githubusercontent.com/${repository}/v0.2.0/assets/tagged%20icon.png)`);
-    expect(page).not.toContain("Historical backfill");
-    // Catalog publishes a frozen page even if current source no longer contains its note.
+    const { links, images } = await rendered(page);
+    const blob = `https://github.com/${repository}/blob/v0.2.0/assets/tagged%29.png`;
+    const raw = `https://raw.githubusercontent.com/${repository}/v0.2.0/assets/tagged%29.png`;
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/v0.2.0/upgrade%29.txt?plain=%281%29#part%282%29`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/wiki/Versioning-and-Compatibility`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/tree/v0.2.0/assets`, title: null });
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/v0.2.0/README.md`, title: null });
+    for (const name of ["nested-title", "empty-label", "bracket-label", "tight-title", "bad-title", "inner-link"]) {
+      expect(links).toContainEqual({ href: `https://github.com/${repository}/blob/v0.2.0/guides/${name}.md`, title: null });
+    }
+    expect(links).toContainEqual({ href: `https://github.com/${repository}/wiki/Versioning-and-Compatibility#compatibility`, title: null });
+    expect(links).toContainEqual({ href: "https://example.test/!%5BArt%5D", title: null });
+    expect(links).toContainEqual({ href: "https://example.test", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/no-gap", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/undefined", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: "https://example.test/ordinary", title: "literal ![Art]" });
+    expect(links).toContainEqual({ href: blob, title: null });
+    expect(images).toContainEqual({ src: raw, title: null, alt: "Tagged icon", parent: blob });
+    expect(images).toContainEqual({ src: raw, title: null, alt: "Art", parent: null });
+    expect(images.filter((image) => image.src === raw && image.alt === "Art" && image.parent === null)).toHaveLength(2);
+    // Catalog publishes the same frozen surface even without its note at HEAD.
     await rm(join(options.root, "docs/releases/v0.2.0.md"));
     await generateWiki(options);
-    expect(await readFile(join(options.output, "Release-v0.2.0.md"), "utf8")).toBe(page);
+    expect(await rendered(await readFile(join(options.output, "Release-v0.2.0.md"), "utf8"))).toEqual({ links, images });
   });
 
   test("future published missing frozen note fails without changing existing managed output", async () => {
@@ -175,21 +308,60 @@ describe("Wiki projection", () => {
     expect(existsSync(join(options.output, "Release-v0.2.0.md"))).toBe(false);
   });
 
-  test("broken ordinary and frozen relative links fail before output mutation", async () => {
+  test("broken ordinary and frozen relative links fail before changing managed pages or manifest", async () => {
+    async function snapshot(output: string) {
+      const manifest = await readFile(join(output, ".wiki-managed-pages"), "utf8");
+      const names = [...manifest.trimEnd().split("\n"), ".wiki-managed-pages"];
+      return {
+        names: await readdir(output),
+        files: await Promise.all(names.map(async (name) => ({
+          name,
+          bytes: await readFile(join(output, name)),
+          mtimeMs: (await stat(join(output, name))).mtimeMs,
+        }))),
+      };
+    }
     const options = await fixture();
     await generateWiki(options);
-    const before = await readFile(join(options.output, ".wiki-managed-pages"), "utf8");
+    const before = await snapshot(options.output);
     await put(options.root, "docs/releases/README.md", "# Versions\n[Missing](../../missing.md)\n");
     await expect(generateWiki(options)).rejects.toThrow("Broken local link");
-    expect(await readFile(join(options.output, ".wiki-managed-pages"), "utf8")).toBe(before);
-    await put(options.root, "docs/releases/README.md", "# Versions\n");
-    await note(options.root, "v0.2.0", "[Untracked future guide](../../missing.md)");
-    commitFixture(options.root);
-    git(options.root, "tag", "v0.2.0");
-    await put(options.root, "missing.md", "Main cannot repair a missing tagged guide");
-    options.releases = [release("v0.2.0")];
-    await expect(generateWiki(options)).rejects.toThrow("Broken frozen link");
-    expect(existsSync(join(options.output, "Release-v0.2.0.md"))).toBe(false);
+    expect(await snapshot(options.output)).toEqual(before);
+    for (const prose of [
+      '[unused]: https://example.test "Title" trailing [Guide](TARGET)',
+      '[unused]: https://example.test (bad ( [Guide](TARGET)',
+      '[ ]: https://example.test "[Guide](TARGET)"',
+      '[a[b]: https://example.test "[Guide](TARGET)"',
+      '[label]: <https://example.test>"[Guide](TARGET)"',
+      "[bad](https://example.test (bad ( [Guide](TARGET)))",
+      '[outer [Guide](TARGET)](https://example.test "![Art]")',
+    ]) {
+      for (const target of ["../../missing.md", "../../../outside.md"]) {
+        await put(options.root, "docs/releases/README.md", `# Versions\n\n${prose.replace("TARGET", target)}\n`);
+        await expect(generateWiki(options)).rejects.toThrow();
+        expect(await snapshot(options.output)).toEqual(before);
+      }
+    }
+    for (const prose of [
+      "[bad](https://example.test (bad ( [Guide](TARGET)))",
+      '[outer [Guide](TARGET)](https://example.test "![Art]")',
+    ]) {
+      for (const target of ["../../missing.md", "../../../outside.md"]) {
+        const frozen = await fixture();
+        await generateWiki(frozen);
+        const frozenBefore = await snapshot(frozen.output);
+        await note(frozen.root, "v0.2.0", prose.replace("TARGET", target));
+        commitFixture(frozen.root);
+        git(frozen.root, "tag", "v0.2.0");
+        if (target === "../../missing.md") {
+          await put(frozen.root, "missing.md", "Main cannot repair a missing tagged guide");
+        }
+        frozen.releases = [release("v0.2.0")];
+        await expect(generateWiki(frozen)).rejects.toThrow();
+        expect(await snapshot(frozen.output)).toEqual(frozenBefore);
+        expect(existsSync(join(frozen.output, "Release-v0.2.0.md"))).toBe(false);
+      }
+    }
   });
 
   test("repeat rendering is byte/mtime idempotent and removes only prior manifest-owned stale pages", async () => {

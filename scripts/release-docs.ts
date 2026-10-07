@@ -130,6 +130,52 @@ function destinationAt(text: string, start: number): Destination | undefined {
   return { start, end, after: end };
 }
 
+function inlineWhitespaceEnd(text: string, start: number): number {
+  let at = start;
+  let seenNewline = false;
+  while (at < text.length && /\s/.test(text[at]!)) {
+    if (text[at] === "\n") {
+      if (seenNewline) return -1;
+      seenNewline = true;
+    }
+    at++;
+  }
+  return at;
+}
+
+// Recognize an entire inline suffix before masking it or resolving its target.
+// An invalid title must leave the suffix as ordinary Markdown for the scanner.
+function inlineTailAt(text: string, open: number): { destination: Destination; end: number } | undefined {
+  if (text[open] !== "(") return undefined;
+  const destinationStart = inlineWhitespaceEnd(text, open + 1);
+  if (destinationStart < 0) return undefined;
+  const destination = destinationAt(text, destinationStart);
+  if (!destination) return undefined;
+  let close = inlineWhitespaceEnd(text, destination.after);
+  if (close < 0) return undefined;
+  if (["\"", "'", "("].includes(text[close] ?? "")) {
+    // A bare destination requires separating whitespace; <angle> destinations
+    // may be followed immediately by a title.
+    if (close === destination.after && text[destination.start - 1] !== "<") return undefined;
+    const delimiter = text[close]!;
+    const closing = delimiter === "(" ? ")" : delimiter;
+    let titleEnd = close + 1;
+    for (; titleEnd < text.length; titleEnd++) {
+      if (text[titleEnd] === "\n") {
+        let previous = titleEnd - 1;
+        while (previous > close && /[ \t\r]/.test(text[previous]!)) previous--;
+        if (text[previous] === "\n") return undefined;
+      }
+      if (escaped(text, titleEnd)) continue;
+      if (delimiter === "(" && text[titleEnd] === "(") return undefined;
+      if (text[titleEnd] === closing) break;
+    }
+    if (titleEnd === text.length) return undefined;
+    close = inlineWhitespaceEnd(text, titleEnd + 1);
+  }
+  return close >= 0 && text[close] === ")" ? { destination, end: close + 1 } : undefined;
+}
+
 function labelEnd(text: string, start: number, mask: Uint8Array): number {
   let depth = 1;
   for (let i = start + 1; i < text.length; i++) {
@@ -156,23 +202,70 @@ export function rewriteRelativeLinks(
   }
   const mask = codeMask(markdown);
   const changes: { start: number; end: number; value: string }[] = [];
-  const references = new Map<string, { destination: Destination; image: boolean; link: boolean }>();
-  const definitionStarts = new Set<number>();
+  type Reference = { destination: Destination; start: number; end: number; labelStart: number; labelEnd: number; images: { start: number; end: number }[]; link: boolean };
+  const references = new Map<string, Reference>();
+  const reserved = new Set<string>();
+  const lineEnd = (at: number): number => {
+    const newline = markdown.indexOf("\n", at);
+    return newline < 0 ? markdown.length : newline + 1;
+  };
+  const lineContentEnd = (at: number): number => {
+    const end = lineEnd(at);
+    return markdown[end - 1] === "\n" ? end - (markdown[end - 2] === "\r" ? 2 : 1) : end;
+  };
+  // A title belongs to a definition only if its closing delimiter and the
+  // remainder of its final line are valid. Never consume unrelated paragraphs.
+  // A rejected header is ordinary prose, not a definition to mask or rewrite.
+  const definitionEnd = (destination: Destination): number | undefined => {
+    const destinationLineEnd = lineEnd(destination.after);
+    const contentEnd = lineContentEnd(destination.after);
+    let opener = destination.after;
+    while (opener < contentEnd && /[ \t]/.test(markdown[opener]!)) opener++;
+    const sameLine = opener < contentEnd;
+    if (sameLine && opener === destination.after) return undefined;
+    if (!sameLine && destinationLineEnd < markdown.length) {
+      opener = destinationLineEnd;
+      while (opener < lineContentEnd(opener) && /[ \t]/.test(markdown[opener]!)) opener++;
+    }
+    if (!["\"", "'", "("].includes(markdown[opener] ?? "")) return sameLine ? undefined : destinationLineEnd;
+    const closing = markdown[opener] === "(" ? ")" : markdown[opener]!;
+    for (let i = opener + 1; i < markdown.length; i++) {
+      if (markdown[i] === "\n" && !markdown.slice(i + 1, lineContentEnd(i + 1)).trim()) return sameLine ? undefined : destinationLineEnd;
+      if (closing === ")" && markdown[i] === "(" && !escaped(markdown, i)) return sameLine ? undefined : destinationLineEnd;
+      if (markdown[i] !== closing || escaped(markdown, i)) continue;
+      if (markdown.slice(i + 1, lineContentEnd(i + 1)).trim()) return sameLine ? undefined : destinationLineEnd;
+      return lineEnd(i);
+    }
+    return sameLine ? undefined : destinationLineEnd;
+  };
   let offset = 0;
   for (const line of markdown.split(/(?<=\n)/)) {
     const match = /^ {0,3}\[([^\]\r\n]+)\]:[ \t]*/.exec(line);
     if (match && !mask[offset] && !match[1]!.startsWith("^")) {
-      const destination = destinationAt(markdown, offset + match[0].length);
       const id = referenceId(match[1]!);
-      if (destination && !references.has(id)) references.set(id, { destination, image: false, link: false });
-      definitionStarts.add(offset + line.indexOf("["));
+      reserved.add(id);
+      let validLabel = id.length > 0;
+      for (let i = 0; validLabel && i < match[1]!.length; i++) {
+        if (match[1]![i] === "[" && !escaped(match[1]!, i)) validLabel = false;
+      }
+      const start = offset + match[0].length;
+      const candidate = destinationAt(markdown, start);
+      const destination = candidate && (markdown.slice(start, candidate.start).match(/\n/g)?.length ?? 0) <= 1 ? candidate : undefined;
+      const end = validLabel && destination ? definitionEnd(destination) : undefined;
+      if (end !== undefined && destination) {
+        mask.fill(1, offset, end);
+        if (!references.has(id)) {
+          const labelStart = offset + match[0].indexOf("[") + 1;
+          references.set(id, { destination, start: offset, end, labelStart, labelEnd: labelStart + match[1]!.length, images: [], link: false });
+        }
+      }
     }
     offset += line.length;
   }
-  const rewrite = (destination: Destination, isImage: boolean): void => {
+  const resolveDestination = (destination: Destination, isImage: boolean): string | undefined => {
     const raw = markdown.slice(destination.start, destination.end);
     const target = raw.replace(/\\([^\w\s])/g, "$1").replace(/&amp;/g, "&");
-    if (!target || target.startsWith("#") || target.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return;
+    if (!target || target.startsWith("#") || target.startsWith("//") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return undefined;
     const hash = target.indexOf("#");
     const fragment = hash < 0 ? "" : target.slice(hash);
     const beforeHash = hash < 0 ? target : target.slice(0, hash);
@@ -187,46 +280,105 @@ export function rewriteRelativeLinks(
     const resolved = resolveLink(repoPath, fragment, isImage);
     const resolvedHash = resolved.indexOf("#");
     const value = query ? (resolvedHash < 0 ? resolved + query : resolved.slice(0, resolvedHash) + query + resolved.slice(resolvedHash)) : resolved;
-    changes.push({ start: destination.start, end: destination.end, value });
+    return value.replace(/\(/g, "%28").replace(/\)/g, "%29");
   };
+  // Check only rendered anchors in a prospective link label. Images can sit
+  // inside links, but links written in image alt text are not nested anchors.
+  const containsInnerLink = (start: number, end: number): boolean => {
+    for (let at = start; at < end; at++) {
+      if (mask[at] || markdown[at] !== "[" || escaped(markdown, at)) continue;
+      const labelClose = labelEnd(markdown, at, mask);
+      if (labelClose < 0 || labelClose >= end) continue;
+      const image = at > 0 && markdown[at - 1] === "!" && !escaped(markdown, at - 1);
+      const tail = inlineTailAt(markdown, labelClose + 1);
+      if (image) {
+        if (tail && tail.end <= end) {
+          at = tail.end - 1;
+        } else if (markdown[labelClose + 1] === "[") {
+          const selectorEnd = labelEnd(markdown, labelClose + 1, mask);
+          at = selectorEnd >= 0 && selectorEnd < end ? selectorEnd : labelClose;
+        } else {
+          at = labelClose;
+        }
+        continue;
+      }
+      if (tail && tail.end <= end) return true;
+      if (markdown[labelClose + 1] === "(") continue;
+      if (markdown[labelClose + 1] === "[") {
+        const selectorEnd = labelEnd(markdown, labelClose + 1, mask);
+        if (selectorEnd >= 0 && selectorEnd < end) {
+          const selector = markdown.slice(labelClose + 2, selectorEnd);
+          if (references.has(referenceId(selector || markdown.slice(at + 1, labelClose)))) return true;
+          at = selectorEnd;
+          continue;
+        }
+      } else if (references.has(referenceId(markdown.slice(at + 1, labelClose)))) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const consumedSelectors = new Set<number>();
   for (let i = 0; i < markdown.length; i++) {
-    if (mask[i] || markdown[i] !== "[" || escaped(markdown, i) || definitionStarts.has(i)) continue;
+    if (mask[i] || markdown[i] !== "[" || escaped(markdown, i) || consumedSelectors.has(i)) continue;
     const end = labelEnd(markdown, i, mask);
     if (end < 0) continue;
     const isImage = i > 0 && markdown[i - 1] === "!" && !escaped(markdown, i - 1);
+    const text = markdown.slice(i + 1, end);
+    reserved.add(referenceId(text));
     if (markdown[end + 1] === "(") {
-      const destination = destinationAt(markdown, end + 2);
-      if (destination) {
-        let close = destination.after;
-        while (close < markdown.length && /\s/.test(markdown[close]!)) close++;
-        if (["\"", "'", "("].includes(markdown[close] ?? "")) {
-          const closing = markdown[close] === "(" ? ")" : markdown[close]!;
-          let titleEnd = close + 1;
-          while (titleEnd < markdown.length && (markdown[titleEnd] !== closing || escaped(markdown, titleEnd))) titleEnd++;
-          close = titleEnd + 1;
-          while (close < markdown.length && /\s/.test(markdown[close]!)) close++;
-        }
-        if (markdown[close] === ")") rewrite(destination, isImage);
+      const tail = inlineTailAt(markdown, end + 1);
+      if (tail && (isImage || !containsInnerLink(i + 1, end))) {
+        // Only a committed suffix is masked. The label remains open for
+        // nested images, including image-in-link reference selectors.
+        mask.fill(1, end + 1, tail.end);
+        const value = resolveDestination(tail.destination, isImage);
+        if (value !== undefined) changes.push({ start: tail.destination.start, end: tail.destination.end, value });
       }
     } else {
-      let label = markdown.slice(i + 1, end);
+      let label = text;
+      let selector = { start: end + 1, end: end + 1 };
       if (markdown[end + 1] === "[") {
         const referenceEnd = labelEnd(markdown, end + 1, mask);
         if (referenceEnd >= 0) {
-          label = markdown.slice(end + 2, referenceEnd) || label;
-          i = referenceEnd;
+          consumedSelectors.add(end + 1);
+          label = markdown.slice(end + 2, referenceEnd) || text;
+          selector = { start: end + 1, end: referenceEnd + 1 };
+          reserved.add(referenceId(markdown.slice(end + 2, referenceEnd)));
         }
       }
       const reference = references.get(referenceId(label));
       if (reference) {
-        if (isImage) reference.image = true;
+        if (isImage) reference.images.push(selector);
         else reference.link = true;
       }
     }
-    // Keep scanning labels so embedded image links are also rewritten.
+    // Scan inside labels as well: [![alt][art]][art] has two uses.
   }
-  for (const reference of references.values()) rewrite(reference.destination, reference.image && !reference.link);
-  changes.sort((left, right) => left.start - right.start);
+  let nextImageId = 1;
+  for (const reference of references.values()) {
+    const { destination } = reference;
+    const linkValue = reference.link || !reference.images.length ? resolveDestination(destination, false) : undefined;
+    const imageValue = reference.images.length ? resolveDestination(destination, true) : undefined;
+    if (reference.images.length && reference.link && linkValue !== undefined) {
+      if (imageValue !== undefined && imageValue !== linkValue) {
+        let id: string;
+        do { id = `herdr-image-reference-${nextImageId++}`; } while (reserved.has(referenceId(id)));
+        reserved.add(referenceId(id));
+        for (const selector of reference.images) {
+          changes.push({ start: selector.start, end: selector.end, value: `[${id}]` });
+        }
+        const clone = markdown.slice(reference.start, reference.labelStart) + id
+          + markdown.slice(reference.labelEnd, destination.start) + imageValue
+          + markdown.slice(destination.end, reference.end);
+        const newline = markdown.slice(reference.start, reference.end).includes("\r\n") ? "\r\n" : "\n";
+        changes.push({ start: reference.start, end: reference.start, value: clone.endsWith("\n") ? clone : clone + newline });
+      }
+    }
+    const value = reference.images.length && !reference.link ? imageValue : linkValue;
+    if (value !== undefined) changes.push({ start: destination.start, end: destination.end, value });
+  }
+  changes.sort((left, right) => left.start - right.start || left.end - right.end);
   let result = "";
   let cursor = 0;
   for (const change of changes) {
