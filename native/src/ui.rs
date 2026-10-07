@@ -1884,61 +1884,73 @@ define_class!(
             });
         }
 
-        #[unsafe(method(showStatusMenu:))]
-        fn show_status_menu(&self, _sender: Option<&AnyObject>) {
-            let Some((menu, button, event)) = with_ui_read(|ui| {
+        #[unsafe(method(activateStatusItem:))]
+        fn activate_status_item(&self, _sender: Option<&AnyObject>) {
+            let Some((button, event, action)) = with_ui_read(|ui| {
                 let button = ui._status_item.button(ui.mtm)?;
-                let event = NSApplication::sharedApplication(ui.mtm)
-                    .currentEvent()
-                    .filter(|event| {
-                        matches!(
-                            event.r#type(),
-                            NSEventType::LeftMouseDown
-                                | NSEventType::LeftMouseUp
-                                | NSEventType::RightMouseDown
-                                | NSEventType::RightMouseUp
-                        ) && (NSProcessInfo::processInfo().systemUptime() - event.timestamp())
-                            .abs() < 2.0
-                            && event.window(ui.mtm).is_some_and(|window| {
-                            button.window().is_some_and(|status_window| {
-                                window.windowNumber() == status_window.windowNumber()
-                                    && point_in_rect(
-                                        event.locationInWindow(),
-                                        button.convertRect_toView(button.bounds(), None),
-                                    )
-                            })
+                let event = NSApplication::sharedApplication(ui.mtm).currentEvent();
+                let action = status_item_action(event.as_deref().filter(|event| {
+                    matches!(
+                        event.r#type(),
+                        NSEventType::LeftMouseUp | NSEventType::RightMouseUp
+                    )
+                }).map(|event| {
+                    let same_window = event.window(ui.mtm).is_some_and(|window| {
+                        button.window().is_some_and(|status_window| {
+                            window.windowNumber() == status_window.windowNumber()
                         })
                     });
-                Some((ui.status_menu.clone(), button, event))
+                    StatusItemEvent {
+                        kind: event.r#type(),
+                        modifiers: event.modifierFlags(),
+                        age: NSProcessInfo::processInfo().systemUptime() - event.timestamp(),
+                        same_window,
+                        hits_button: same_window
+                            && point_in_rect(
+                                event.locationInWindow(),
+                                button.convertRect_toView(button.bounds(), None),
+                            ),
+                    }
+                }));
+                Some((button, event, action))
             }).flatten() else { return };
-            if let Some(settings) = menu.itemAtIndex(1) {
-                settings.setEnabled(!with_ui_read(|ui| ui.composer_marked()).unwrap_or(true));
-            }
-            with_ui_mut(|ui| {
-                if let Ok(state) = ui.shared.lock() {
-                    ui.sync_recover_item(&state.scene());
+            let Some(anchor) = status_button_rect(&button) else {
+                return;
+            };
+
+            match action {
+                StatusItemAction::Primary => with_ui_mut(|ui| {
+                    if !ui.composer_marked() {
+                        ui.open_settings_at(anchor);
+                    }
+                }),
+                StatusItemAction::Context => {
+                    let Some(event) = event else { return };
+                    let mut menu = None;
+                    with_ui_mut(|ui| {
+                        let context_menu = ui.status_menu.clone();
+                        if let Some(settings) = context_menu.itemAtIndex(1) {
+                            settings.setEnabled(!ui.composer_marked());
+                        }
+                        ui.menu_panel.hide();
+                        if let Ok(state) = ui.shared.lock() {
+                            ui.sync_recover_item(&state.scene());
+                        }
+                        ui.context_anchor = Some(anchor);
+                        ui.status_menu_tracking = true;
+                        menu = Some(context_menu);
+                    });
+                    let Some(menu) = menu else { return };
+                    NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &button);
+                    with_ui_mut(|ui| {
+                        ui.status_menu_tracking = false;
+                        ui.refresh();
+                        if let Ok(state) = ui.shared.lock() {
+                            ui.sync_status_menu(&state.scene());
+                        }
+                    });
                 }
-                ui.status_menu_tracking = true;
-                ui.context_anchor = status_button_rect(&button);
-            });
-            if let Some(event) = event {
-                NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &button);
-            } else {
-                // AXPress and keyboard actions have no mouse event. Anchor the
-                // same native menu directly to the status button's lower edge.
-                let _ = menu.popUpMenuPositioningItem_atLocation_inView(
-                    None,
-                    button.bounds().origin,
-                    Some(&button),
-                );
             }
-            with_ui_mut(|ui| {
-                ui.status_menu_tracking = false;
-                ui.refresh();
-                if let Ok(state) = ui.shared.lock() {
-                    ui.sync_status_menu(&state.scene());
-                }
-            });
         }
 
         #[unsafe(method(recoverCharacterInteraction:))]
@@ -2850,6 +2862,37 @@ fn add_context_item(
     unsafe { item.setTarget(Some(target)) };
     item.setEnabled(enabled);
     menu.addItem(&item);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusItemAction {
+    Primary,
+    Context,
+}
+
+struct StatusItemEvent {
+    kind: NSEventType,
+    modifiers: NSEventModifierFlags,
+    age: f64,
+    same_window: bool,
+    hits_button: bool,
+}
+
+fn status_item_action(event: Option<StatusItemEvent>) -> StatusItemAction {
+    let Some(event) = event else {
+        return StatusItemAction::Primary;
+    };
+    if event.age.abs() >= 2.0 || !event.age.is_finite() || !event.same_window || !event.hits_button
+    {
+        return StatusItemAction::Primary;
+    }
+    match event.kind {
+        NSEventType::RightMouseUp => StatusItemAction::Context,
+        NSEventType::LeftMouseUp if event.modifiers.contains(NSEventModifierFlags::Control) => {
+            StatusItemAction::Context
+        }
+        _ => StatusItemAction::Primary,
+    }
 }
 
 fn status_button_rect(button: &NSView) -> Option<NSRect> {
@@ -3931,7 +3974,8 @@ impl Ui {
             button.setImage(Some(&menu_bar_icon_image));
             unsafe {
                 button.setTarget(Some(menu_target.as_ref()));
-                button.setAction(Some(sel!(showStatusMenu:)));
+                button.setAction(Some(sel!(activateStatusItem:)));
+                button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
             }
             set_accessibility_label(&button, text(locale, Message::MenuBarMenuTitle));
             set_accessibility_identifier(&button, "herdr-pet-menu");
@@ -10027,6 +10071,90 @@ mod tests {
             assert!(primary.size.height <= (result.origin.y - bottom).max(0.0));
             assert!(result.origin.y >= bottom);
         }
+    }
+
+    #[test]
+    fn status_item_input_routes_only_valid_context_clicks_to_native_menu() {
+        let valid = |kind, modifiers| StatusItemEvent {
+            kind,
+            modifiers,
+            age: 0.1,
+            same_window: true,
+            hits_button: true,
+        };
+        let none = NSEventModifierFlags::empty();
+        assert_eq!(status_item_action(None), StatusItemAction::Primary);
+        assert_eq!(
+            status_item_action(Some(valid(NSEventType::LeftMouseUp, none))),
+            StatusItemAction::Primary,
+        );
+        assert_eq!(
+            status_item_action(Some(valid(
+                NSEventType::LeftMouseUp,
+                NSEventModifierFlags::Option,
+            ))),
+            StatusItemAction::Primary,
+        );
+        assert_eq!(
+            status_item_action(Some(valid(NSEventType::RightMouseUp, none))),
+            StatusItemAction::Context,
+        );
+        assert_eq!(
+            status_item_action(Some(valid(
+                NSEventType::LeftMouseUp,
+                NSEventModifierFlags::Control,
+            ))),
+            StatusItemAction::Context,
+        );
+        assert_eq!(
+            status_item_action(Some(valid(
+                NSEventType::LeftMouseUp,
+                NSEventModifierFlags::Control | NSEventModifierFlags::Shift,
+            ))),
+            StatusItemAction::Context,
+        );
+        for kind in [
+            NSEventType::LeftMouseDown,
+            NSEventType::RightMouseDown,
+            NSEventType::KeyDown,
+        ] {
+            assert_eq!(
+                status_item_action(Some(valid(kind, NSEventModifierFlags::Control))),
+                StatusItemAction::Primary,
+            );
+        }
+    }
+
+    #[test]
+    fn status_item_ignores_stale_foreign_and_missed_mouse_events() {
+        let valid = || StatusItemEvent {
+            kind: NSEventType::RightMouseUp,
+            modifiers: NSEventModifierFlags::empty(),
+            age: 1.999,
+            same_window: true,
+            hits_button: true,
+        };
+        assert_eq!(status_item_action(Some(valid())), StatusItemAction::Context);
+        for age in [2.0, -2.0, f64::INFINITY, f64::NAN] {
+            assert_eq!(
+                status_item_action(Some(StatusItemEvent { age, ..valid() })),
+                StatusItemAction::Primary,
+            );
+        }
+        assert_eq!(
+            status_item_action(Some(StatusItemEvent {
+                same_window: false,
+                ..valid()
+            })),
+            StatusItemAction::Primary,
+        );
+        assert_eq!(
+            status_item_action(Some(StatusItemEvent {
+                hits_button: false,
+                ..valid()
+            })),
+            StatusItemAction::Primary,
+        );
     }
 
     #[test]
