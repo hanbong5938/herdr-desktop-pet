@@ -139,11 +139,12 @@ Version-specific changes and historical artwork limitations belong in the [relea
 
 ## Controls
 
-These controls apply to stable v0.2.0 `main` and its native app. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
+These controls describe this checkout's native app; the menu-bar click behavior below is a checkout change, not a claim about the published stable v0.2.0 binary. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
 
 | Interaction | Effect |
 | --- | --- |
-| Menu-bar icon | Character selection and dialogue editing, observation sources, bubble and lifecycle settings, and UI language |
+| Left-click the menu-bar icon | Open the existing three-tab settings panel directly (character selection and dialogue editing, observation sources, bubble and lifecycle settings, UI language); clicking again brings the same panel forward without closing it or resetting its selected tab. Keyboard activation/AXPress also opens settings |
+| Right-click or Control-click the menu-bar icon | Open the native **Show and Enable Character** (when recovery is needed), **Settings…**, **Quit** menu; the settings panel hides before this menu opens |
 | Tap the head or body | Trigger a reaction |
 | Move back and forth on the head | Pet the character |
 | Drag the body or background | Move the character |
@@ -157,6 +158,8 @@ These controls apply to stable v0.2.0 `main` and its native app. Inline replies 
 | Alpha click-through | Pass clicks through transparent character artwork regions only; the bubble remains interactive |
 
 The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Close Bubble Window** is disabled during active IME composition; finish composition and open the menu again to close. Reopen from **Bubble → Bubble visible** in the menu-bar panel. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
+
+The menu-bar icon does not open the settings panel directly while the reply contains active IME marked text; finish composition first. Escape or a click outside the settings panel still closes it.
 
 ### Independent visibility and menu-bar recovery
 
@@ -175,7 +178,7 @@ Hiding the character does not change the saved bubble visibility preference. On 
 
 If the character starts hidden without a saved standalone origin, the first position comes from normal attached layout as a fallback. While the reply contains marked text, hide/show/placement/reset postpone standalone-origin commitment until composition ends; a later reset supersedes an older saved origin. The actual composer callbacks retained its marked text, committed draft, and selection across the observed hide/show/reset transitions; physical IME and keyboard focus were not established.
 
-The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Settings…** and **Close Bubble Window** are disabled during active IME composition and rechecked when chosen; finish composition and open the menu again to use them. Reopen a closed bubble through **Bubble → Bubble visible** in the settings panel, opened from the character menu or, when the bubble is standalone, its background/card-header menu. If both windows are hidden, use the menu-bar icon's **Settings…** instead. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
+The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Settings…** and **Close Bubble Window** are disabled during active IME composition and rechecked when chosen; finish composition and open the menu again to use them. Reopen a closed bubble through **Bubble → Bubble visible** in the settings panel, opened from the character menu, the standalone bubble's background/card-header menu, or by left-clicking the visible menu-bar icon. If both windows are hidden, left-click the menu-bar icon to open settings directly, or right-click/Control-click it and choose **Settings…** or **Show and Enable Character**. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
 
 In the original `bf23ced` local preview, the recovery icon was conditional; **stable v0.2.0 defaults to Always show**. Choose **Settings → Menu bar icon**: **Always show** or **Only when recovery is needed**. This choice is independent of character/bubble visibility.
 
@@ -186,7 +189,7 @@ In the original `bf23ced` local preview, the recovery icon was conditional; **st
 | Full-window click-through on (regardless of visibility) | Icon visible | Icon visible |
 | Alpha click-through only | Icon visible | No icon unless both windows are hidden |
 
-The default status icon is a template pawprint; a chosen image replaces its artwork without changing the status item or its menu. In either mode its menu always offers **Settings…** (the same full panel) and **Quit**; **Show and Enable Character** appears only when recovery is needed (both windows hidden or full-window click-through on). Recovery shows the character and disables full-window click-through, preserving bubble visibility and alpha click-through; a visible bubble reattaches, while a hidden bubble stays hidden. **Always show** keeps the icon after recovery; **Only when recovery is needed** removes it after the menu closes. While the app is shutting down, neither mode shows an icon. Alpha-mask pointer polling by itself does not change the recovery condition. CLI `show` still shows only the character, without turning on the bubble.
+The default status icon is a template pawprint; a chosen image replaces its artwork without changing the status item. In this checkout, left-click opens the existing three-tab panel directly; right-click/Control-click opens its native menu with **Settings…** and **Quit**, plus **Show and Enable Character** only when recovery is needed (both windows hidden or full-window click-through on). Recovery shows the character and disables full-window click-through, preserving bubble visibility and alpha click-through; a visible bubble reattaches, while a hidden bubble stays hidden. **Always show** keeps the icon after recovery; **Only when recovery is needed** removes it after the menu closes. While the app is shutting down, neither mode shows an icon. Alpha-mask pointer polling by itself does not change the recovery condition. CLI `show` still displays only the character, without turning on the bubble.
 
 The native `preferences.json` key `menu_bar_mode` stores `always` or `recovery_only`. New profiles and older profiles without this key (including those from the original conditional-icon preview) use **Always show**; this migration does not infer a saved preference for the old conditional behavior. A successfully saved choice applies immediately and survives restart and unrelated preference saves, preserving unknown preference fields. If saving fails, the previously selected mode and icon remain in effect. Changing the mode does not change window visibility, full-window or alpha click-through, character/bubble positions, reply drafts, or lifecycle settings.
 
