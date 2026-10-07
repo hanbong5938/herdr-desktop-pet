@@ -38,6 +38,39 @@ const MENU_BAR_CARD_BOTTOM: f64 = 14.0;
 const MIN_SCALE: f64 = 0.35;
 const MAX_SCALE: f64 = 1.25;
 
+#[derive(Default)]
+struct BubbleColorDraft {
+    latest: Option<BubbleAppearance>,
+    baseline: Option<BubbleAppearance>,
+}
+
+impl BubbleColorDraft {
+    fn receive(&mut self, appearance: BubbleAppearance, protected: bool) {
+        let already_conflicted = self.conflicted();
+        self.latest = Some(appearance);
+        if self.baseline.is_none() || (!protected && !already_conflicted) {
+            self.baseline = Some(appearance);
+        }
+    }
+
+    fn saved(&mut self, appearance: BubbleAppearance) {
+        self.latest = Some(appearance);
+        self.baseline = Some(appearance);
+    }
+
+    fn conflicted(&self) -> bool {
+        self.latest.is_some() && self.latest != self.baseline
+    }
+
+    fn rebase(&mut self) -> bool {
+        let Some(latest) = self.latest else {
+            return false;
+        };
+        self.baseline = Some(latest);
+        true
+    }
+}
+
 const BG_RED: f64 = 0.114;
 const BG_GREEN: f64 = 0.114;
 const BG_BLUE: f64 = 0.125;
@@ -370,6 +403,11 @@ pub(crate) struct MenuPanel {
     bubble_color_swatches: [Retained<NSBox>; 5],
     bubble_apply: Retained<NSButton>,
     bubble_reset: Retained<NSButton>,
+    bubble_reload: Retained<NSButton>,
+    bubble_rebase: Retained<NSButton>,
+    bubble_draft: BubbleColorDraft,
+    bubble_control_state: Option<(bool, bool)>,
+    bubble_conflict_label: Option<bool>,
     settings_appearance_label: Retained<NSTextField>,
     click_behavior_label: Retained<NSTextField>,
     full_passthrough_label: Retained<NSTextField>,
@@ -419,6 +457,8 @@ pub(crate) struct MenuPanel {
     observation_preferences: Option<ObservationPreferences>,
     locale: UiLocale,
     status: Retained<NSTextField>,
+    presentation_error: Option<String>,
+    status_text: String,
     reset: Retained<NSButton>,
     quit: Retained<NSButton>,
     selected_tab: usize,
@@ -777,6 +817,18 @@ impl MenuPanel {
             sel!(resetBubbleColors:),
             mtm,
         );
+        let bubble_reload = make_action_button(
+            text(locale, Message::BubbleColorsReload),
+            target,
+            sel!(reloadBubbleColors:),
+            mtm,
+        );
+        let bubble_rebase = make_action_button(
+            text(locale, Message::BubbleColorsRebase),
+            target,
+            sel!(rebaseBubbleColors:),
+            mtm,
+        );
         set_accessibility_label(&bubble_apply, text(locale, Message::ApplyBubbleColors));
         set_accessibility_label(&bubble_reset, text(locale, Message::ResetBubbleColors));
         bubble_theme_card.addSubview(&bubble_colors_label);
@@ -791,6 +843,8 @@ impl MenuPanel {
         }
         bubble_theme_card.addSubview(&bubble_apply);
         bubble_theme_card.addSubview(&bubble_reset);
+        bubble_theme_card.addSubview(&bubble_reload);
+        bubble_theme_card.addSubview(&bubble_rebase);
         bubble_tab.addSubview(&bubble_theme_card);
 
         let appearance_card = MenuPanelCard::new(NSRect::default(), mtm);
@@ -1150,6 +1204,11 @@ impl MenuPanel {
             bubble_color_swatches,
             bubble_apply,
             bubble_reset,
+            bubble_reload,
+            bubble_rebase,
+            bubble_draft: BubbleColorDraft::default(),
+            bubble_control_state: None,
+            bubble_conflict_label: None,
             settings_appearance_label,
             click_behavior_label,
             full_passthrough_label,
@@ -1197,6 +1256,8 @@ impl MenuPanel {
             machine_rows: Vec::new(),
             observation_catalog: None,
             observation_preferences: None,
+            presentation_error: None,
+            status_text: String::new(),
             locale,
             status,
             reset,
@@ -1256,7 +1317,114 @@ impl MenuPanel {
         }
     }
 
+    fn bubble_field_editor(&self, index: usize) -> Option<&AnyObject> {
+        unsafe { msg_send![&*self.bubble_color_fields[index], currentEditor] }
+    }
+
+    pub(crate) fn bubble_colors_marked(&self) -> bool {
+        (0..self.bubble_color_fields.len()).any(|index| {
+            self.bubble_field_editor(index)
+                .is_some_and(|editor| unsafe { msg_send![editor, hasMarkedText] })
+        })
+    }
+
+    fn bubble_field_dirty(&self, index: usize) -> bool {
+        let Some(baseline) = self.bubble_draft.baseline else {
+            return false;
+        };
+        let palette = baseline.palette();
+        let saved = [
+            palette.surface,
+            palette.text,
+            palette.muted,
+            palette.border,
+            palette.accent,
+        ][index];
+        BubbleColor::parse_hex(&self.bubble_color_fields[index].stringValue().to_string())
+            .map_or(true, |value| value != saved)
+    }
+
+    pub(crate) fn refresh_bubble_color_controls(&mut self) {
+        let conflicted = self.bubble_draft.conflicted();
+        let marked = self.bubble_colors_marked();
+        if self.bubble_control_state != Some((conflicted, marked)) {
+            self.bubble_reload.setEnabled(conflicted && !marked);
+            self.bubble_rebase.setEnabled(conflicted && !marked);
+            self.bubble_apply.setEnabled(!conflicted && !marked);
+            self.bubble_control_state = Some((conflicted, marked));
+        }
+        if self.bubble_conflict_label != Some(conflicted) {
+            let label = if conflicted {
+                text(self.locale, Message::BubbleColorDraftConflict)
+            } else {
+                text(self.locale, Message::CustomizeBubbleColors)
+            };
+            self.bubble_colors_label
+                .setStringValue(&NSString::from_str(label));
+            set_accessibility_label(&self.bubble_colors_label, label);
+            self.bubble_conflict_label = Some(conflicted);
+        }
+    }
+
     pub(crate) fn set_bubble_appearance(&mut self, appearance: BubbleAppearance) {
+        let protected: [bool; 5] = std::array::from_fn(|index| {
+            self.bubble_field_editor(index).is_some() || self.bubble_field_dirty(index)
+        });
+        let editing =
+            protected.iter().any(|protected| *protected) || self.bubble_draft.conflicted();
+        self.bubble_draft.receive(appearance, editing);
+        if !editing {
+            let tag = match appearance.theme {
+                BubbleTheme::WarmIvory => 0,
+                BubbleTheme::DustyRose => 1,
+                BubbleTheme::MoonlitInk => 2,
+                BubbleTheme::Custom => 3,
+            };
+            self.bubble_theme_popup.selectItemWithTag(tag);
+        }
+        if !editing {
+            let palette = appearance.palette();
+            for (field, value) in self.bubble_color_fields.iter().zip([
+                palette.surface,
+                palette.text,
+                palette.muted,
+                palette.border,
+                palette.accent,
+            ]) {
+                let hex = value.to_hex();
+                if field.stringValue().to_string() != hex {
+                    field.setStringValue(&NSString::from_str(&hex));
+                }
+            }
+        }
+        self.update_color_swatches();
+        self.refresh_bubble_color_controls();
+    }
+
+    pub(crate) fn bubble_colors_conflicted(&self) -> bool {
+        self.bubble_draft.conflicted()
+    }
+
+    pub(crate) fn bubble_colors_saved(&mut self, appearance: BubbleAppearance) {
+        self.bubble_draft.saved(appearance);
+        let tag = match appearance.theme {
+            BubbleTheme::WarmIvory => 0,
+            BubbleTheme::DustyRose => 1,
+            BubbleTheme::MoonlitInk => 2,
+            BubbleTheme::Custom => 3,
+        };
+        self.bubble_theme_popup.selectItemWithTag(tag);
+        self.refresh_bubble_color_controls();
+    }
+
+    pub(crate) fn reload_bubble_colors(&mut self) -> bool {
+        if self.bubble_colors_marked() {
+            return false;
+        }
+        let Some(appearance) = self.bubble_draft.latest else {
+            return false;
+        };
+        self.bubble_draft.rebase();
         let tag = match appearance.theme {
             BubbleTheme::WarmIvory => 0,
             BubbleTheme::DustyRose => 1,
@@ -1272,9 +1440,22 @@ impl MenuPanel {
             palette.border,
             palette.accent,
         ]) {
-            field.setStringValue(&NSString::from_str(&value.to_hex()));
+            let hex = value.to_hex();
+            if field.stringValue().to_string() != hex {
+                field.setStringValue(&NSString::from_str(&hex));
+            }
         }
         self.update_color_swatches();
+        self.refresh_bubble_color_controls();
+        true
+    }
+
+    pub(crate) fn rebase_bubble_colors(&mut self) -> bool {
+        if self.bubble_colors_marked() || !self.bubble_draft.rebase() {
+            return false;
+        }
+        self.refresh_bubble_color_controls();
+        true
     }
 
     pub(crate) fn set_show_status_indicators(&self, enabled: bool) {
@@ -1286,6 +1467,12 @@ impl MenuPanel {
     }
 
     pub(crate) fn custom_bubble_palette(&self) -> Result<BubblePalette, String> {
+        if self.bubble_colors_conflicted() {
+            return Err(text(self.locale, Message::BubbleColorDraftConflict).to_owned());
+        }
+        if self.bubble_colors_marked() {
+            return Err(text(self.locale, Message::FinishMarkedText).to_owned());
+        }
         let parse = |index: usize| -> Result<BubbleColor, String> {
             BubbleColor::parse_hex(&self.bubble_color_fields[index].stringValue().to_string())
         };
@@ -1371,7 +1558,11 @@ impl MenuPanel {
 
         self.set_language_preference(language);
         self.set_menu_bar_mode(menu_bar_mode);
-        self.status.setStringValue(&NSString::from_str(status));
+        if self.status_text != status {
+            self.status_text.clear();
+            self.status_text.push_str(status);
+        }
+        self.update_status_text();
         self.lifecycle_card.sync(lifecycle);
         self.sync_observation(observation, catalog);
         self.update_color_swatches();
@@ -1392,6 +1583,29 @@ impl MenuPanel {
             MenuBarMode::Always => 0,
             MenuBarMode::RecoveryOnly => 1,
         });
+    }
+
+    pub(crate) fn set_presentation_error(&mut self, error: Option<&str>) {
+        self.presentation_error = error.map(str::to_owned);
+        let color = if error.is_some() {
+            NSColor::systemRedColor()
+        } else {
+            secondary()
+        };
+        self.status.setTextColor(Some(&color));
+        self.update_status_text();
+    }
+
+    fn update_status_text(&self) {
+        let error = self.presentation_error.as_ref().map(|detail| {
+            format!(
+                "{}: {detail}",
+                text(self.locale, Message::PresentationSaveFailure)
+            )
+        });
+        let value = error.as_deref().unwrap_or(&self.status_text);
+        self.status.setStringValue(&NSString::from_str(value));
+        set_tooltip(&self.status, value);
     }
 
     pub(crate) fn set_menu_bar_icon(
@@ -1524,7 +1738,8 @@ impl MenuPanel {
                     copy_feedback: None,
                 }
             };
-            row.toggle.setEnabled(machine.enabled);
+            row.toggle
+                .setEnabled(machine.enabled || preferences.machines.contains(&machine.id));
             row.toggle
                 .setState(if preferences.machines.contains(&machine.id) {
                     NSControlStateValueOn
@@ -1846,11 +2061,6 @@ impl MenuPanel {
             ],
         );
         set_accessibility_label(&self.bubble_theme_popup, text(locale, Message::BubbleTheme));
-        self.bubble_colors_label
-            .setStringValue(&NSString::from_str(text(
-                locale,
-                Message::CustomizeBubbleColors,
-            )));
         for ((name, field), message) in self
             .bubble_color_labels
             .iter()
@@ -1876,6 +2086,13 @@ impl MenuPanel {
         )));
         set_accessibility_label(&self.bubble_apply, text(locale, Message::ApplyBubbleColors));
         set_accessibility_label(&self.bubble_reset, text(locale, Message::ResetBubbleColors));
+        for (button, message) in [
+            (&self.bubble_reload, Message::BubbleColorsReload),
+            (&self.bubble_rebase, Message::BubbleColorsRebase),
+        ] {
+            button.setTitle(&NSString::from_str(text(locale, message)));
+            set_accessibility_label(button, text(locale, message));
+        }
         self.settings_appearance_label
             .setStringValue(&NSString::from_str(text(locale, Message::MenuAppearance)));
         self.click_behavior_label
@@ -1985,6 +2202,8 @@ impl MenuPanel {
                 ))));
         }
         self.locale = locale;
+        self.bubble_conflict_label = None;
+        self.refresh_bubble_color_controls();
         self.update_menu_bar_icon_labels();
         self.observation_catalog = None;
         self.observation_title
@@ -2405,7 +2624,7 @@ impl MenuPanel {
         // Theme card (native theme popup + 5 color rows + action buttons)
         theme_card.setFrame(NSRect::new(
             NSPoint::new(8.0, 254.0),
-            NSSize::new(card_width, 286.0),
+            NSSize::new(card_width, 318.0),
         ));
         self.bubble_theme_label.setFrame(NSRect::new(
             NSPoint::new(14.0, 8.0),
@@ -2456,6 +2675,14 @@ impl MenuPanel {
         ));
         self.bubble_reset.setFrame(NSRect::new(
             NSPoint::new(14.0 + button_width + button_gap, 240.0),
+            NSSize::new(button_width, 28.0),
+        ));
+        self.bubble_reload.setFrame(NSRect::new(
+            NSPoint::new(14.0, 272.0),
+            NSSize::new(button_width, 28.0),
+        ));
+        self.bubble_rebase.setFrame(NSRect::new(
+            NSPoint::new(14.0 + button_width + button_gap, 272.0),
             NSSize::new(button_width, 28.0),
         ));
     }
@@ -3181,5 +3408,54 @@ fn placement_index(placement: BubblePlacement) -> usize {
         BubblePlacement::Below => 2,
         BubblePlacement::Left => 3,
         BubblePlacement::Right => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_appearance_preserves_editing_baseline_until_explicit_rebase() {
+        let original = BubbleAppearance::default();
+        let external = BubbleAppearance {
+            theme: BubbleTheme::DustyRose,
+            ..original
+        };
+        let mut draft = BubbleColorDraft::default();
+        draft.receive(original, false);
+        draft.receive(external, true);
+        assert_eq!(draft.baseline, Some(original));
+        assert_eq!(draft.latest, Some(external));
+        assert!(draft.conflicted());
+        draft.receive(external, false);
+        assert!(draft.conflicted());
+        assert_eq!(draft.baseline, Some(original));
+        assert!(draft.rebase());
+        assert_eq!(draft.baseline, Some(external));
+        assert!(!draft.conflicted());
+    }
+
+    #[test]
+    fn clean_external_update_and_own_save_advance_color_baseline() {
+        let original = BubbleAppearance::default();
+        let external = BubbleAppearance {
+            theme: BubbleTheme::MoonlitInk,
+            ..original
+        };
+        let custom = BubbleAppearance {
+            theme: BubbleTheme::Custom,
+            ..original
+        };
+        let mut draft = BubbleColorDraft::default();
+        draft.receive(original, false);
+        draft.receive(external, false);
+        assert_eq!(draft.baseline, Some(external));
+        assert!(!draft.conflicted());
+        draft.receive(custom, true);
+        assert!(draft.conflicted());
+        draft.saved(custom);
+        assert_eq!(draft.baseline, Some(custom));
+        assert!(!draft.conflicted());
     }
 }

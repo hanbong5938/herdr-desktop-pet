@@ -10,13 +10,20 @@ const MAX_TARGETS: usize = 128;
 const MAX_ENTRIES: usize = 512;
 const MAX_AGGREGATE_BYTES: usize = 512 * 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "id",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub(crate) enum DialogueTarget {
     Character(String),
     ExternalAssets(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum DialogueSlot {
     Idle,
     Running,
@@ -25,6 +32,7 @@ pub(crate) enum DialogueSlot {
     HeadTap,
     BodyTap,
     Pet,
+    #[serde(rename = "completion_observed")]
     Completion,
 }
 
@@ -383,5 +391,26 @@ mod tests {
         assert!(effective_metadata(None, None)
             .dialogue_text("waiting", None, "ko")
             .is_none());
+    }
+    #[test]
+    fn utf8_boundary_and_whitespace_are_preserved_without_blank_overrides() {
+        let target = DialogueTarget::Character("default".to_owned());
+        let mut overrides = DialogueOverrides::default();
+        let text = format!(" \n{}  \t", "가".repeat(681));
+        assert_eq!(text.len(), 2048);
+        overrides
+            .set_entry(&target, "ko", DialogueSlot::Idle, Some(text.clone()))
+            .unwrap();
+        assert_eq!(
+            overrides.entry(&target, "ko", DialogueSlot::Idle),
+            Some(text.as_str())
+        );
+        assert!(overrides
+            .set_entry(&target, "ko", DialogueSlot::Idle, Some(format!("{text}가")),)
+            .is_err());
+        overrides
+            .set_entry(&target, "ko", DialogueSlot::Idle, Some(" \t\n ".to_owned()))
+            .unwrap();
+        assert_eq!(overrides.entry(&target, "ko", DialogueSlot::Idle), None);
     }
 }

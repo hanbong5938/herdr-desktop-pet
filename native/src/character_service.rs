@@ -17,6 +17,8 @@ const MAX_PENDING_OPERATIONS: usize = 32;
 const MAX_RETAINED_OPERATIONS: usize = 128;
 const MAX_OPERATION_ID_BYTES: usize = 128;
 const MAX_DIAGNOSTIC_BYTES: usize = 1024;
+const MAX_PENDING_METADATA: usize = 16;
+const MAX_CACHED_METADATA: usize = 32;
 
 const ACCEPTED: &str = "accepted";
 const PREPARING: &str = "preparing";
@@ -66,11 +68,31 @@ struct MetadataKey {
     generation: u64,
 }
 
+#[derive(Clone, Copy)]
+enum MetadataRequest {
+    Automatic,
+    Explicit,
+}
+
+fn listing_has_dialogue_reference(
+    listing: Option<&PackListing>,
+    reference: &CharacterRef,
+    generation: u64,
+) -> bool {
+    listing.is_some_and(|listing| {
+        listing.generation == generation
+            && (reference.is_builtin()
+                || listing.packs.iter().any(|record| {
+                    record.id == reference.id && record.revisions.contains(&reference.revision)
+                }))
+    })
+}
+
 #[derive(Default)]
 struct MetadataState {
-    pending: Option<MetadataKey>,
+    pending: VecDeque<MetadataKey>,
     loading: Option<MetadataKey>,
-    result: Option<(MetadataKey, Result<DialogueMetadata, String>)>,
+    results: VecDeque<(MetadataKey, Result<DialogueMetadata, String>)>,
 }
 
 /// The serial coordinator for managed character-pack operations.
@@ -209,54 +231,70 @@ impl PackService {
         reference: &CharacterRef,
         generation: u64,
     ) -> bool {
-        let listing = lock_unpoisoned(&self.cache);
-        let Some(listing) = listing.as_ref() else {
-            return false;
-        };
-        listing.generation == generation
-            && (reference.is_builtin()
-                || listing.packs.iter().any(|record| {
-                    record.id == reference.id && record.revisions.contains(&reference.revision)
-                }))
+        listing_has_dialogue_reference(lock_unpoisoned(&self.cache).as_ref(), reference, generation)
     }
 
-    /// Replace any pending lookup with this identity (one bounded slot).
-    /// Repeated requests for a pending, in-flight, or successfully cached
-    /// identity are coalesced; a cached failure for the same identity is
-    /// retried. Callers request only on identity change or explicit retry, so
-    /// the worker cannot spin on a persistent error.
+    /// Automatic requests retain negative results. Only a new explicit read
+    /// or user event can retry a failed exact reference/generation.
     pub(crate) fn request_dialogue_metadata(
         &self,
         reference: CharacterRef,
         generation: u64,
     ) -> Result<(), String> {
+        self.admit_dialogue_metadata(reference, generation, MetadataRequest::Automatic)
+    }
+
+    pub(crate) fn retry_dialogue_metadata(
+        &self,
+        reference: CharacterRef,
+        generation: u64,
+    ) -> Result<(), String> {
+        self.admit_dialogue_metadata(reference, generation, MetadataRequest::Explicit)
+    }
+
+    fn admit_dialogue_metadata(
+        &self,
+        reference: CharacterRef,
+        generation: u64,
+        request: MetadataRequest,
+    ) -> Result<(), String> {
         if self.stopping.load(Ordering::Acquire) || !self.started.load(Ordering::Acquire) {
-            return Err("pack service is not running".to_string());
-        }
-        if !self.dialogue_reference_valid(&reference, generation) {
-            return Err("character reference is stale or unavailable".to_string());
+            return Err("pack service is not running".to_owned());
         }
         let key = MetadataKey {
             reference,
             generation,
         };
-        // Share the condvar mutex with the worker's wait predicate so a
-        // request cannot slip between checking pending and entering wait.
-        let queue = lock_unpoisoned(&self.queue);
-        let mut state = lock_unpoisoned(&self.metadata);
-        if state.pending.as_ref() == Some(&key)
-            || (state.loading.as_ref() == Some(&key) && state.pending.is_none())
-            || state
-                .result
-                .as_ref()
-                .is_some_and(|(cached, result)| cached == &key && result.is_ok())
         {
-            return Ok(());
+            // The worker tests both queues under this mutex before sleeping.
+            // Keep listing validity and metadata admission atomic with cache
+            // invalidation (queue -> cache -> metadata).
+            let _queue = lock_unpoisoned(&self.queue);
+            let cache = lock_unpoisoned(&self.cache);
+            if !listing_has_dialogue_reference(cache.as_ref(), &key.reference, generation) {
+                return Err("character reference is stale or unavailable".to_owned());
+            }
+            let mut state = lock_unpoisoned(&self.metadata);
+            if state.pending.contains(&key) || state.loading.as_ref() == Some(&key) {
+                return Ok(());
+            }
+            let cached = state
+                .results
+                .iter()
+                .position(|(candidate, _)| candidate == &key);
+            if let Some(index) = cached {
+                if state.results[index].1.is_ok() || matches!(request, MetadataRequest::Automatic) {
+                    return Ok(());
+                }
+            }
+            if state.pending.len() >= MAX_PENDING_METADATA {
+                return Err("Busy: character metadata queue is full".to_owned());
+            }
+            if let Some(index) = cached {
+                state.results.remove(index);
+            }
+            state.pending.push_back(key);
         }
-        state.pending = Some(key);
-        state.result = None;
-        drop(state);
-        drop(queue);
         self.wake.notify_one();
         Ok(())
     }
@@ -268,20 +306,44 @@ impl PackService {
         reference: &CharacterRef,
         generation: u64,
     ) -> Option<Result<DialogueMetadata, String>> {
-        if !self.dialogue_reference_valid(reference, generation) {
-            return Some(Err(
-                "character reference is stale or unavailable".to_string()
-            ));
+        let cache = lock_unpoisoned(&self.cache);
+        if !listing_has_dialogue_reference(cache.as_ref(), reference, generation) {
+            return Some(Err("character reference is stale or unavailable".to_owned()));
         }
-        let key = MetadataKey {
-            reference: reference.clone(),
-            generation,
-        };
         let state = lock_unpoisoned(&self.metadata);
-        state
-            .result
-            .as_ref()
-            .and_then(|(cached, result)| (cached == &key).then(|| result.clone()))
+        state.results.iter().find_map(|(cached, result)| {
+            (cached.generation == generation && &cached.reference == reference)
+                .then(|| result.clone())
+        })
+    }
+
+    fn publish_dialogue_metadata(
+        &self,
+        key: MetadataKey,
+        result: Result<DialogueMetadata, String>,
+    ) {
+        // Cache and metadata must stay locked together through publication;
+        // invalidating the generation must not race a completed worker read.
+        let cache = lock_unpoisoned(&self.cache);
+        let mut metadata = lock_unpoisoned(&self.metadata);
+        let was_loading = metadata.loading.as_ref() == Some(&key);
+        if was_loading {
+            metadata.loading = None;
+        }
+        let published = was_loading
+            && listing_has_dialogue_reference(cache.as_ref(), &key.reference, key.generation)
+            && !self.stopping.load(Ordering::Acquire);
+        if published {
+            metadata.results.push_back((key, result));
+            if metadata.results.len() > MAX_CACHED_METADATA {
+                metadata.results.pop_front();
+            }
+        }
+        drop(metadata);
+        drop(cache);
+        if published {
+            ui::wake();
+        }
     }
 
     /// Look up a retained operation without touching the registry.  Expired
@@ -304,7 +366,16 @@ impl PackService {
         if let Some(error) = state.runtime_error.clone() {
             listing.error = Some(bound_diagnostic(error));
         }
-        *lock_unpoisoned(&self.cache) = Some(listing.clone());
+        {
+            let mut cache = lock_unpoisoned(&self.cache);
+            if cache.as_ref().map(|old| old.generation) != Some(listing.generation) {
+                let mut metadata = lock_unpoisoned(&self.metadata);
+                metadata.pending.clear();
+                metadata.loading = None;
+                metadata.results.clear();
+            }
+            *cache = Some(listing.clone());
+        }
         if let Some(error) = &state.renderer_error {
             listing.error = Some(error.clone());
         }
@@ -566,7 +637,7 @@ fn worker_loop(weak: Weak<PackService>) {
                 }
                 let pending = {
                     let mut metadata = lock_unpoisoned(&service.metadata);
-                    let pending = metadata.pending.take();
+                    let pending = metadata.pending.pop_front();
                     metadata.loading = pending.clone();
                     pending
                 };
@@ -595,13 +666,7 @@ fn worker_loop(weak: Weak<PackService>) {
                     .map_err(bound_diagnostic)
                 }))
                 .unwrap_or_else(|_| Err("character metadata lookup aborted".to_string()));
-                let mut metadata = lock_unpoisoned(&service.metadata);
-                metadata.loading = None;
-                if metadata.pending.is_none() && !service.stopping.load(Ordering::Acquire) {
-                    metadata.result = Some((key, result));
-                    drop(metadata);
-                    ui::wake();
-                }
+                service.publish_dialogue_metadata(key, result);
                 continue;
             }
             WorkerItem::Operation(item) => item,
@@ -1226,7 +1291,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_dialogue_metadata_is_requeued_while_success_stays_coalesced() {
+    fn failed_dialogue_metadata_is_retained_without_automatic_retry() {
         let service = ready_service();
         *lock_unpoisoned(&service.cache) = Some(PackListing {
             generation: 7,
@@ -1240,36 +1305,309 @@ mod tests {
             reference: CharacterRef::builtin(),
             generation: 7,
         };
-        lock_unpoisoned(&service.metadata).result = Some((
-            key.clone(),
-            Err("Busy: character store is locked".to_owned()),
+        service
+            .request_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        assert_eq!(
+            lock_unpoisoned(&service.metadata).pending.pop_front(),
+            Some(key.clone())
+        );
+        lock_unpoisoned(&service.metadata).loading = Some(key.clone());
+        service.publish_dialogue_metadata(key.clone(), Err("invalid manifest".to_owned()));
+        for _ in 0..3 {
+            service
+                .request_dialogue_metadata(key.reference.clone(), 7)
+                .unwrap();
+            assert!(lock_unpoisoned(&service.metadata).pending.is_empty());
+            let result = service.cached_dialogue_metadata(&key.reference, 7).unwrap();
+            assert!(matches!(&result, Err(error) if error == "invalid manifest"));
+        }
+
+        // A new read/user event retries once, without making frame refreshes
+        // or another simultaneous explicit event enqueue a second lookup.
+        service
+            .retry_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        assert!(service
+            .cached_dialogue_metadata(&key.reference, 7)
+            .is_none());
+        service
+            .retry_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        service
+            .request_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        assert_eq!(lock_unpoisoned(&service.metadata).pending.len(), 1);
+        assert_eq!(
+            lock_unpoisoned(&service.metadata).pending.pop_front(),
+            Some(key.clone())
+        );
+        lock_unpoisoned(&service.metadata).loading = Some(key.clone());
+        service
+            .retry_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        assert!(lock_unpoisoned(&service.metadata).pending.is_empty());
+        service.publish_dialogue_metadata(key.clone(), Err("still Busy".to_owned()));
+        service
+            .request_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        assert!(matches!(
+            service.cached_dialogue_metadata(&key.reference, 7),
+            Some(Err(error)) if error == "still Busy"
         ));
+        assert!(lock_unpoisoned(&service.metadata).pending.is_empty());
 
         service
-            .request_dialogue_metadata(CharacterRef::builtin(), 7)
+            .retry_dialogue_metadata(key.reference.clone(), 7)
             .unwrap();
-        {
-            let state = lock_unpoisoned(&service.metadata);
-            assert_eq!(state.pending.as_ref(), Some(&key));
-            assert!(state.result.is_none());
+        assert!(service
+            .cached_dialogue_metadata(&key.reference, 7)
+            .is_none());
+        assert_eq!(
+            lock_unpoisoned(&service.metadata).pending.pop_front(),
+            Some(key.clone())
+        );
+        lock_unpoisoned(&service.metadata).loading = Some(key.clone());
+        service.publish_dialogue_metadata(key.clone(), Ok(DialogueMetadata { metadata: None }));
+        service
+            .retry_dialogue_metadata(key.reference.clone(), 7)
+            .unwrap();
+        assert!(lock_unpoisoned(&service.metadata).pending.is_empty());
+        assert!(service
+            .cached_dialogue_metadata(&key.reference, 7)
+            .unwrap()
+            .is_ok());
+    }
+
+    #[test]
+    fn explicit_retry_preserves_cached_failure_when_fifo_is_full() {
+        use crate::character_types::PackRecord;
+
+        let service = ready_service();
+        *lock_unpoisoned(&service.cache) = Some(PackListing {
+            generation: 7,
+            selected: CharacterRef::builtin(),
+            active: None,
+            override_active: false,
+            packs: vec![PackRecord {
+                id: "forest".to_owned(),
+                name: "Forest".to_owned(),
+                head: 16,
+                revisions: (1..=16).collect(),
+            }],
+            error: None,
+        });
+        let failed = CharacterRef::builtin();
+        service
+            .request_dialogue_metadata(failed.clone(), 7)
+            .unwrap();
+        let key = lock_unpoisoned(&service.metadata)
+            .pending
+            .pop_front()
+            .unwrap();
+        lock_unpoisoned(&service.metadata).loading = Some(key.clone());
+        service.publish_dialogue_metadata(key, Err("transient Busy".to_owned()));
+        for revision in 1..=MAX_PENDING_METADATA as u64 {
+            service
+                .request_dialogue_metadata(
+                    CharacterRef {
+                        id: "forest".to_owned(),
+                        revision,
+                    },
+                    7,
+                )
+                .unwrap();
         }
         assert!(service
-            .cached_dialogue_metadata(&CharacterRef::builtin(), 7)
-            .is_none());
-
-        {
-            let mut state = lock_unpoisoned(&service.metadata);
-            state.pending = None;
-            state.result = Some((key, Ok(DialogueMetadata { metadata: None })));
-        }
-        service
-            .request_dialogue_metadata(CharacterRef::builtin(), 7)
-            .unwrap();
-        assert!(lock_unpoisoned(&service.metadata).pending.is_none());
+            .retry_dialogue_metadata(failed.clone(), 7)
+            .unwrap_err()
+            .starts_with("Busy:"));
         assert!(matches!(
-            service.cached_dialogue_metadata(&CharacterRef::builtin(), 7),
-            Some(Ok(_))
+            service.cached_dialogue_metadata(&failed, 7),
+            Some(Err(error)) if error == "transient Busy"
         ));
+        {
+            let mut metadata = lock_unpoisoned(&service.metadata);
+            assert_eq!(metadata.pending.len(), MAX_PENDING_METADATA);
+            assert_eq!(metadata.pending.pop_front().unwrap().reference.revision, 1);
+        }
+        service.retry_dialogue_metadata(failed.clone(), 7).unwrap();
+        let metadata = lock_unpoisoned(&service.metadata);
+        assert_eq!(metadata.pending.len(), MAX_PENDING_METADATA);
+        assert_eq!(metadata.pending.front().unwrap().reference.revision, 2);
+        assert_eq!(metadata.pending.back().unwrap().reference, failed);
+        assert!(metadata.results.is_empty());
+    }
+
+    #[test]
+    fn metadata_fifo_retains_each_revision_and_drops_stale_generations() {
+        use crate::character_types::PackRecord;
+
+        let service = ready_service();
+        let listing = |generation| PackListing {
+            generation,
+            selected: CharacterRef::builtin(),
+            active: None,
+            override_active: false,
+            packs: vec![PackRecord {
+                id: "forest".to_owned(),
+                name: "Forest".to_owned(),
+                head: 32,
+                revisions: (1..=32).collect(),
+            }],
+            error: None,
+        };
+        *lock_unpoisoned(&service.cache) = Some(listing(7));
+        let gui = CharacterRef::builtin();
+        service.request_dialogue_metadata(gui.clone(), 7).unwrap();
+        for revision in 1..MAX_PENDING_METADATA as u64 {
+            service
+                .request_dialogue_metadata(
+                    CharacterRef {
+                        id: "forest".to_owned(),
+                        revision,
+                    },
+                    7,
+                )
+                .unwrap();
+        }
+        assert!(service
+            .request_dialogue_metadata(
+                CharacterRef {
+                    id: "forest".to_owned(),
+                    revision: 16,
+                },
+                7
+            )
+            .unwrap_err()
+            .starts_with("Busy:"));
+        assert_eq!(
+            lock_unpoisoned(&service.metadata)
+                .pending
+                .front()
+                .unwrap()
+                .reference,
+            gui
+        );
+        let first = lock_unpoisoned(&service.metadata)
+            .pending
+            .pop_front()
+            .unwrap();
+        lock_unpoisoned(&service.metadata).loading = Some(first.clone());
+        service.publish_dialogue_metadata(
+            first,
+            Ok(DialogueMetadata {
+                metadata: Some(CharacterMetadata { dialogue: None }),
+            }),
+        );
+        for revision in 1..MAX_PENDING_METADATA as u64 {
+            let key = lock_unpoisoned(&service.metadata)
+                .pending
+                .pop_front()
+                .unwrap();
+            assert_eq!(key.reference.revision, revision);
+            lock_unpoisoned(&service.metadata).loading = Some(key.clone());
+            service.publish_dialogue_metadata(
+                key,
+                Ok(DialogueMetadata {
+                    metadata: Some(CharacterMetadata {
+                        dialogue: Some(std::collections::BTreeMap::from([(
+                            "en".to_owned(),
+                            crate::assets::DialogueLocale {
+                                phases: Some(std::collections::BTreeMap::from([(
+                                    "idle".to_owned(),
+                                    format!("revision-{revision}"),
+                                )])),
+                                reactions: None,
+                            },
+                        )])),
+                    }),
+                }),
+            );
+        }
+        assert!(service
+            .cached_dialogue_metadata(&gui, 7)
+            .unwrap()
+            .unwrap()
+            .metadata
+            .is_some());
+        for revision in 1..MAX_PENDING_METADATA as u64 {
+            let reference = CharacterRef {
+                id: "forest".to_owned(),
+                revision,
+            };
+            let metadata = service
+                .cached_dialogue_metadata(&reference, 7)
+                .unwrap()
+                .unwrap()
+                .metadata
+                .unwrap();
+            assert_eq!(
+                metadata.dialogue_text("idle", None, "en"),
+                Some(format!("revision-{revision}").as_str())
+            );
+        }
+        let stale = MetadataKey {
+            reference: gui.clone(),
+            generation: 7,
+        };
+        lock_unpoisoned(&service.metadata).loading = Some(stale.clone());
+        service.cache_listing(listing(8));
+        service.publish_dialogue_metadata(stale, Ok(DialogueMetadata { metadata: None }));
+        assert!(service.cached_dialogue_metadata(&gui, 7).unwrap().is_err());
+        assert!(service.cached_dialogue_metadata(&gui, 8).is_none());
+        service.request_dialogue_metadata(gui, 8).unwrap();
+        assert_eq!(
+            lock_unpoisoned(&service.metadata)
+                .pending
+                .front()
+                .unwrap()
+                .generation,
+            8
+        );
+    }
+
+    #[test]
+    fn invalidated_lookup_cannot_publish_when_generation_returns() {
+        let service = ready_service();
+        let listing = |generation| PackListing {
+            generation,
+            selected: CharacterRef::builtin(),
+            active: None,
+            override_active: false,
+            packs: Vec::new(),
+            error: None,
+        };
+        service.cache_listing(listing(7));
+        let reference = CharacterRef::builtin();
+        service
+            .request_dialogue_metadata(reference.clone(), 7)
+            .unwrap();
+        let stale = lock_unpoisoned(&service.metadata)
+            .pending
+            .pop_front()
+            .unwrap();
+        lock_unpoisoned(&service.metadata).loading = Some(stale.clone());
+        service.cache_listing(listing(8));
+        assert!(service
+            .retry_dialogue_metadata(reference.clone(), 7)
+            .is_err());
+        service.cache_listing(listing(7));
+        service
+            .retry_dialogue_metadata(reference.clone(), 7)
+            .unwrap();
+        service.publish_dialogue_metadata(stale, Err("stale worker failure".to_owned()));
+        assert!(service.cached_dialogue_metadata(&reference, 7).is_none());
+        let fresh = lock_unpoisoned(&service.metadata)
+            .pending
+            .pop_front()
+            .unwrap();
+        lock_unpoisoned(&service.metadata).loading = Some(fresh.clone());
+        service.publish_dialogue_metadata(fresh, Ok(DialogueMetadata { metadata: None }));
+        assert!(service
+            .cached_dialogue_metadata(&reference, 7)
+            .unwrap()
+            .is_ok());
     }
 
     #[test]
