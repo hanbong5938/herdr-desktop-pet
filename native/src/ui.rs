@@ -1,6 +1,19 @@
+#[path = "ui_dialogues.rs"]
+mod automation_dialogues;
+#[path = "ui_preferences.rs"]
+mod automation_preferences;
+#[path = "ui_sessions.rs"]
+mod automation_sessions;
+#[path = "ui_worktrees.rs"]
+mod automation_worktrees;
+
 use crate::animation::{phase_index, FrameId, Playback};
 use crate::assets::CharacterMetadata;
 use crate::assets::{AssetPack, ValidatedCharacter};
+use crate::automation::{
+    lock_automation, AutomationState, PendingReason, PresentationAction, PresentationCheckpoint,
+    PresentationPatch, PresentationTarget, SharedAutomation, WindowFrame,
+};
 use crate::behavior::{
     Behavior, EffectKind, Presentation, PresentationIntent, PresentationViewport, Reaction,
 };
@@ -20,9 +33,16 @@ use crate::composer_layout::{
 };
 use crate::control;
 use crate::dialogue::{effective_metadata, DialogueSlot, DialogueTarget};
-use crate::dialogue_editor::{DialogueChoice, DialogueEditor};
+use crate::dialogue_automation::{
+    target_overrides_token, DialogueBaseline, DialogueIdentity, DialogueLanguage, DialogueSelection,
+};
+use crate::dialogue_editor::{
+    DialogueChoice, DialogueDraftBaseline, DialogueEditor, HydrationSync,
+};
 use crate::display_geometry::{DisplayGeometry, BASE_HEIGHT, BASE_WIDTH};
-use crate::herdr::{PromptError, PromptSender, WorktreeRemoveError, WorktreeRemoveSender};
+use crate::herdr::{
+    PromptError, PromptSender, RequestOrigin, WorktreeRemoveError, WorktreeRemoveSender,
+};
 use crate::i18n::{
     default_dialogue, disconnected_sources, language_save_failure, resolve_language,
     status_indicator_summary, task_disclosure, task_status, text, worktree_remove_confirmation,
@@ -861,6 +881,12 @@ struct Ui {
     mtm: MainThreadMarker,
     shared: Arc<Mutex<AppState>>,
     packs: Arc<PackService>,
+    automation: SharedAutomation,
+    saved_presentation: PresentationTarget,
+    presentation_patch: Option<PresentationPatch>,
+    presentation_reset: bool,
+    presentation_operation: Option<String>,
+    checkpoint_save: Option<Result<PresentationTarget, (PresentationTarget, String)>>,
     prefs: Preferences,
     lifecycle_paths: Paths,
     panel: Retained<NSPanel>,
@@ -885,6 +911,7 @@ struct Ui {
     composer_send: Retained<NSButton>,
     prompt_sender: PromptSender,
     worktree_sender: WorktreeRemoveSender,
+    worktree_automation: automation_worktrees::WorktreeAutomation,
     worktree_confirming: bool,
     worktree_feedback: Option<WorktreeFeedback>,
     composer_render_stamp: Option<ComposerRenderStamp>,
@@ -896,6 +923,7 @@ struct Ui {
     cards: SessionCards,
     menu_panel: MenuPanel,
     dialogue_editor: DialogueEditor,
+    dialogue_automation: automation_dialogues::DialogueAutomation,
     dialogue_choices: Vec<DialogueChoice>,
     editor_cached_choice: Option<DialogueChoice>,
     editor_metadata: Option<CharacterMetadata>,
@@ -905,6 +933,12 @@ struct Ui {
     external_dialogue_target: Option<DialogueTarget>,
     external_dialogue_metadata: Option<CharacterMetadata>,
     locale: UiLocale,
+    effective_language: LanguagePreference,
+    preference_revision: u64,
+    native_show_status_indicators: bool,
+    native_menu_bar_mode: MenuBarMode,
+    pending_preference_operations: Vec<automation_preferences::PendingPreferenceOperation>,
+    cli_preference_feedback: Option<String>,
     pending_language: Option<(LanguagePreference, UiLocale)>,
     effective_dialogue: CharacterMetadata,
     dialogue_target: Option<DialogueTarget>,
@@ -913,6 +947,7 @@ struct Ui {
     active: PreparedCharacter,
     display_geometry: DisplayGeometry,
     bubble_appearance: BubbleAppearance,
+    native_bubble_appearance: BubbleAppearance,
     cached_anchor: Option<CachedAnchor>,
     displayed_frame: Option<FrameId>,
     viewport: PresentationViewport,
@@ -943,6 +978,8 @@ struct Ui {
     // The last successfully applied geometry can be tailless and still attached.
     bubble_geometry_attached: bool,
     pending_standalone_body_origin: Option<(f64, f64)>,
+    standalone_reset_pending: bool,
+    standalone_position_unsaved: bool,
     bubble_content_dirty: bool,
     pending_bubble_scene: Option<Scene>,
     pending_bubble_content: bool,
@@ -1041,8 +1078,42 @@ define_class!(
         #[unsafe(method(languageTick:))]
         fn language_tick(&self, _timer: &NSTimer) {
             with_ui_mut(|ui| {
-                ui.apply_pending_language();
-                ui.apply_pending_bubble_updates();
+                if ui.pending_language.is_some() {
+                    ui.apply_pending_language();
+                }
+                if ui.pending_bubble_content || ui.pending_bubble_scene.is_some() {
+                    ui.apply_pending_bubble_updates();
+                }
+                if ui.has_pending_native_dialogue() {
+                    if ui.bubble_content_dirty
+                        && !ui.bubble_content_tracking_locked()
+                        && !ui.composer_marked()
+                    {
+                        let current = ui.shared.lock().ok().map(|state| state.scene());
+                        if current.as_ref().is_some_and(|scene| {
+                            !scene.shutdown
+                                && presentation_matches_scene(scene, &ui.last_scene)
+                                && !status_fields_changed(scene, &ui.last_scene)
+                        }) {
+                            let scene = ui.last_scene.clone();
+                            ui.refresh_bubble_content(&scene);
+                        }
+                    }
+                    ui.settle_pending_native_dialogues();
+                }
+                if ui.dialogue_editor.is_visible()
+                    && ui.dialogue_editor.needs_initial_hydration()
+                    && ui.editor_content_dirty
+                    && !ui.dialogue_editor.has_marked_text()
+                {
+                    ui.sync_dialogue_editor_content(false);
+                }
+                if ui.menu_panel.is_visible() {
+                    ui.menu_panel.refresh_bubble_color_controls();
+                }
+                if !ui.pending_preference_operations.is_empty() {
+                    ui.settle_preference_operations();
+                }
                 if !ui.pending_ui_updates() {
                     ui.stop_language_timer();
                 }
@@ -1162,6 +1233,12 @@ define_class!(
             });
             self.ivars().drag.set(None);
             self.set_gesture_visuals(None);
+            with_ui_mut(|ui| {
+                let scene = ui.last_scene.clone();
+                ui.update_pointer_policy(&scene);
+                ui.publish_presentation_checkpoint(&scene);
+            });
+            wake();
         }
 
         #[unsafe(method(mouseCancelled:))]
@@ -1477,6 +1554,12 @@ define_class!(
             }
             self.ivars().drag.set(None);
             self.set_drag_visuals(false);
+            with_ui_mut(|ui| {
+                let scene = ui.last_scene.clone();
+                ui.update_pointer_policy(&scene);
+                ui.publish_presentation_checkpoint(&scene);
+            });
+            wake();
         }
 
         #[unsafe(method(mouseCancelled:))]
@@ -1777,7 +1860,17 @@ define_class!(
 
         #[unsafe(method(resetBubbleColors:))]
         fn reset_bubble_colors(&self, _sender: Option<&AnyObject>) {
-            with_ui_mut(|ui| ui.commit_bubble_appearance(BubbleAppearance::default()));
+            with_ui_mut(|ui| ui.commit_bubble_appearance(BubbleAppearance::default(), true));
+        }
+
+        #[unsafe(method(reloadBubbleColors:))]
+        fn reload_bubble_colors(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| { ui.menu_panel.reload_bubble_colors(); });
+        }
+
+        #[unsafe(method(rebaseBubbleColors:))]
+        fn rebase_bubble_colors(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| { ui.menu_panel.rebase_bubble_colors(); });
         }
 
         #[unsafe(method(openContextSettings:))]
@@ -1851,6 +1944,7 @@ define_class!(
                     NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &button);
                     with_ui_mut(|ui| {
                         ui.status_menu_tracking = false;
+                        ui.refresh();
                         if let Ok(state) = ui.shared.lock() {
                             ui.sync_status_menu(&state.scene());
                         }
@@ -1913,11 +2007,7 @@ define_class!(
                 ui.update_dialogue_choices(&listing);
                 ui.menu_panel.hide();
                 ui.dialogue_editor.show();
-                if !ui.editor_ready && ui.editor_error.is_some() {
-                    // Reopening is an explicit retry of a failed load (e.g. store Busy).
-                    ui.editor_cached_choice = None;
-                }
-                ui.sync_dialogue_editor_content();
+                ui.sync_dialogue_editor_content(true);
             });
         }
 
@@ -1926,14 +2016,26 @@ define_class!(
             let Some(popup) = sender.and_then(|sender| sender.downcast_ref::<NSPopUpButton>()) else { return };
             let Ok(index) = usize::try_from(popup.indexOfSelectedItem()) else { return };
             with_ui_mut(|ui| {
+                let previous = ui.dialogue_editor.choice();
                 ui.dialogue_editor.select_target(index);
-                ui.sync_dialogue_editor_content();
+                let changed = ui.dialogue_editor.choice() != previous;
+                ui.sync_dialogue_editor_content(changed);
             });
         }
 
         #[unsafe(method(toggleDialogueOriginal:))]
         fn toggle_dialogue_original(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| ui.dialogue_editor.toggle_original());
+        }
+
+        #[unsafe(method(reloadDialogueDraft:))]
+        fn reload_dialogue_draft(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| { ui.dialogue_editor.reload_saved_draft(); });
+        }
+
+        #[unsafe(method(rebaseDialogueDraft:))]
+        fn rebase_dialogue_draft(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| { ui.dialogue_editor.rebase_draft(); });
         }
 
         #[unsafe(method(saveDialogue:))]
@@ -2583,10 +2685,6 @@ fn launch_ui(
     prefs: Preferences,
     mtm: MainThreadMarker,
 ) -> Result<(), String> {
-    shared
-        .lock()
-        .map_err(|_| "native state lock is poisoned".to_string())?
-        .set_preferences(&prefs);
     let selection = choose_startup_selection(&packs, assets_path, mtm)?;
     let reference = selection.reference.clone();
     let override_active = selection.override_active;
@@ -3062,7 +3160,10 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
             ));
             return;
         }
-        let feedback = match ui.worktree_sender.submit(target.clone()) {
+        let feedback = match ui
+            .worktree_sender
+            .submit(target.clone(), RequestOrigin::Gui)
+        {
             Ok(()) => WorktreeFeedback::Pending(target),
             Err(error) => WorktreeFeedback::Finished(target, Err(error)),
         };
@@ -3387,20 +3488,120 @@ fn submit_pack_from_menu(packs: Arc<PackService>, generation: u64, action: PackA
     });
 }
 
+fn changed_presentation(old: &Scene, next: &Scene) -> PresentationPatch {
+    PresentationPatch {
+        visible: (old.visible != next.visible).then_some(next.visible),
+        passthrough: (old.passthrough != next.passthrough).then_some(next.passthrough),
+        alpha_passthrough: (old.alpha_passthrough != next.alpha_passthrough)
+            .then_some(next.alpha_passthrough),
+        bubble_visible: (old.bubble_visible != next.bubble_visible).then_some(next.bubble_visible),
+        bubble_placement: (old.bubble_placement != next.bubble_placement)
+            .then_some(next.bubble_placement),
+        scale: (old.scale != next.scale).then_some(next.scale),
+    }
+}
+
+fn presentation_persistence_patch(
+    previous: &Scene,
+    scene: &Scene,
+    saved: PresentationTarget,
+    did_present: bool,
+    requested: Option<&PresentationPatch>,
+) -> PresentationPatch {
+    let mut patch = if did_present {
+        changed_presentation(previous, scene)
+    } else {
+        let mut baseline = scene.clone();
+        baseline.visible = saved.visible;
+        baseline.passthrough = saved.passthrough;
+        baseline.alpha_passthrough = saved.alpha_passthrough;
+        baseline.bubble_visible = saved.bubble_visible;
+        baseline.bubble_placement = saved.bubble_placement;
+        baseline.scale = saved.scale;
+        changed_presentation(&baseline, scene)
+    };
+    if let Some(requested) = requested {
+        patch.merge_requested(&requested.requested_scene_values(scene));
+    }
+    patch
+}
+
+fn reduce_presentation_batch(
+    state: &mut AppState,
+    ledger: &mut AutomationState,
+    requested: &mut Option<PresentationPatch>,
+    reset: &mut bool,
+    operation: &mut Option<String>,
+) -> Scene {
+    let scene = state.scene();
+    if PresentationTarget::from_scene(&scene) != ledger.desired() {
+        ledger.ui_change(PresentationTarget::from_scene(&scene));
+    }
+    for request in ledger.drain_queued() {
+        if request
+            .expected_revision
+            .is_some_and(|revision| revision != ledger.revision())
+        {
+            let _ = ledger.reject_request(
+                &request.operation_id,
+                "presentation revision changed".to_owned(),
+            );
+            continue;
+        }
+        let target = match PresentationTarget::from_scene(&state.scene()).applying(&request.action)
+        {
+            Ok(target) => target,
+            Err(error) => {
+                let _ = ledger.reject_request(&request.operation_id, error);
+                continue;
+            }
+        };
+        if let Err(error) = ledger.start_request(&request.operation_id, target) {
+            let _ = ledger.reject_request(&request.operation_id, error);
+            continue;
+        }
+        // start_request verifies the same absolute target before mutating AppState.
+        state
+            .apply_presentation(&request.action)
+            .expect("validated presentation action");
+        *operation = Some(request.operation_id.clone());
+        match request.action {
+            PresentationAction::Set { patch } => requested
+                .get_or_insert_with(PresentationPatch::default)
+                .merge_requested(&patch),
+            PresentationAction::ResetPosition => *reset = true,
+        }
+    }
+    state.scene()
+}
+
 impl Ui {
     fn new(
         shared: Arc<Mutex<AppState>>,
         packs: Arc<PackService>,
         prepared: PreparedCharacter,
-        mut prefs: Preferences,
+        prefs: Preferences,
         dialogue_override_active: bool,
         mtm: MainThreadMarker,
     ) -> Result<Self, String> {
         let lifecycle_paths = Paths::resolve(None, None)?;
-        let scene = shared
+        let state = shared
             .lock()
-            .map_err(|_| "native state lock is poisoned".to_string())?
-            .scene();
+            .map_err(|_| "native state lock is poisoned".to_owned())?;
+        let scene = state.scene();
+        let automation = state
+            .automation()
+            .ok_or("presentation automation was not initialized")?;
+        drop(state);
+        let saved_presentation = PresentationTarget {
+            visible: prefs.visible(),
+            passthrough: prefs.passthrough(),
+            alpha_passthrough: prefs.alpha_passthrough(),
+            bubble_visible: prefs.bubble_visible(),
+            bubble_placement: prefs.bubble_placement(),
+            scale: prefs.scale(),
+            reset_position_revision: 0,
+        };
         let locale = current_ui_locale(prefs.language());
         let bubble_appearance = prefs.bubble_appearance();
         let palette = bubble_appearance.palette();
@@ -3417,12 +3618,8 @@ impl Ui {
                 .as_ref()
                 .and_then(|target| prefs.dialogue_overrides().locales(target)),
         );
-        prefs.set_scale(scene.scale);
-        prefs.set_visible(scene.visible);
-        prefs.set_passthrough(scene.passthrough);
-        prefs.set_alpha_passthrough(scene.alpha_passthrough);
-        prefs.set_bubble_visible(scene.bubble_visible);
-        prefs.set_bubble_placement(scene.bubble_placement);
+        // Keep the loaded snapshot as the saved baseline. Runtime scene state is
+        // applied to native windows independently of whether a save can succeed.
 
         let display_geometry = DisplayGeometry::new(
             prepared.display_bounds(),
@@ -3441,8 +3638,6 @@ impl Ui {
                 }
             })
             .unwrap_or_else(|| default_origin(size, mtm));
-        prefs.mark_display_position();
-        prefs.set_position(Some((initial_origin.x, initial_origin.y)));
         let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
             NSPanel::alloc(mtm),
             NSRect::new(initial_origin, size),
@@ -3798,9 +3993,18 @@ impl Ui {
         playback.reset_pack(Duration::ZERO, scene.phase);
         let prompt_sender = PromptSender::new(shared.clone());
         let worktree_sender = WorktreeRemoveSender::new(shared.clone());
+        let effective_language = prefs.language();
+        let native_show_status_indicators = prefs.show_status_indicators();
+        let native_menu_bar_mode = prefs.menu_bar_mode();
         let mut ui = Self {
             mtm,
             shared,
+            automation,
+            saved_presentation,
+            presentation_patch: None,
+            presentation_reset: false,
+            presentation_operation: None,
+            checkpoint_save: None,
             lifecycle_paths,
             packs,
             prefs,
@@ -3826,6 +4030,7 @@ impl Ui {
             composer_send,
             prompt_sender,
             worktree_sender,
+            worktree_automation: automation_worktrees::WorktreeAutomation::new(),
             worktree_confirming: false,
             worktree_feedback: None,
             composer_render_stamp: None,
@@ -3837,6 +4042,7 @@ impl Ui {
             cards,
             menu_panel,
             dialogue_editor,
+            dialogue_automation: automation_dialogues::DialogueAutomation::new(),
             dialogue_choices: Vec::new(),
             editor_cached_choice: None,
             editor_metadata: None,
@@ -3844,6 +4050,12 @@ impl Ui {
             editor_error: None,
             editor_content_dirty: true,
             locale,
+            effective_language,
+            preference_revision: 0,
+            native_show_status_indicators,
+            native_menu_bar_mode,
+            pending_preference_operations: Vec::new(),
+            cli_preference_feedback: None,
             pending_language: None,
             effective_dialogue,
             external_dialogue_metadata: dialogue_target
@@ -3860,6 +4072,7 @@ impl Ui {
             active: prepared,
             display_geometry,
             bubble_appearance,
+            native_bubble_appearance: bubble_appearance,
             cached_anchor: None,
             displayed_frame: initial_frame,
             viewport: PresentationViewport {
@@ -3901,6 +4114,8 @@ impl Ui {
             bubble_geometry: None,
             bubble_geometry_attached: false,
             pending_standalone_body_origin: None,
+            standalone_reset_pending: false,
+            standalone_position_unsaved: false,
             bubble_content_dirty: true,
             pending_bubble_scene: None,
             pending_bubble_content: false,
@@ -3918,7 +4133,7 @@ impl Ui {
             _menu_target: menu_target,
             _menu_event_monitors: Vec::new(),
             _window_delegate: window_delegate,
-            last_reset_position_revision: scene.reset_position_revision,
+            last_reset_position_revision: 0,
             last_scene: scene,
             did_present: false,
             force_image: false,
@@ -3972,56 +4187,65 @@ impl Ui {
         preference: MenuBarIconPreference,
         image: Retained<NSImage>,
     ) {
+        let changed = self.prefs.menu_bar_icon() != Some(&preference);
         if let Err(error) = self.prefs.save_menu_bar_icon(Some(preference)) {
             self.show_menu_bar_icon_error(Message::MenuBarIconSaveFailure, &error);
             return;
         }
+        if changed {
+            self.preference_revision = self
+                .preference_revision
+                .checked_add(1)
+                .expect("preference revision exhausted");
+        }
         self.apply_menu_bar_icon(image);
+        self.settle_preference_operations();
     }
 
     fn commit_default_menu_bar_icon(&mut self, image: Retained<NSImage>) {
+        let changed = self.prefs.menu_bar_icon().is_some();
         if let Err(error) = self.prefs.save_menu_bar_icon(None) {
             self.show_menu_bar_icon_error(Message::MenuBarIconSaveFailure, &error);
             return;
         }
+        if changed {
+            self.preference_revision = self
+                .preference_revision
+                .checked_add(1)
+                .expect("preference revision exhausted");
+        }
         self.apply_menu_bar_icon(image);
+        self.settle_preference_operations();
     }
 
     fn set_menu_bar_mode(&mut self, mode: MenuBarMode) {
-        if mode != self.prefs.menu_bar_mode() {
-            if let Err(error) = self.prefs.save_menu_bar_mode(mode) {
-                self.menu_panel
-                    .set_menu_bar_mode(self.prefs.menu_bar_mode());
-                self.queue_bubble_appearance_error(Message::MenuBarModeSaveFailure, &error);
-                return;
-            }
+        if let Err(error) = self.commit_preference_patch(
+            crate::preferences::PreferencePatch {
+                menu_bar_mode: Some(mode),
+                ..Default::default()
+            },
+            None,
+        ) {
+            self.menu_panel
+                .set_menu_bar_mode(self.prefs.menu_bar_mode());
+            self.queue_bubble_appearance_error(Message::MenuBarModeSaveFailure, &error.detail);
         }
-        self.menu_panel
-            .set_menu_bar_mode(self.prefs.menu_bar_mode());
-        if let Ok(state) = self.shared.lock() {
-            self.sync_status_menu(&state.scene());
-        } else {
-            self.sync_status_menu(&self.last_scene);
-        }
+        self.settle_preference_operations();
     }
 
     fn set_show_status_indicators(&mut self, enabled: bool) {
-        if enabled == self.prefs.show_status_indicators() {
-            self.menu_panel.set_show_status_indicators(enabled);
-            return;
-        }
-        if let Err(error) = self.prefs.save_show_status_indicators(enabled) {
+        if let Err(error) = self.commit_preference_patch(
+            crate::preferences::PreferencePatch {
+                show_status_indicators: Some(enabled),
+                ..Default::default()
+            },
+            None,
+        ) {
             self.menu_panel
                 .set_show_status_indicators(self.prefs.show_status_indicators());
-            self.queue_bubble_appearance_error(Message::StatusIndicatorsSaveFailure, &error);
-            return;
+            self.queue_bubble_appearance_error(Message::StatusIndicatorsSaveFailure, &error.detail);
         }
-        self.menu_panel.set_show_status_indicators(enabled);
-        self.cards.set_composition_active(self.composer_marked());
-        // Change the backing together with the content, after AppKit releases tracking.
-        self.bubble_content_dirty = true;
-        let scene = self.last_scene.clone();
-        self.refresh_bubble_content(&scene);
+        self.settle_preference_operations();
     }
 
     fn queue_bubble_appearance_error(&self, title: Message, detail: &str) {
@@ -4038,33 +4262,67 @@ impl Ui {
     }
 
     fn set_bubble_theme(&mut self, theme: BubbleTheme) {
-        self.commit_bubble_appearance(BubbleAppearance {
-            theme,
-            custom: self.bubble_appearance.custom,
-        });
+        self.commit_bubble_appearance(
+            BubbleAppearance {
+                theme,
+                custom: self.bubble_appearance.custom,
+            },
+            true,
+        );
     }
 
     fn apply_custom_bubble_colors(&mut self) {
+        if self.menu_panel.bubble_colors_conflicted() || self.menu_panel.bubble_colors_marked() {
+            // Keep the local draft and field editor intact. The panel displays
+            // its inline conflict status until an explicit reload or rebase.
+            return;
+        }
         match self.menu_panel.custom_bubble_palette() {
-            Ok(custom) => self.commit_bubble_appearance(BubbleAppearance {
-                theme: BubbleTheme::Custom,
-                custom,
-            }),
+            Ok(custom) => self.commit_bubble_appearance(
+                BubbleAppearance {
+                    theme: BubbleTheme::Custom,
+                    custom,
+                },
+                false,
+            ),
             Err(error) => self.queue_bubble_appearance_error(Message::InvalidBubbleColor, &error),
         }
     }
 
-    fn commit_bubble_appearance(&mut self, appearance: BubbleAppearance) {
-        if appearance == self.bubble_appearance {
-            self.menu_panel.set_bubble_appearance(appearance);
+    fn commit_bubble_appearance(&mut self, appearance: BubbleAppearance, reload_colors: bool) {
+        if self.menu_panel.bubble_colors_marked() {
             return;
         }
-        if let Err(error) = self.prefs.save_bubble_appearance(appearance) {
-            self.menu_panel
-                .set_bubble_appearance(self.bubble_appearance);
-            self.queue_bubble_appearance_error(Message::BubbleAppearanceSaveFailure, &error);
-            return;
+        match self.commit_preference_patch(
+            crate::preferences::PreferencePatch {
+                bubble_appearance: Some(appearance),
+                ..Default::default()
+            },
+            None,
+        ) {
+            Ok(_) => {
+                self.menu_panel.bubble_colors_saved(appearance);
+                if reload_colors {
+                    self.menu_panel.reload_bubble_colors();
+                }
+            }
+            Err(error) => {
+                self.menu_panel
+                    .set_bubble_appearance(self.bubble_appearance);
+                self.queue_bubble_appearance_error(
+                    if error.code == "revision_conflict" {
+                        Message::PreferenceRevisionConflict
+                    } else {
+                        Message::BubbleAppearanceSaveFailure
+                    },
+                    &error.detail,
+                );
+            }
         }
+        self.settle_preference_operations();
+    }
+
+    fn apply_bubble_appearance(&mut self, appearance: BubbleAppearance) {
         self.bubble_appearance = appearance;
         let palette = appearance.palette();
         self.bubble_root.ivars().palette.set(palette);
@@ -4105,17 +4363,35 @@ impl Ui {
         self.remeasure_bubble(&scene);
         // Width may stay unchanged; refresh the compact truncated label too.
         self.layout_bubble_children();
+        if !self.pending_bubble_content && self.pending_bubble_scene.is_none() {
+            self.native_bubble_appearance = appearance;
+        }
     }
 
     fn set_language_preference(&mut self, preference: LanguagePreference) {
+        if let Err(error) = self.commit_preference_patch(
+            crate::preferences::PreferencePatch {
+                language: Some(preference),
+                ..Default::default()
+            },
+            None,
+        ) {
+            self.menu_panel
+                .set_language_preference(self.prefs.language());
+            self.queue_language_save_failure(&error.detail);
+        }
+        self.settle_preference_operations();
+    }
+
+    fn schedule_committed_language(&mut self, preference: LanguagePreference) {
         let locale = current_ui_locale(preference);
         if self.language_transition_locked() {
             self.pending_language = Some((preference, locale));
             self.queue_language_apply();
-            return;
+        } else {
+            self.pending_language = None;
+            self.apply_language(preference, locale);
         }
-        self.pending_language = None;
-        self.apply_language(preference, locale);
     }
     fn system_locale_changed(&mut self) {
         if self.prefs.language() != LanguagePreference::System {
@@ -4139,6 +4415,7 @@ impl Ui {
 
     fn language_transition_locked(&self) -> bool {
         self.explicit_gesture_active()
+            || self.composer_marked()
             || NSEvent::pressedMouseButtons() != 0
             || appkit_event_tracking_active()
     }
@@ -4146,6 +4423,10 @@ impl Ui {
         self.pending_language.is_some()
             || self.pending_bubble_content
             || self.pending_bubble_scene.is_some()
+            || !self.pending_preference_operations.is_empty()
+            || self.menu_panel.is_visible()
+            || (self.dialogue_editor.is_visible() && self.dialogue_editor.needs_initial_hydration())
+            || self.has_pending_native_dialogue()
     }
 
     fn defer_bubble_content(&mut self) {
@@ -4193,14 +4474,7 @@ impl Ui {
     }
 
     fn apply_language(&mut self, preference: LanguagePreference, locale: UiLocale) {
-        if preference != self.prefs.language() {
-            if let Err(error) = self.prefs.save_language(preference) {
-                self.menu_panel
-                    .set_language_preference(self.prefs.language());
-                self.queue_language_save_failure(&error);
-                return;
-            }
-        }
+        self.effective_language = preference;
         self.locale = locale;
         self.composer_render_stamp = None;
         self.composer_results.clear();
@@ -4540,7 +4814,7 @@ impl Ui {
                 );
                 self.set_content_frame(frame, scene.scale, false);
                 self.clamp_panel_origin();
-                self.persist_geometry(&scene, self.panel.frame());
+                self.save_position_only(None);
                 self.cached_anchor = None;
                 self.displayed_frame = None;
                 let now = self.launch_time.elapsed();
@@ -4751,7 +5025,7 @@ impl Ui {
         let mut listing = self.packs.cached_list();
         self.character_selection.reconcile(&listing);
         self.update_dialogue_choices(&listing);
-        self.sync_dialogue_editor_content();
+        self.sync_dialogue_editor_content(false);
         if let Some(error) = self.pack_error.as_ref() {
             listing.error = Some(error.clone());
         }
@@ -5192,7 +5466,11 @@ impl Ui {
     }
 
     fn poll_worktree(&mut self) {
-        if let Some(result) = self.worktree_sender.try_result() {
+        if let Some(result) = self
+            .worktree_sender
+            .try_result()
+            .and_then(|result| self.route_cli_worktree_result(result))
+        {
             self.set_worktree_feedback(WorktreeFeedback::Finished(result.target, result.result));
         }
     }
@@ -5247,7 +5525,10 @@ impl Ui {
         }
         let value = self.composer_text();
         self.remember_composer_draft(key.clone(), value.clone());
-        match self.prompt_sender.submit(key.clone(), value) {
+        match self
+            .prompt_sender
+            .submit(key.clone(), value, RequestOrigin::Gui)
+        {
             Ok(()) => {
                 self.composer_results.retain(|(old, _)| old != &key);
                 self.composer_pending_key = Some(key);
@@ -5262,18 +5543,23 @@ impl Ui {
     }
 
     fn poll_composer(&mut self) {
-        if let Some(result) = self.prompt_sender.try_result() {
+        if let Some(result) = self
+            .prompt_sender
+            .try_result()
+            .and_then(|result| self.route_cli_prompt_result(result))
+        {
             self.composer_pending_key = None;
+            let submission = result.submission;
             let status = match result.result {
                 Ok(()) => {
                     let marked: bool = unsafe { msg_send![&*self.composer_view, hasMarkedText] };
                     let current = !marked
-                        && self.composer_key.as_ref() == Some(&result.key)
+                        && self.composer_key.as_ref() == Some(&submission.key)
                         && self
                             .cards
                             .selected_target()
-                            .is_some_and(|(key, _)| key == result.key)
-                        && self.composer_text() == result.text;
+                            .is_some_and(|(key, _)| key == submission.key)
+                        && self.composer_text() == submission.text;
                     if current {
                         self.composer_view.setString(&NSString::from_str(""));
                         self.close_reply();
@@ -5281,27 +5567,191 @@ impl Ui {
                     if self
                         .composer_drafts
                         .iter()
-                        .any(|(key, draft)| key == &result.key && draft == &result.text)
+                        .any(|(key, draft)| key == &submission.key && draft == &submission.text)
                     {
-                        self.composer_drafts.retain(|(key, _)| key != &result.key);
+                        self.composer_drafts
+                            .retain(|(key, _)| key != &submission.key);
                     }
                     text(self.locale, Message::ComposerSent).to_owned()
                 }
                 Err(error) => self.composer_error_text(&error),
             };
-            self.remember_composer_result(result.key, status);
+            self.remember_composer_result(submission.key.clone(), status);
             self.composer_render_stamp = None;
             self.sync_composer();
         }
     }
 
+    fn drain_presentation_requests(&mut self) -> Option<Scene> {
+        let mut state = self.shared.lock().ok()?;
+        let mut ledger = lock_automation(&self.automation);
+        Some(reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut self.presentation_patch,
+            &mut self.presentation_reset,
+            &mut self.presentation_operation,
+        ))
+    }
+
+    fn save_presentation(
+        &mut self,
+        scene: &Scene,
+        patch: PresentationPatch,
+        position: bool,
+        reset: bool,
+    ) {
+        let mut candidate = self.prefs.candidate();
+        let mut saved = self.saved_presentation;
+        if let Some(value) = patch.visible {
+            candidate.set_visible(value);
+            saved.visible = value;
+        }
+        if let Some(value) = patch.passthrough {
+            candidate.set_passthrough(value);
+            saved.passthrough = value;
+        }
+        if let Some(value) = patch.alpha_passthrough {
+            candidate.set_alpha_passthrough(value);
+            saved.alpha_passthrough = value;
+        }
+        if let Some(value) = patch.bubble_visible {
+            candidate.set_bubble_visible(value);
+            saved.bubble_visible = value;
+        }
+        if let Some(value) = patch.bubble_placement {
+            candidate.set_bubble_placement(value);
+            saved.bubble_placement = value;
+        }
+        if let Some(value) = patch.scale {
+            candidate.set_scale(value);
+            saved.scale = value;
+        }
+        if reset {
+            candidate.set_standalone_bubble_position(None);
+            saved.reset_position_revision = scene.reset_position_revision;
+        }
+        if position {
+            let origin = self.panel.frame().origin;
+            candidate.set_position(Some((origin.x, origin.y)));
+        }
+        match self.prefs.save_candidate(candidate) {
+            Ok(()) => {
+                self.saved_presentation = saved;
+                self.checkpoint_save = Some(Ok(saved));
+                if reset {
+                    self.standalone_reset_pending = false;
+                }
+                self.menu_panel.set_presentation_error(None);
+            }
+            Err(error) => {
+                self.checkpoint_save = Some(Err((saved, error.clone())));
+                self.menu_panel.set_presentation_error(Some(&error));
+            }
+        }
+    }
+
+    fn save_position_only(&mut self, standalone: Option<Option<(f64, f64)>>) {
+        let mut candidate = self.prefs.candidate();
+        if let Some(position) = standalone {
+            candidate.set_standalone_bubble_position(position);
+        } else {
+            let origin = self.panel.frame().origin;
+            candidate.set_position(Some((origin.x, origin.y)));
+        }
+        match self.prefs.save_candidate(candidate) {
+            Ok(()) => {
+                if standalone.is_some() {
+                    self.standalone_position_unsaved = false;
+                    self.standalone_reset_pending = false;
+                    self.pending_standalone_body_origin = None;
+                }
+            }
+            Err(error) => self.menu_panel.set_presentation_error(Some(&error)),
+        }
+    }
+
+    fn publish_presentation_checkpoint(&mut self, scene: &Scene) {
+        let mut pending = Vec::new();
+        if self.pending_bubble_scene.is_some() || self.pending_bubble_content {
+            pending.push(if self.composer_marked() {
+                PendingReason::ImeComposition
+            } else {
+                PendingReason::Tracking
+            });
+        }
+        if self.explicit_gesture_active() || self.pointer_press.is_some() {
+            pending.push(PendingReason::Gesture);
+        }
+        if self.status_menu_tracking {
+            pending.push(PendingReason::Tracking);
+        }
+        if self.bubble_placement_tracking_locked() {
+            pending.push(PendingReason::Tracking);
+        }
+        if scene.bubble_visible && self.bubble_geometry.is_none() {
+            pending.push(PendingReason::NativeApply);
+        }
+        let target = PresentationTarget::from_scene(scene);
+        let pet_visible = self.panel.isVisible();
+        let bubble_visible = self.bubble_panel.isVisible();
+        let native_applied = self.did_present
+            && !scene.shutdown
+            && pending.is_empty()
+            && pet_visible == scene.visible
+            && bubble_visible == scene.bubble_visible
+            && PresentationTarget::from_scene(&self.last_scene) == target;
+        if !native_applied {
+            pending.push(PendingReason::NativeApply);
+        }
+        let frame = |rect: NSRect| WindowFrame {
+            x: rect.origin.x,
+            y: rect.origin.y,
+            width: rect.size.width,
+            height: rect.size.height,
+        };
+        let (persisted, save_error) = match self.checkpoint_save.take() {
+            Some(Ok(saved)) => (Some(saved), None),
+            Some(Err((attempted, error))) => (
+                None,
+                self.presentation_operation
+                    .as_ref()
+                    .map(|id| (id.clone(), attempted, error)),
+            ),
+            None => (None, None),
+        };
+        let mut ledger = lock_automation(&self.automation);
+        let revision = ledger.revision();
+        let native_applied = native_applied && ledger.desired() == target;
+        if !native_applied && !pending.contains(&PendingReason::NativeApply) {
+            pending.push(PendingReason::NativeApply);
+        }
+        ledger.publish_checkpoint(PresentationCheckpoint {
+            revision,
+            effective: native_applied.then_some(target),
+            native_applied,
+            persisted,
+            save_error,
+            pet_window_visible: Some(pet_visible),
+            bubble_window_visible: Some(bubble_visible),
+            pet_window_frame: Some(frame(self.panel.frame())),
+            bubble_window_frame: Some(frame(self.bubble_panel.frame())),
+            pending_reasons: pending,
+        });
+    }
+
     fn refresh(&mut self) {
         self.apply_pending_language();
-        let (scene, mut completed, outcomes) = match self.shared.lock() {
-            Ok(mut state) => {
-                let completed = !state.take_completions().is_empty();
-                (state.scene(), completed, state.take_outcomes())
-            }
+        self.drain_domain_requests();
+        self.poll_worktree();
+        self.poll_cli_dialogues();
+        self.poll_cli_worktrees();
+        self.settle_preference_operations();
+        let Some(scene) = self.drain_presentation_requests() else {
+            return;
+        };
+        let (mut completed, outcomes) = match self.shared.lock() {
+            Ok(mut state) => (!state.take_completions().is_empty(), state.take_outcomes()),
             Err(_) => return,
         };
         if let Some(outcome) = outcomes.iter().max_by_key(|observation| {
@@ -5355,6 +5805,16 @@ impl Ui {
     }
 
     fn refresh_event(&mut self, scene: Scene, completed: bool) {
+        let explicit = self.presentation_patch.take();
+        let patch = presentation_persistence_patch(
+            &self.last_scene,
+            &scene,
+            self.saved_presentation,
+            self.did_present,
+            explicit.as_ref(),
+        );
+        let explicit_reset = std::mem::take(&mut self.presentation_reset);
+        let explicit_set = explicit.is_some();
         let scale_changed = (scene.scale - self.last_scene.scale).abs() > f64::EPSILON;
         let presentation_changed = !self.did_present
             || scene.visible != self.last_scene.visible
@@ -5388,14 +5848,8 @@ impl Ui {
         if !scene.visible || scene.passthrough {
             self.set_hover(false, false);
         }
-        if presentation_changed || bubble_changed {
-            self.prefs.set_visible(scene.visible);
-            self.prefs.set_passthrough(scene.passthrough);
-            self.prefs.set_alpha_passthrough(scene.alpha_passthrough);
-            self.prefs.set_scale(scene.scale);
-            self.prefs.set_bubble_visible(scene.bubble_visible);
-            self.prefs.set_bubble_placement(scene.bubble_placement);
-        }
+        // Presentation saves are staged from the last saved snapshot below;
+        // native state is never rolled back when config storage is unavailable.
         if reset_position_changed {
             self.reset_position();
 
@@ -5409,13 +5863,9 @@ impl Ui {
         }
 
         if scene.shutdown {
-            self.shutdown();
-            if scale_changed {
-                self.persist_geometry(&scene, self.panel.frame());
-            } else if presentation_changed || bubble_changed {
-                let _ = self.prefs.save();
-            }
             self.hide_bubble_panel();
+            lock_automation(&self.automation).shutdown();
+            self.shutdown();
             self.sync_status_menu(&scene);
             self.last_scene = scene;
             self.did_present = true;
@@ -5433,7 +5883,10 @@ impl Ui {
         if bubble_changed || presentation_changed || reset_position_changed || scale_changed {
             self.update_bubble_frame_scene(&scene);
         }
-        if scene.bubble_visible {
+        if self.bubble_placement_tracking_locked() || self.composer_marked() {
+            self.pending_bubble_scene = Some(scene.clone());
+            self.queue_language_apply();
+        } else if scene.bubble_visible {
             self.show_bubble_panel();
         } else {
             if self.bubble_panel.isVisible() {
@@ -5441,15 +5894,34 @@ impl Ui {
             }
             self.reset_bubble_mode();
         }
-        if presentation_changed || reset_position_changed {
-            self.persist_geometry(&scene, self.panel.frame());
-        } else if bubble_changed {
-            let _ = self.prefs.save();
+        let position = !self.did_present
+            || scale_changed
+            || reset_position_changed
+            || scene.visible != self.last_scene.visible;
+        if position
+            || reset_position_changed
+            || explicit_reset
+            || explicit_set
+            || patch.visible.is_some()
+            || patch.passthrough.is_some()
+            || patch.alpha_passthrough.is_some()
+            || patch.bubble_visible.is_some()
+            || patch.bubble_placement.is_some()
+            || patch.scale.is_some()
+        {
+            self.save_presentation(
+                &scene,
+                patch,
+                position,
+                reset_position_changed || explicit_reset,
+            );
         }
         self.sync_status_menu(&scene);
         self.last_scene = scene.clone();
         self.did_present = true;
         self.render(&scene, completed, None);
+        self.publish_presentation_checkpoint(&scene);
+        self.presentation_operation = None;
     }
 
     fn render(&mut self, scene: &Scene, completed: bool, reaction: Option<Reaction>) {
@@ -5518,6 +5990,8 @@ impl Ui {
     fn frame_tick(&mut self) {
         self.poll_composer();
         self.poll_worktree();
+        self.poll_cli_dialogues();
+        self.poll_cli_worktrees();
         let scene = match self.shared.lock() {
             Ok(state) => state.scene(),
             Err(_) => return,
@@ -5590,6 +6064,11 @@ impl Ui {
             if let Some(timer) = self.pointer_timer.take() {
                 timer.invalidate();
             }
+            if !scene.shutdown
+                && (self.bubble_placement_tracking_locked() || self.composer_marked())
+            {
+                return;
+            }
             self.panel.setIgnoresMouseEvents(
                 !scene.visible || scene.passthrough || scene.alpha_passthrough,
             );
@@ -5624,6 +6103,7 @@ impl Ui {
             );
         }
         self.update_pointer_policy(&scene);
+        self.publish_presentation_checkpoint(&scene);
     }
 
     fn apply_pending_bubble_updates(&mut self) {
@@ -5654,11 +6134,36 @@ impl Ui {
         if self.pending_bubble_scene.take().is_some() {
             let scene = self.last_scene.clone();
             self.apply_bubble_frame_scene(&scene);
+            if scene.bubble_visible {
+                self.show_bubble_panel();
+            } else {
+                if self.bubble_panel.isVisible() {
+                    self.hide_bubble_panel();
+                }
+                self.reset_bubble_mode();
+            }
+        }
+        if !self.pending_bubble_content && self.pending_bubble_scene.is_none() {
+            self.native_show_status_indicators = self.prefs.show_status_indicators();
+            self.native_bubble_appearance = self.bubble_appearance;
         }
     }
 
     fn update_pointer_policy(&mut self, scene: &Scene) {
-        if scene.shutdown || scene.passthrough {
+        if scene.shutdown {
+            self.panel.setIgnoresMouseEvents(true);
+            self.bubble_panel.setIgnoresMouseEvents(true);
+            return;
+        }
+        // A native control's mouse target must not change inside its tracking loop.
+        if !self.explicit_gesture_active()
+            && (NSEvent::pressedMouseButtons() != 0
+                || appkit_event_tracking_active()
+                || self.composer_marked())
+        {
+            return;
+        }
+        if scene.passthrough {
             self.panel.setIgnoresMouseEvents(true);
             self.bubble_panel.setIgnoresMouseEvents(true);
             return;
@@ -6291,9 +6796,16 @@ impl Ui {
         let changed = !rect_nearly_equal(final_frame, drag.start_frame)
             || (scene.scale - drag.start_scale).abs() > f64::EPSILON;
         if changed {
-            self.persist_drag_geometry(&scene, drag.target, final_frame);
+            self.persist_drag_geometry(
+                &scene,
+                drag.target,
+                final_frame,
+                drag.kind == GestureKind::Resize,
+            );
         }
         self.apply_pending_bubble_updates();
+        self.update_pointer_policy(&scene);
+        self.publish_presentation_checkpoint(&scene);
     }
 
     fn set_hover(&mut self, pet_hovered: bool, grip_hovered: bool) {
@@ -6337,9 +6849,7 @@ impl Ui {
         self.set_hover(false, false);
         // Refresh above reconciles unseen source changes before clamping.
         self.clamp_panel();
-        let origin = self.panel.frame().origin;
-        self.prefs.set_position(Some((origin.x, origin.y)));
-        let _ = self.prefs.save();
+        self.save_position_only(None);
     }
 
     fn cancel_gesture(&mut self, drain_pending: bool) {
@@ -6371,7 +6881,12 @@ impl Ui {
             && scene_matches_drag(&scene, &drag)
             && accepted_frame.is_some_and(|frame| rect_nearly_equal(frame, drag.expected_frame))
         {
-            self.persist_drag_geometry(&scene, drag.target, drag.expected_frame);
+            self.persist_drag_geometry(
+                &scene,
+                drag.target,
+                drag.expected_frame,
+                drag.kind == GestureKind::Resize,
+            );
         }
         if drain_pending {
             self.apply_pending_bubble_updates();
@@ -6385,31 +6900,33 @@ impl Ui {
         }
     }
 
-    fn persist_drag_geometry(&mut self, scene: &Scene, target: DragTarget, frame: NSRect) {
+    fn persist_drag_geometry(
+        &mut self,
+        scene: &Scene,
+        target: DragTarget,
+        frame: NSRect,
+        resized: bool,
+    ) {
         if target == DragTarget::StandaloneBubble {
             if let Some(body) = self.bubble_geometry {
-                self.prefs.set_standalone_bubble_position(Some((
-                    frame.origin.x + body.body.x,
-                    frame.origin.y + body.body.y,
-                )));
-                self.pending_standalone_body_origin = None;
-                let _ = self.prefs.save();
+                let origin = (frame.origin.x + body.body.x, frame.origin.y + body.body.y);
+                self.pending_standalone_body_origin = Some(origin);
+                self.standalone_position_unsaved = true;
+                self.save_position_only(Some(Some(origin)));
             }
+        } else if resized {
+            self.save_presentation(
+                scene,
+                PresentationPatch {
+                    scale: Some(scene.scale),
+                    ..PresentationPatch::default()
+                },
+                true,
+                false,
+            );
         } else {
-            self.persist_geometry(scene, frame);
+            self.save_position_only(None);
         }
-    }
-
-    fn persist_geometry(&mut self, scene: &Scene, frame: NSRect) {
-        self.prefs.set_visible(scene.visible);
-        self.prefs.set_passthrough(scene.passthrough);
-        self.prefs.set_alpha_passthrough(scene.alpha_passthrough);
-        self.prefs.set_scale(scene.scale);
-        self.prefs.set_bubble_visible(scene.bubble_visible);
-        self.prefs.set_bubble_placement(scene.bubble_placement);
-        self.prefs
-            .set_position(Some((frame.origin.x, frame.origin.y)));
-        let _ = self.prefs.save();
     }
 
     fn resize(&mut self, scale: f64) {
@@ -6457,15 +6974,15 @@ impl Ui {
         let size = self.panel.frame().size;
         let origin = default_origin(size, self.mtm);
         self.panel.setFrameOrigin(origin);
-        self.prefs.set_standalone_bubble_position(None);
+        self.standalone_reset_pending = true;
+        self.standalone_position_unsaved = true;
         self.pending_standalone_body_origin = None;
         self.bubble_geometry = None;
         self.bubble_geometry_attached = false;
         self.pending_bubble_scene = None;
         self.bubble_content_dirty = true;
         self.clamp_panel_origin();
-        let origin = self.panel.frame().origin;
-        self.prefs.set_position(Some((origin.x, origin.y)));
+        // Position remains a runtime value until the candidate save succeeds.
     }
     fn clamp_panel(&mut self) {
         self.clamp_panel_for(self.last_scene.bubble_placement);
@@ -6604,7 +7121,11 @@ impl Ui {
             self.attached_bubble_geometry(scene.bubble_placement)
         } else {
             let origin = preferred_standalone_origin(
-                self.prefs.standalone_bubble_position(),
+                if self.standalone_reset_pending || self.standalone_position_unsaved {
+                    None
+                } else {
+                    self.prefs.standalone_bubble_position()
+                },
                 self.pending_standalone_body_origin,
                 self.bubble_geometry,
                 self.bubble_geometry_attached,
@@ -6645,11 +7166,17 @@ impl Ui {
         self.bubble_geometry_attached = scene.visible;
         if !scene.visible {
             let body_origin = bubble_body_origin(geometry);
-            if self.prefs.standalone_bubble_position() != Some(body_origin) {
-                self.prefs.set_standalone_bubble_position(Some(body_origin));
-                let _ = self.prefs.save();
+            if self.prefs.standalone_bubble_position() != Some(body_origin)
+                && (!self.standalone_position_unsaved
+                    || self.pending_standalone_body_origin != Some(body_origin))
+            {
+                self.pending_standalone_body_origin = Some(body_origin);
+                self.standalone_position_unsaved = true;
+                self.save_position_only(Some(Some(body_origin)));
             }
-            self.pending_standalone_body_origin = None;
+            if !self.standalone_position_unsaved {
+                self.pending_standalone_body_origin = None;
+            }
         }
         if !local_unchanged || self.bubble_layout_dirty {
             self.layout_bubble_children();
@@ -6689,7 +7216,9 @@ impl Ui {
         self.cards.set_composition_active(self.composer_marked());
         self.cards.set_show_status_indicators(show_status);
         self.bubble_root.set_opaque_surface(show_status);
-        let status = if show_status {
+        let status = if let Some(feedback) = self.cli_preference_feedback.as_ref() {
+            feedback.clone()
+        } else if show_status {
             status_indicator_summary(self.locale, self.status_summary)
         } else {
             status_text(scene, self.locale)
@@ -6700,11 +7229,20 @@ impl Ui {
             .as_ref()
             .map(|feedback| feedback.compact_summary(self.locale))
             .unwrap_or("");
-        let disconnect = worktree_feedback_detail(
+        let mut disconnect = worktree_feedback_detail(
             self.worktree_feedback.as_ref(),
             self.locale,
             &offline_warning,
         );
+        if !show_status && !dialogue.is_empty() {
+            if let Some(feedback) = self.cli_preference_feedback.as_ref() {
+                disconnect = if disconnect.is_empty() {
+                    feedback.clone()
+                } else {
+                    format!("{feedback}\n{disconnect}")
+                };
+            }
+        }
         let compact_secondary = compact_worktree_secondary(feedback_summary, &offline_warning);
         if !self.bubble_content_dirty
             && self.dialogue_text == dialogue
@@ -6842,7 +7380,11 @@ impl Ui {
         } else {
             let body = self.bubble_layout.body_size;
             let origin = preferred_standalone_origin(
-                self.prefs.standalone_bubble_position(),
+                if self.standalone_reset_pending || self.standalone_position_unsaved {
+                    None
+                } else {
+                    self.prefs.standalone_bubble_position()
+                },
                 self.pending_standalone_body_origin,
                 self.bubble_geometry,
                 self.bubble_geometry_attached,
@@ -7606,6 +8148,10 @@ impl Ui {
         if let Some(frame) = anchor_visible_frame(self.mtm, anchor) {
             self.menu_panel.show_at(anchor, frame);
             self.refresh_character_menu();
+            if self.menu_panel.is_visible() {
+                self.menu_panel.refresh_bubble_color_controls();
+                self.queue_language_apply();
+            }
         }
     }
 
@@ -7687,7 +8233,7 @@ impl Ui {
         );
     }
 
-    fn sync_dialogue_editor_content(&mut self) {
+    fn sync_dialogue_editor_content(&mut self, retry_metadata: bool) {
         if !self.dialogue_editor.is_visible() {
             return;
         }
@@ -7740,18 +8286,45 @@ impl Ui {
                     self.editor_metadata = self.external_dialogue_metadata.clone();
                     self.editor_ready = true;
                 } else if let Some(reference) = choice.reference.as_ref() {
-                    if let Err(error) = self
-                        .packs
-                        .request_dialogue_metadata(reference.clone(), choice.generation)
-                    {
-                        self.editor_error = Some(format!(
-                            "{}: {error}",
-                            text(self.locale, Message::DialogueTargetUnavailable)
-                        ));
+                    if !retry_metadata {
+                        if let Err(error) = self
+                            .packs
+                            .request_dialogue_metadata(reference.clone(), choice.generation)
+                        {
+                            self.editor_error = Some(format!(
+                                "{}: {error}",
+                                text(self.locale, Message::DialogueTargetUnavailable)
+                            ));
+                        }
                     }
                 } else {
                     self.editor_error =
                         Some(text(self.locale, Message::DialogueTargetUnavailable).to_owned());
+                }
+            }
+        }
+        if retry_metadata && !self.editor_ready {
+            if let Some(choice) = choice.as_ref().filter(|choice| {
+                self.dialogue_choices
+                    .iter()
+                    .any(|available| available == *choice)
+                    && (!self.active_dialogue_matches(&choice.target)
+                        || choice.reference.as_ref() != Some(&self.active.token().reference))
+            }) {
+                if let Some(reference) = choice.reference.as_ref() {
+                    match self
+                        .packs
+                        .retry_dialogue_metadata(reference.clone(), choice.generation)
+                    {
+                        Ok(()) => self.editor_error = None,
+                        Err(error) => {
+                            self.editor_error = Some(format!(
+                                "{}: {error}",
+                                text(self.locale, Message::DialogueTargetUnavailable)
+                            ));
+                        }
+                    }
+                    self.editor_content_dirty = true;
                 }
             }
         }
@@ -7775,18 +8348,29 @@ impl Ui {
                             }
                         }
                         self.editor_content_dirty = true;
+                    } else if let Err(error) = self
+                        .packs
+                        .request_dialogue_metadata(reference.clone(), choice.generation)
+                    {
+                        self.editor_error = Some(format!(
+                            "{}: {error}",
+                            text(self.locale, Message::DialogueTargetUnavailable)
+                        ));
+                        self.editor_content_dirty = true;
                     }
                 }
             }
         }
         if self.editor_content_dirty {
-            self.dialogue_editor.sync_content(
+            match self.dialogue_editor.sync_content(
                 self.prefs.dialogue_overrides(),
                 self.editor_metadata.as_ref(),
                 self.editor_ready,
                 self.editor_error.as_deref(),
-            );
-            self.editor_content_dirty = false;
+            ) {
+                HydrationSync::Settled => self.editor_content_dirty = false,
+                HydrationSync::DeferredMarked => self.queue_language_apply(),
+            }
         }
     }
 
@@ -7814,10 +8398,11 @@ impl Ui {
     fn dialogue_choice_valid(&self, choice: &DialogueChoice) -> bool {
         let listing = self.packs.cached_list();
         choice.generation == listing.generation
-            && self
-                .dialogue_choices
-                .iter()
-                .any(|available| available == choice)
+            && self.dialogue_choices.iter().any(|available| {
+                available.target == choice.target
+                    && available.reference == choice.reference
+                    && available.generation == choice.generation
+            })
             && match &choice.reference {
                 Some(reference) => self
                     .packs
@@ -7826,79 +8411,126 @@ impl Ui {
             }
     }
 
+    fn gui_dialogue_selection(baseline: &DialogueDraftBaseline) -> DialogueSelection {
+        DialogueSelection {
+            identity: DialogueIdentity::from(&baseline.choice),
+            locale: match baseline.locale {
+                UiLocale::Ko => DialogueLanguage::Ko,
+                UiLocale::En => DialogueLanguage::En,
+            },
+            slot: baseline.slot,
+        }
+    }
+
+    fn gui_dialogue_baseline(&self, draft: &DialogueDraftBaseline) -> DialogueBaseline {
+        DialogueBaseline {
+            metadata_token: draft.metadata_token.clone(),
+            override_entry: draft.override_entry.clone(),
+            target_overrides_token: target_overrides_token(
+                self.prefs.dialogue_overrides(),
+                &draft.choice.target,
+            ),
+        }
+    }
+
     fn persist_dialogue_entry(
         &mut self,
-        choice: &DialogueChoice,
-        locale: UiLocale,
-        slot: DialogueSlot,
+        draft: &DialogueDraftBaseline,
+        baseline: &DialogueBaseline,
         value: Option<String>,
     ) {
-        if !self.dialogue_choice_valid(choice) {
-            self.dialogue_editor
-                .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
-            return;
-        }
-        match self
-            .prefs
-            .save_dialogue_entry(&choice.target, locale.tag(), slot, value)
-        {
-            Ok(()) => {
-                self.dialogue_editor.saved(&choice.target, locale, slot);
-                self.editor_content_dirty = true;
+        let selection = Self::gui_dialogue_selection(draft);
+        match self.commit_dialogue_mutation(&selection, baseline, value) {
+            Ok(_) => {
+                self.dialogue_editor
+                    .saved(&draft.choice.target, draft.locale, draft.slot);
                 self.dialogue_editor.set_error(None);
-                self.sync_dialogue_editor_content();
-                if self.active_dialogue_matches(&choice.target) {
-                    self.rebuild_effective_dialogue();
-                    let scene = self.last_scene.clone();
-                    self.refresh_bubble_content(&scene);
-                }
+                self.editor_content_dirty = true;
+                self.sync_dialogue_editor_content(false);
             }
             Err(error) => self.dialogue_editor.set_error(Some(&format!(
-                "{}: {error}",
-                text(self.locale, Message::DialogueSaveFailed)
+                "{}: {}",
+                text(
+                    self.locale,
+                    if matches!(
+                        error.code,
+                        "metadata_conflict" | "entry_conflict" | "target_conflict"
+                    ) {
+                        Message::DialogueDraftConflict
+                    } else {
+                        Message::DialogueSaveFailed
+                    }
+                ),
+                error.detail
             ))),
         }
     }
 
     fn save_dialogue_entry(&mut self, reset: bool) {
-        if reset {
-            let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() else {
-                return;
-            };
-            if !self.dialogue_choice_valid(&choice) {
+        let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() else {
+            if self.dialogue_editor.has_conflict() {
                 self.dialogue_editor
-                    .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
-                return;
+                    .set_error(Some(text(self.locale, Message::DialogueDraftConflict)));
             }
+            return;
+        };
+        let Some(draft) = self.dialogue_editor.mutation_baseline() else {
+            return;
+        };
+        if !self.dialogue_choice_valid(&choice)
+            || draft.choice.target != choice.target
+            || draft.choice.reference != choice.reference
+            || draft.choice.generation != choice.generation
+            || draft.locale != locale
+            || draft.slot != slot
+        {
+            self.dialogue_editor
+                .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
+            return;
+        }
+        let baseline = self.gui_dialogue_baseline(&draft);
+        if reset {
             if self.dialogue_editor.is_dirty() {
-                self.confirm_dialogue_reset(choice, locale, slot, value, false);
+                self.confirm_dialogue_reset(draft, baseline, value, false);
             } else {
-                self.persist_dialogue_entry(&choice, locale, slot, None);
+                self.persist_dialogue_entry(&draft, &baseline, None);
             }
-        } else if let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() {
-            if self.dialogue_editor.is_dirty() && value.len() <= 2048 {
-                self.persist_dialogue_entry(&choice, locale, slot, Some(value));
-            }
+        } else if self.dialogue_editor.is_dirty() && value.len() <= 2048 {
+            self.persist_dialogue_entry(&draft, &baseline, Some(value));
         }
     }
 
     fn confirm_reset_character_dialogue(&mut self) {
         let Some((choice, locale, slot, value)) = self.dialogue_editor.edit() else {
+            if self.dialogue_editor.has_conflict() {
+                self.dialogue_editor
+                    .set_error(Some(text(self.locale, Message::DialogueDraftConflict)));
+            }
             return;
         };
-        if !self.dialogue_choice_valid(&choice) {
+        let Some(draft) = self.dialogue_editor.mutation_baseline() else {
+            return;
+        };
+        if !self.dialogue_choice_valid(&choice)
+            || draft.choice.target != choice.target
+            || draft.choice.reference != choice.reference
+            || draft.choice.generation != choice.generation
+            || draft.locale != locale
+            || draft.slot != slot
+        {
             self.dialogue_editor
                 .set_error(Some(text(self.locale, Message::DialogueTargetUnavailable)));
             return;
         }
-        self.confirm_dialogue_reset(choice, locale, slot, value, true);
+        // Capture every override for the target before opening the nested modal loop.
+        let baseline = self.gui_dialogue_baseline(&draft);
+        self.confirm_dialogue_reset(draft, baseline, value, true);
     }
 
     fn confirm_dialogue_reset(
         &self,
-        choice: DialogueChoice,
-        edit_locale: UiLocale,
-        slot: DialogueSlot,
+        draft: DialogueDraftBaseline,
+        baseline: DialogueBaseline,
         value: String,
         whole: bool,
     ) {
@@ -7938,56 +8570,73 @@ impl Ui {
             }
             with_ui_mut(|ui| {
                 let current = ui.dialogue_editor.edit();
-                if !ui.dialogue_choice_valid(&choice)
-                    || current
-                        .as_ref()
-                        .is_none_or(|(target, language, event, text)| {
-                            target != &choice
-                                || *language != edit_locale
-                                || *event != slot
-                                || text != &value
-                        })
+                let same_edit = current
+                    .as_ref()
+                    .is_some_and(|(choice, language, event, text)| {
+                        choice.target == draft.choice.target
+                            && choice.reference == draft.choice.reference
+                            && choice.generation == draft.choice.generation
+                            && *language == draft.locale
+                            && *event == draft.slot
+                            && text == &value
+                    });
+                if !ui.dialogue_choice_valid(&draft.choice)
+                    || !same_edit
+                    || ui.dialogue_editor.mutation_baseline().as_ref() != Some(&draft)
                 {
                     ui.dialogue_editor
-                        .set_error(Some(text(ui.locale, Message::DialogueTargetUnavailable)));
+                        .set_error(Some(text(ui.locale, Message::DialogueDraftConflict)));
                     return;
                 }
                 if whole {
-                    match ui.prefs.reset_character_dialogue(&choice.target) {
-                        Ok(()) => {
-                            ui.dialogue_editor.reset(&choice.target);
+                    let identity = DialogueIdentity::from(&draft.choice);
+                    match ui.commit_dialogue_character_reset(
+                        &identity,
+                        &baseline.metadata_token,
+                        &baseline.target_overrides_token,
+                    ) {
+                        Ok(_) => {
+                            ui.dialogue_editor.reset(&draft.choice.target);
                             ui.dialogue_editor.set_error(None);
                             ui.editor_content_dirty = true;
-                            ui.sync_dialogue_editor_content();
-                            if ui.active_dialogue_matches(&choice.target) {
-                                ui.rebuild_effective_dialogue();
-                                let scene = ui.last_scene.clone();
-                                ui.refresh_bubble_content(&scene);
-                            }
+                            ui.sync_dialogue_editor_content(false);
                         }
                         Err(error) => ui.dialogue_editor.set_error(Some(&format!(
-                            "{}: {error}",
-                            text(ui.locale, Message::DialogueSaveFailed)
+                            "{}: {}",
+                            text(
+                                ui.locale,
+                                if matches!(
+                                    error.code,
+                                    "metadata_conflict" | "entry_conflict" | "target_conflict"
+                                ) {
+                                    Message::DialogueDraftConflict
+                                } else {
+                                    Message::DialogueSaveFailed
+                                }
+                            ),
+                            error.detail
                         ))),
                     }
                 } else {
-                    ui.persist_dialogue_entry(&choice, edit_locale, slot, None);
+                    ui.persist_dialogue_entry(&draft, &baseline, None);
                 }
             });
         });
     }
 
     fn change_observation_machine(&mut self, id: String, selected: bool) {
-        let enabled = self.shared.lock().ok().is_some_and(|state| {
-            state
-                .observation_catalog()
-                .machines
-                .iter()
-                .any(|machine| machine.id == id && machine.enabled)
-        });
-        if !enabled {
-            self.sync_observation_panel();
-            return;
+        if selected {
+            let enabled = self.shared.lock().ok().is_some_and(|state| {
+                state
+                    .observation_catalog()
+                    .machines
+                    .iter()
+                    .any(|machine| machine.id == id && machine.enabled)
+            });
+            if !enabled {
+                self.sync_observation_panel();
+                return;
+            }
         }
         self.change_observation(|candidate| {
             if selected {
@@ -8003,20 +8652,33 @@ impl Ui {
     fn change_observation(&mut self, change: impl FnOnce(&mut ObservationPreferences)) {
         let mut candidate = self.prefs.observation().clone();
         change(&mut candidate);
-        candidate.sanitize();
         if candidate != *self.prefs.observation() {
-            if let Err(error) = self.prefs.save_observation(candidate.clone()) {
+            let current = self.prefs.observation();
+            let patch = crate::preferences::PreferencePatch {
+                observation_local: (candidate.local != current.local).then_some(candidate.local),
+                observation_remote: (candidate.remote != current.remote)
+                    .then_some(candidate.remote),
+                observation_machines: (candidate.machines != current.machines)
+                    .then_some(candidate.machines),
+                ..Default::default()
+            };
+            if let Err(error) = self.commit_gui_observation_patch(patch) {
                 self.menu_panel.revert_observation_controls();
                 self.sync_observation_panel();
-                self.queue_bubble_appearance_error(Message::ObservationSaveFailed, &error);
+                self.queue_bubble_appearance_error(
+                    if error.code == "revision_conflict" {
+                        Message::PreferenceRevisionConflict
+                    } else {
+                        Message::ObservationSaveFailed
+                    },
+                    &error.detail,
+                );
                 return;
-            }
-            if let Ok(mut state) = self.shared.lock() {
-                state.apply_observation_preferences(candidate);
             }
         }
         self.menu_panel.revert_observation_controls();
         self.sync_observation_panel();
+        self.settle_preference_operations();
         self.refresh();
     }
 
@@ -8883,10 +9545,355 @@ fn disconnected_text(scene: &Scene, locale: UiLocale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation::{test_automation, OperationState, PresentationRequest};
     use crate::composer_layout::BOTTOM_INSET;
+
+    fn submit_presentation(
+        ledger: &mut AutomationState,
+        id: &str,
+        expected_revision: Option<u64>,
+        action: PresentationAction,
+    ) -> Result<(), String> {
+        ledger
+            .submit(PresentationRequest {
+                instance_id: "test".to_owned(),
+                operation_id: id.to_owned(),
+                expected_revision,
+                action,
+            })
+            .map(|_| ())
+    }
+
+    fn observed_presentation(
+        revision: u64,
+        target: PresentationTarget,
+        persisted: Option<PresentationTarget>,
+        save_error: Option<(String, PresentationTarget, String)>,
+    ) -> PresentationCheckpoint {
+        PresentationCheckpoint {
+            revision,
+            effective: Some(target),
+            native_applied: true,
+            persisted,
+            save_error,
+            pet_window_visible: Some(target.visible),
+            bubble_window_visible: Some(target.bubble_visible),
+            pet_window_frame: None,
+            bubble_window_frame: None,
+            pending_reasons: Vec::new(),
+        }
+    }
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1.0e-9
+    }
+
+    #[test]
+    fn changed_presentation_touches_only_changed_fields() {
+        let mut original = AppState::new().scene();
+        let mut changed = original.clone();
+        changed.visible = false;
+        changed.bubble_placement = BubblePlacement::Left;
+        let patch = changed_presentation(&original, &changed);
+        assert_eq!(patch.visible, Some(false));
+        assert_eq!(patch.bubble_placement, Some(BubblePlacement::Left));
+        assert_eq!(patch.passthrough, None);
+        assert_eq!(patch.alpha_passthrough, None);
+        assert_eq!(patch.bubble_visible, None);
+        assert_eq!(patch.scale, None);
+        original.scale = 0.8;
+        assert_eq!(
+            changed_presentation(&original, &original),
+            PresentationPatch::default()
+        );
+    }
+
+    #[test]
+    fn accepted_hide_retry_and_same_target_noop_both_apply_after_save() {
+        let mut state = AppState::new();
+        let initial = state.scene();
+        let automation = test_automation(PresentationTarget::from_scene(&initial));
+        let mut ledger = lock_automation(&automation);
+        let mut requested = None;
+        let mut reset = false;
+        let mut operation = None;
+        let hide = PresentationAction::Set {
+            patch: PresentationPatch {
+                visible: Some(false),
+                ..Default::default()
+            },
+        };
+        submit_presentation(&mut ledger, "failed-hide", None, hide.clone()).unwrap();
+        let hidden = reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut requested,
+            &mut reset,
+            &mut operation,
+        );
+        let hidden_target = PresentationTarget::from_scene(&hidden);
+        let revision = ledger.revision();
+        ledger.publish_checkpoint(observed_presentation(
+            revision,
+            hidden_target,
+            None,
+            Some((
+                "failed-hide".to_owned(),
+                hidden_target,
+                "disk busy".to_owned(),
+            )),
+        ));
+        assert_eq!(
+            ledger.status("test", "failed-hide").unwrap().state,
+            OperationState::PersistFailed
+        );
+        requested = None;
+        operation = None;
+        submit_presentation(&mut ledger, "retry-hide", None, hide).unwrap();
+        submit_presentation(
+            &mut ledger,
+            "same-target-noop",
+            None,
+            PresentationAction::Set {
+                patch: PresentationPatch::default(),
+            },
+        )
+        .unwrap();
+        let retried = reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut requested,
+            &mut reset,
+            &mut operation,
+        );
+        assert_eq!(
+            changed_presentation(&hidden, &retried),
+            PresentationPatch::default()
+        );
+        let persisted = presentation_persistence_patch(
+            &hidden,
+            &retried,
+            PresentationTarget::from_scene(&initial),
+            true,
+            requested.as_ref(),
+        );
+        assert_eq!(persisted.visible, Some(false));
+        assert_eq!(persisted.bubble_placement, None);
+        assert_eq!(operation.as_deref(), Some("same-target-noop"));
+        assert!(!reset);
+        let revision = ledger.revision();
+        ledger.publish_checkpoint(observed_presentation(
+            revision,
+            PresentationTarget::from_scene(&retried),
+            Some(PresentationTarget::from_scene(&retried)),
+            None,
+        ));
+        for id in ["retry-hide", "same-target-noop"] {
+            let status = ledger.status("test", id).unwrap();
+            assert_eq!(status.state, OperationState::Applied, "{id}");
+            assert!(status.native_applied && status.persisted, "{id}");
+        }
+    }
+
+    #[test]
+    fn distinct_final_target_supersedes_prior_operation_but_saves_both_explicit_fields() {
+        let mut state = AppState::new();
+        let original = state.scene();
+        let automation = test_automation(PresentationTarget::from_scene(&original));
+        let mut ledger = lock_automation(&automation);
+        let mut requested = None;
+        let mut reset = false;
+        let mut operation = None;
+        submit_presentation(
+            &mut ledger,
+            "hide",
+            None,
+            PresentationAction::Set {
+                patch: PresentationPatch {
+                    visible: Some(false),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        submit_presentation(
+            &mut ledger,
+            "move-bubble",
+            None,
+            PresentationAction::Set {
+                patch: PresentationPatch {
+                    bubble_placement: Some(BubblePlacement::Left),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let scene = reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut requested,
+            &mut reset,
+            &mut operation,
+        );
+        assert_eq!(
+            ledger.status("test", "hide").unwrap().state,
+            OperationState::Superseded
+        );
+        let patch = presentation_persistence_patch(
+            &original,
+            &scene,
+            PresentationTarget::from_scene(&original),
+            true,
+            requested.as_ref(),
+        );
+        assert_eq!(patch.visible, Some(false));
+        assert_eq!(patch.bubble_placement, Some(BubblePlacement::Left));
+        let revision = ledger.revision();
+        ledger.publish_checkpoint(observed_presentation(
+            revision,
+            PresentationTarget::from_scene(&scene),
+            Some(PresentationTarget::from_scene(&scene)),
+            None,
+        ));
+        assert_eq!(
+            ledger.status("test", "move-bubble").unwrap().state,
+            OperationState::Applied
+        );
+        assert_eq!(
+            ledger.status("test", "hide").unwrap().state,
+            OperationState::Superseded
+        );
+    }
+
+    #[test]
+    fn bubble_only_after_unsaved_hide_does_not_save_ghost_hide_and_rejected_cas_is_excluded() {
+        let mut state = AppState::new();
+        let original = state.scene();
+        let automation = test_automation(PresentationTarget::from_scene(&original));
+        let mut ledger = lock_automation(&automation);
+        let mut requested = None;
+        let mut reset = false;
+        let mut operation = None;
+        submit_presentation(
+            &mut ledger,
+            "unsaved-hide",
+            None,
+            PresentationAction::Set {
+                patch: PresentationPatch {
+                    visible: Some(false),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let hidden = reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut requested,
+            &mut reset,
+            &mut operation,
+        );
+        let hidden_target = PresentationTarget::from_scene(&hidden);
+        let revision = ledger.revision();
+        ledger.publish_checkpoint(observed_presentation(
+            revision,
+            hidden_target,
+            None,
+            Some((
+                "unsaved-hide".to_owned(),
+                hidden_target,
+                "disk busy".to_owned(),
+            )),
+        ));
+        requested = None;
+        operation = None;
+        let revision = ledger.revision();
+        submit_presentation(
+            &mut ledger,
+            "bubble-only",
+            Some(revision),
+            PresentationAction::Set {
+                patch: PresentationPatch {
+                    bubble_placement: Some(BubblePlacement::Left),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        submit_presentation(
+            &mut ledger,
+            "stale-cas",
+            Some(revision),
+            PresentationAction::Set {
+                patch: PresentationPatch {
+                    visible: Some(true),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let bubble = reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut requested,
+            &mut reset,
+            &mut operation,
+        );
+        let patch = presentation_persistence_patch(
+            &hidden,
+            &bubble,
+            PresentationTarget::from_scene(&original),
+            true,
+            requested.as_ref(),
+        );
+        assert_eq!(patch.visible, None);
+        assert_eq!(patch.bubble_placement, Some(BubblePlacement::Left));
+        assert_eq!(
+            ledger.status("test", "stale-cas").unwrap().state,
+            OperationState::Rejected
+        );
+
+        requested = None;
+        submit_presentation(
+            &mut ledger,
+            "reset",
+            None,
+            PresentationAction::ResetPosition,
+        )
+        .unwrap();
+        submit_presentation(
+            &mut ledger,
+            "normalized-scale",
+            None,
+            PresentationAction::Set {
+                patch: PresentationPatch {
+                    scale: Some(MAX_SCALE * 2.0),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let final_scene = reduce_presentation_batch(
+            &mut state,
+            &mut ledger,
+            &mut requested,
+            &mut reset,
+            &mut operation,
+        );
+        let patch = presentation_persistence_patch(
+            &bubble,
+            &final_scene,
+            PresentationTarget::from_scene(&original),
+            true,
+            requested.as_ref(),
+        );
+        assert_eq!(patch.visible, None);
+        assert_eq!(patch.scale, Some(MAX_SCALE));
+        assert_eq!(
+            final_scene.reset_position_revision,
+            bubble.reset_position_revision + 1
+        );
+        assert!(reset);
     }
 
     #[test]

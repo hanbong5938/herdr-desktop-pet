@@ -134,6 +134,91 @@ impl BubbleAppearance {
     }
 }
 
+/// A partial settings mutation. Absent fields leave the saved value unchanged;
+/// an empty machine list explicitly clears the selected catalog machines.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PreferencePatch {
+    #[serde(default, deserialize_with = "deserialize_patch_language")]
+    pub(crate) language: Option<LanguagePreference>,
+    #[serde(default, deserialize_with = "deserialize_patch_appearance")]
+    pub(crate) bubble_appearance: Option<BubbleAppearance>,
+    pub(crate) show_status_indicators: Option<bool>,
+    pub(crate) menu_bar_mode: Option<MenuBarMode>,
+    pub(crate) observation_local: Option<bool>,
+    pub(crate) observation_remote: Option<bool>,
+    pub(crate) observation_machines: Option<Vec<String>>,
+}
+
+fn deserialize_patch_language<'de, D>(
+    deserializer: D,
+) -> Result<Option<LanguagePreference>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let token = Option::<String>::deserialize(deserializer)?;
+    token
+        .map(|token| match token.as_str() {
+            "system" => Ok(LanguagePreference::System),
+            "ko" => Ok(LanguagePreference::Ko),
+            "en" => Ok(LanguagePreference::En),
+            _ => Err(serde::de::Error::unknown_variant(
+                &token,
+                &["system", "ko", "en"],
+            )),
+        })
+        .transpose()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchPalette {
+    surface: BubbleColor,
+    text: BubbleColor,
+    muted: BubbleColor,
+    border: BubbleColor,
+    accent: BubbleColor,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatchAppearance {
+    theme: BubbleTheme,
+    custom: PatchPalette,
+}
+
+fn deserialize_patch_appearance<'de, D>(
+    deserializer: D,
+) -> Result<Option<BubbleAppearance>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<PatchAppearance>::deserialize(deserializer).map(|appearance| {
+        appearance.map(|appearance| BubbleAppearance {
+            theme: appearance.theme,
+            custom: BubblePalette {
+                surface: appearance.custom.surface,
+                text: appearance.custom.text,
+                muted: appearance.custom.muted,
+                border: appearance.custom.border,
+                accent: appearance.custom.accent,
+            },
+        })
+    })
+}
+
+/// Settings reflected by the owner's last successful candidate commit.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct PreferenceSnapshot {
+    pub(crate) language: LanguagePreference,
+    pub(crate) bubble_appearance: BubbleAppearance,
+    pub(crate) show_status_indicators: bool,
+    pub(crate) menu_bar_mode: MenuBarMode,
+    pub(crate) observation_local: bool,
+    pub(crate) observation_remote: bool,
+    pub(crate) observation_machines: Vec<String>,
+}
+
 /// Position coordinates persisted relative to the panel's display bounds.
 /// A missing on-disk value represents the pre-crop full-canvas panel origin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -293,7 +378,7 @@ impl Preferences {
     }
 
     #[cfg(test)]
-    fn load_path(path: &Path) -> Result<Self, String> {
+    pub(crate) fn load_path(path: &Path) -> Result<Self, String> {
         Ok(Self::load_existing_path(path)?.unwrap_or_default())
     }
 
@@ -338,9 +423,114 @@ impl Preferences {
         Self::load_existing_path(path).ok().flatten()
     }
 
-    pub fn save(&self) -> Result<(), String> {
+    /// Clone the owner's committed state before staging presentation or geometry.
+    /// For example: `let mut next = prefs.candidate(); next.set_visible(false);
+    /// prefs.save_candidate(next)?;` Never mutate `prefs` before a runtime-first
+    /// presentation attempt; a failed save must not leak into later transactions.
+    pub(crate) fn candidate(&self) -> Self {
+        self.clone()
+    }
+
+    /// Save the complete candidate once, then replace the owner's state only
+    /// after the atomic writer succeeds. No live preferences are read from disk.
+    pub(crate) fn save_candidate(&mut self, candidate: Self) -> Result<(), String> {
         let directory = preferences_directory()?;
-        self.save_in_directory(&directory)
+        self.save_candidate_in_directory(candidate, &directory)
+    }
+
+    fn save_candidate_in_directory(
+        &mut self,
+        candidate: Self,
+        directory: &Path,
+    ) -> Result<(), String> {
+        candidate.save_in_directory(directory)?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub(crate) fn snapshot(&self) -> PreferenceSnapshot {
+        PreferenceSnapshot {
+            language: self.language,
+            bubble_appearance: self.bubble_appearance,
+            show_status_indicators: self.show_status_indicators,
+            menu_bar_mode: self.menu_bar_mode,
+            observation_local: self.observation.local,
+            observation_remote: self.observation.remote,
+            observation_machines: self.observation.machines.clone(),
+        }
+    }
+
+    /// Validate the entire patch before writing a single candidate. Unlike
+    /// legacy GUI observation saves, automation rejects malformed selections
+    /// rather than silently pruning them.
+    pub(crate) fn apply_patch(
+        &mut self,
+        patch: PreferencePatch,
+    ) -> Result<PreferenceSnapshot, String> {
+        let directory = preferences_directory()?;
+        self.apply_patch_in_directory(patch, &directory)
+    }
+
+    pub(crate) fn apply_patch_in_directory(
+        &mut self,
+        patch: PreferencePatch,
+        directory: &Path,
+    ) -> Result<PreferenceSnapshot, String> {
+        let PreferencePatch {
+            language,
+            bubble_appearance,
+            show_status_indicators,
+            menu_bar_mode,
+            observation_local,
+            observation_remote,
+            observation_machines,
+        } = patch;
+        if language.is_none()
+            && bubble_appearance.is_none()
+            && show_status_indicators.is_none()
+            && menu_bar_mode.is_none()
+            && observation_local.is_none()
+            && observation_remote.is_none()
+            && observation_machines.is_none()
+        {
+            return Err("preference patch must contain at least one setting".to_owned());
+        }
+        let mut candidate = self.candidate();
+        if let Some(language) = language {
+            candidate.language = language;
+        }
+        if let Some(appearance) = bubble_appearance {
+            candidate.bubble_appearance = appearance;
+        }
+        if let Some(enabled) = show_status_indicators {
+            candidate.show_status_indicators = enabled;
+        }
+        if let Some(mode) = menu_bar_mode {
+            candidate.menu_bar_mode = mode;
+        }
+        if let Some(local) = observation_local {
+            candidate.observation.local = local;
+        }
+        if let Some(remote) = observation_remote {
+            candidate.observation.remote = remote;
+        }
+        if let Some(machines) = observation_machines {
+            let mut checked = ObservationPreferences {
+                machines,
+                ..candidate.observation.clone()
+            };
+            let original = checked.machines.clone();
+            checked.sanitize();
+            if checked.machines != original {
+                return Err(
+                    "observation machines contain duplicate or invalid IDs, or exceed the selection limit"
+                        .to_owned(),
+                );
+            }
+            candidate.observation = checked;
+        }
+        self.save_candidate_in_directory(candidate, directory)?;
+        Ok(self.snapshot())
     }
 
     pub(crate) fn dialogue_overrides(&self) -> &DialogueOverrides {
@@ -366,13 +556,11 @@ impl Preferences {
         value: Option<String>,
         directory: &Path,
     ) -> Result<(), String> {
-        let mut candidate = self.clone();
+        let mut candidate = self.candidate();
         candidate
             .dialogue_overrides
             .set_entry(target, locale, slot, value)?;
-        candidate.save_in_directory(directory)?;
-        self.dialogue_overrides = candidate.dialogue_overrides;
-        Ok(())
+        self.save_candidate_in_directory(candidate, directory)
     }
 
     pub(crate) fn reset_character_dialogue(
@@ -388,31 +576,9 @@ impl Preferences {
         target: &DialogueTarget,
         directory: &Path,
     ) -> Result<(), String> {
-        let mut candidate = self.clone();
+        let mut candidate = self.candidate();
         candidate.dialogue_overrides.remove_target(target)?;
-        candidate.save_in_directory(directory)?;
-        self.dialogue_overrides = candidate.dialogue_overrides;
-        Ok(())
-    }
-
-    pub fn save_language(&mut self, preference: LanguagePreference) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_language_in_directory(preference, &directory)
-    }
-
-    pub fn save_bubble_appearance(&mut self, appearance: BubbleAppearance) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_bubble_appearance_in_directory(appearance, &directory)
-    }
-
-    pub fn save_show_status_indicators(&mut self, enabled: bool) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_show_status_indicators_in_directory(enabled, &directory)
-    }
-
-    pub(crate) fn save_menu_bar_mode(&mut self, mode: MenuBarMode) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_menu_bar_mode_in_directory(mode, &directory)
+        self.save_candidate_in_directory(candidate, directory)
     }
 
     pub(crate) fn save_menu_bar_icon(
@@ -427,39 +593,6 @@ impl Preferences {
         &self.observation
     }
 
-    pub(crate) fn save_observation(
-        &mut self,
-        preference: ObservationPreferences,
-    ) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_observation_in_directory(preference, &directory)
-    }
-
-    fn save_observation_in_directory(
-        &mut self,
-        mut preference: ObservationPreferences,
-        directory: &Path,
-    ) -> Result<(), String> {
-        preference.sanitize();
-        let mut candidate = self.clone();
-        candidate.observation = preference;
-        candidate.save_in_directory(directory)?;
-        self.observation = candidate.observation;
-        Ok(())
-    }
-
-    fn save_menu_bar_mode_in_directory(
-        &mut self,
-        mode: MenuBarMode,
-        directory: &Path,
-    ) -> Result<(), String> {
-        let mut candidate = self.clone();
-        candidate.menu_bar_mode = mode;
-        candidate.save_in_directory(directory)?;
-        self.menu_bar_mode = mode;
-        Ok(())
-    }
-
     fn save_menu_bar_icon_in_directory(
         &mut self,
         preference: Option<MenuBarIconPreference>,
@@ -469,10 +602,9 @@ impl Preferences {
             crate::menu_bar_icon::validate_asset_name(&icon.asset)?;
         }
         let previous = self.menu_bar_icon.clone();
-        let mut candidate = self.clone();
+        let mut candidate = self.candidate();
         candidate.menu_bar_icon = preference;
-        candidate.save_in_directory(directory)?;
-        self.menu_bar_icon = candidate.menu_bar_icon;
+        self.save_candidate_in_directory(candidate, directory)?;
         // The normal preference writer deliberately ignores directory sync errors.
         // Only a separately confirmed directory sync permits unlinking the previous asset.
         if let Some(previous) = previous.filter(|old| self.menu_bar_icon.as_ref() != Some(old)) {
@@ -488,42 +620,6 @@ impl Preferences {
 
     fn save_in_directory(&self, directory: &Path) -> Result<(), String> {
         self.write_atomically(directory, false).map(|_| ())
-    }
-
-    fn save_language_in_directory(
-        &mut self,
-        preference: LanguagePreference,
-        directory: &Path,
-    ) -> Result<(), String> {
-        let mut candidate = self.clone();
-        candidate.language = preference;
-        candidate.save_in_directory(directory)?;
-        self.language = preference;
-        Ok(())
-    }
-
-    fn save_bubble_appearance_in_directory(
-        &mut self,
-        appearance: BubbleAppearance,
-        directory: &Path,
-    ) -> Result<(), String> {
-        let mut candidate = self.clone();
-        candidate.bubble_appearance = appearance;
-        candidate.save_in_directory(directory)?;
-        self.bubble_appearance = appearance;
-        Ok(())
-    }
-
-    fn save_show_status_indicators_in_directory(
-        &mut self,
-        enabled: bool,
-        directory: &Path,
-    ) -> Result<(), String> {
-        let mut candidate = self.clone();
-        candidate.show_status_indicators = enabled;
-        candidate.save_in_directory(directory)?;
-        self.show_status_indicators = enabled;
-        Ok(())
     }
 
     fn save_migrated_in_directory(&self, directory: &Path) -> Result<bool, String> {
@@ -816,6 +912,225 @@ mod tests {
     }
 
     #[test]
+    fn patch_rejects_invalid_language_and_nested_appearance_without_affecting_disk_compatibility() {
+        assert!(serde_json::from_value::<PreferencePatch>(
+            serde_json::json!({"language": "en", "unknown_setting": true})
+        )
+        .is_err());
+        for language in [
+            serde_json::json!("future"),
+            serde_json::json!(42),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                serde_json::from_value::<PreferencePatch>(serde_json::json!({
+                    "language": language, "show_status_indicators": false
+                }))
+                .is_err()
+            );
+        }
+        assert_eq!(
+            serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": "ko"}))
+                .unwrap()
+                .language,
+            Some(LanguagePreference::Ko)
+        );
+        assert_eq!(
+            serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": null}))
+                .unwrap()
+                .language,
+            None
+        );
+        let appearance = serde_json::to_value(BubbleAppearance::default()).unwrap();
+        for invalid in [
+            serde_json::json!({"theme":"warm_ivory","custom":appearance["custom"],"future":1}),
+            serde_json::json!({"theme":"warm_ivory","custom":{
+                "surface":"#F5EEE5","text":"#473B3C","muted":"#8C7977",
+                "border":"#DED0C7","accent":"#AA6868","future":true
+            }}),
+            serde_json::json!({"theme":"warm_ivory","custom":{
+                "surface":"invalid","text":"#473B3C","muted":"#8C7977",
+                "border":"#DED0C7","accent":"#AA6868"
+            }}),
+        ] {
+            assert!(
+                serde_json::from_value::<PreferencePatch>(serde_json::json!({
+                    "bubble_appearance": invalid
+                }))
+                .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<PreferencePatch>(serde_json::json!({
+                "bubble_appearance": appearance
+            }))
+            .is_ok()
+        );
+        assert_eq!(
+            serde_json::from_str::<LanguagePreference>("\"future\"").unwrap(),
+            LanguagePreference::System
+        );
+    }
+
+    #[test]
+    fn preference_patch_commits_all_settings_without_losing_unknown_fields() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        preferences.extra.insert(
+            "future_setting".to_owned(),
+            serde_json::json!({"preserve": [1, 2]}),
+        );
+        preferences.save_in_directory(&directory).unwrap();
+        let mut appearance = preferences.bubble_appearance();
+        appearance.theme = BubbleTheme::Custom;
+        appearance.custom.accent = BubbleColor::parse_hex("#aBcDeF").unwrap();
+        let snapshot = preferences
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::Ko),
+                    bubble_appearance: Some(appearance),
+                    show_status_indicators: Some(false),
+                    menu_bar_mode: Some(MenuBarMode::RecoveryOnly),
+                    observation_local: Some(false),
+                    observation_remote: Some(true),
+                    observation_machines: Some(vec![" machine:/🌲 ".to_owned()]),
+                },
+                &directory,
+            )
+            .unwrap();
+        assert_eq!(snapshot.language, LanguagePreference::Ko);
+        assert_eq!(snapshot.bubble_appearance, appearance);
+        assert!(!snapshot.show_status_indicators);
+        assert_eq!(snapshot.menu_bar_mode, MenuBarMode::RecoveryOnly);
+        assert!(!snapshot.observation_local);
+        assert!(snapshot.observation_remote);
+        assert_eq!(snapshot.observation_machines, vec![" machine:/🌲 "]);
+        assert_eq!(snapshot, preferences.snapshot());
+        let saved = Preferences::load_path(&path).unwrap();
+        assert_eq!(saved.snapshot(), snapshot);
+        assert_eq!(saved.extra, preferences.extra);
+        assert_eq!(
+            saved.extra["future_setting"],
+            serde_json::json!({"preserve": [1, 2]})
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_multi_field_patch_preserves_owner_and_previous_disk_bytes() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let backup = directory.join("previous-preferences.json");
+        let mut preferences = Preferences::default();
+        preferences.save_in_directory(&directory).unwrap();
+        let before = fs::read(&path).unwrap();
+        let original = preferences.snapshot();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("sentinel"), b"untouched").unwrap();
+
+        preferences
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    observation_remote: Some(true),
+                    observation_machines: Some(vec!["opaque-machine".to_owned()]),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .expect_err("target-path directory prevents the atomic rename");
+        assert_eq!(preferences.snapshot(), original);
+        assert_eq!(fs::read(&backup).unwrap(), before);
+        assert_eq!(fs::read(path.join("sentinel")).unwrap(), b"untouched");
+        fs::remove_dir_all(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(Preferences::load_path(&path).unwrap().snapshot(), original);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_presentation_candidate_does_not_ghost_commit_on_next_setting_save() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let backup = directory.join("original-preferences.json");
+        let mut preferences = Preferences::default();
+        preferences.save_in_directory(&directory).unwrap();
+        let before = fs::read(&path).unwrap();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("sentinel"), b"untouched").unwrap();
+
+        let mut candidate = preferences.candidate();
+        candidate.set_visible(false);
+        candidate.set_position(Some((42.0, 64.0)));
+        preferences
+            .save_candidate_in_directory(candidate, &directory)
+            .expect_err("a target-path directory must prevent rename");
+        assert!(preferences.visible());
+        assert_eq!(preferences.position(), None);
+        assert_eq!(fs::read(&backup).unwrap(), before);
+        assert_eq!(fs::read(path.join("sentinel")).unwrap(), b"untouched");
+
+        fs::remove_dir_all(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        preferences
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .unwrap();
+        assert!(preferences.visible());
+        assert_eq!(preferences.position(), None);
+        let saved = Preferences::load_path(&path).unwrap();
+        assert!(saved.visible());
+        assert_eq!(saved.position(), None);
+        assert_eq!(saved.language(), LanguagePreference::En);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn invalid_multi_field_patch_keeps_memory_and_disk_unchanged() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        preferences.save_in_directory(&directory).unwrap();
+        let before = fs::read(&path).unwrap();
+        let original = preferences.snapshot();
+        for machines in [
+            vec!["duplicate".to_owned(), "duplicate".to_owned()],
+            vec!["invalid\0id".to_owned()],
+            vec!["id".repeat(4097)],
+            (0..65).map(|index| index.to_string()).collect(),
+        ] {
+            preferences
+                .apply_patch_in_directory(
+                    PreferencePatch {
+                        language: Some(LanguagePreference::En),
+                        observation_machines: Some(machines),
+                        ..PreferencePatch::default()
+                    },
+                    &directory,
+                )
+                .expect_err("invalid selection must reject the entire patch");
+            assert_eq!(preferences.snapshot(), original);
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        preferences
+            .apply_patch_in_directory(PreferencePatch::default(), &directory)
+            .expect_err("an empty patch is not a mutation");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(preferences.snapshot(), original);
+        assert_eq!(Preferences::load_path(&path).unwrap().snapshot(), original);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn saves_and_loads_scale_and_position_with_isolated_path() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
@@ -985,7 +1300,13 @@ mod tests {
 
             let mut loaded = loaded;
             loaded
-                .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+                .apply_patch_in_directory(
+                    PreferencePatch {
+                        menu_bar_mode: Some(MenuBarMode::RecoveryOnly),
+                        ..PreferencePatch::default()
+                    },
+                    &directory,
+                )
                 .expect("menu bar mode should save with previous settings");
             let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             assert_eq!(disk["menu_bar_mode"], "recovery_only");
@@ -1100,10 +1421,14 @@ mod tests {
             .save_menu_bar_icon_in_directory(Some(previous.clone()), &directory)
             .unwrap();
         prefs
-            .save_language_in_directory(LanguagePreference::En, &directory)
-            .unwrap();
-        prefs
-            .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    menu_bar_mode: Some(MenuBarMode::RecoveryOnly),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
             .unwrap();
         let mut restarted = Preferences::load_path(&path).unwrap();
         let previous_disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -1181,22 +1506,29 @@ mod tests {
         preferences.set_position(Some((42.0, 64.0)));
         preferences.set_standalone_bubble_position(Some((-1250.25, -310.75)));
         preferences
-            .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    menu_bar_mode: Some(MenuBarMode::RecoveryOnly),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
             .expect("conditional mode should save");
         let mut reloaded = Preferences::load_path(&path).expect("mode should reload");
         assert_eq!(reloaded.menu_bar_mode(), MenuBarMode::RecoveryOnly);
         reloaded
-            .save_language_in_directory(LanguagePreference::En, &directory)
-            .expect("language should save");
-        reloaded
-            .save_bubble_appearance_in_directory(
-                BubbleAppearance {
-                    theme: BubbleTheme::DustyRose,
-                    custom: BubbleAppearance::default().custom,
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    bubble_appearance: Some(BubbleAppearance {
+                        theme: BubbleTheme::DustyRose,
+                        custom: BubbleAppearance::default().custom,
+                    }),
+                    ..PreferencePatch::default()
                 },
                 &directory,
             )
-            .expect("appearance should save");
+            .expect("language and appearance should save");
         reloaded.set_position(None);
         reloaded
             .save_in_directory(&directory)
@@ -1210,31 +1542,6 @@ mod tests {
         assert_eq!(
             restarted.standalone_bubble_position(),
             Some((-1250.25, -310.75))
-        );
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn failed_menu_bar_mode_save_keeps_memory_and_disk_unchanged() {
-        let directory = isolated_preferences_directory();
-        let path = directory.join(PREFERENCES_FILE);
-        let mut preferences = Preferences::default();
-        preferences
-            .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
-            .expect("initial mode should save");
-        let before = fs::read(&path).expect("initial settings should be readable");
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").expect("blocking file should be written");
-
-        preferences
-            .save_menu_bar_mode_in_directory(MenuBarMode::Always, &blocked)
-            .expect_err("save through a file path should fail");
-        assert_eq!(preferences.menu_bar_mode(), MenuBarMode::RecoveryOnly);
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert_eq!(fs::read(&blocked).unwrap(), b"sentinel");
-        assert_eq!(
-            Preferences::load_path(&path).unwrap().menu_bar_mode(),
-            MenuBarMode::RecoveryOnly
         );
         let _ = fs::remove_dir_all(directory);
     }
@@ -1261,14 +1568,26 @@ mod tests {
             .show_status_indicators());
 
         preferences
-            .save_show_status_indicators_in_directory(false, &directory)
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    show_status_indicators: Some(false),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
             .expect("disabled indicators should save");
         assert!(!preferences.show_status_indicators());
         let mut reloaded =
             Preferences::load_path(&path).expect("disabled indicators should reload");
         assert!(!reloaded.show_status_indicators());
         reloaded
-            .save_language_in_directory(LanguagePreference::En, &directory)
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
             .expect("unrelated preference should save");
         let restarted = Preferences::load_path(&path).expect("settings should reload after save");
         assert!(!restarted.show_status_indicators());
@@ -1289,11 +1608,15 @@ mod tests {
         .expect("legacy geometry should be written");
         let mut preferences = Preferences::load_path(&path).expect("legacy geometry should load");
         preferences
-            .save_language_in_directory(LanguagePreference::En, &directory)
-            .expect("language should save before UI migration");
-        preferences
-            .save_bubble_appearance_in_directory(BubbleAppearance::default(), &directory)
-            .expect("appearance should save before UI migration");
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    bubble_appearance: Some(BubbleAppearance::default()),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .expect("settings should save before UI migration");
         let mut reloaded = Preferences::load_path(&path).expect("pre-UI save should reload");
         assert!(reloaded.position_is_legacy());
         assert_eq!(reloaded.position(), Some((42.0, 64.0)));
@@ -1409,12 +1732,18 @@ mod tests {
     }
 
     #[test]
-    fn language_save_roundtrips_canonical_token() {
+    fn language_patch_roundtrips_canonical_token() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
         let mut preferences = Preferences::default();
         preferences
-            .save_language_in_directory(LanguagePreference::En, &directory)
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
             .expect("language preference should save");
 
         let bytes = fs::read(&path).expect("saved preferences should be readable");
@@ -1433,35 +1762,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_language_save_keeps_memory_and_disk_unchanged() {
-        let directory = isolated_preferences_directory();
-        let path = directory.join(PREFERENCES_FILE);
-        let mut preferences = Preferences::default();
-        preferences.language = LanguagePreference::Ko;
-        preferences
-            .save_in_directory(&directory)
-            .expect("initial preferences should save");
-        let before = fs::read(&path).expect("initial preferences should be readable");
-
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").expect("blocking file should be written");
-        preferences
-            .save_language_in_directory(LanguagePreference::En, &blocked)
-            .expect_err("language save should fail for a file path");
-        assert_eq!(preferences.language(), LanguagePreference::Ko);
-        assert_eq!(
-            fs::read(&path).expect("preferences should remain readable"),
-            before
-        );
-        assert_eq!(
-            fs::read(&blocked).expect("blocking file should remain readable"),
-            b"sentinel"
-        );
-
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
     fn custom_palette_survives_preset_switch_and_reload() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
@@ -1474,14 +1774,23 @@ mod tests {
             custom,
         };
         preferences
-            .save_bubble_appearance_in_directory(appearance, &directory)
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    bubble_appearance: Some(appearance),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
             .expect("custom appearance should save");
         assert_eq!(preferences.bubble_appearance().palette(), custom);
         preferences
-            .save_bubble_appearance_in_directory(
-                BubbleAppearance {
-                    theme: BubbleTheme::MoonlitInk,
-                    custom,
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    bubble_appearance: Some(BubbleAppearance {
+                        theme: BubbleTheme::MoonlitInk,
+                        custom,
+                    }),
+                    ..PreferencePatch::default()
                 },
                 &directory,
             )
@@ -1551,58 +1860,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_appearance_save_keeps_memory_and_disk_unchanged() {
-        let directory = isolated_preferences_directory();
-        let path = directory.join(PREFERENCES_FILE);
-        let mut preferences = Preferences::default();
-        preferences.save_in_directory(&directory).unwrap();
-        let before = fs::read(&path).unwrap();
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").unwrap();
-        let changed = BubbleAppearance {
-            theme: BubbleTheme::DustyRose,
-            custom: preferences.bubble_appearance().custom,
-        };
-        preferences
-            .save_bubble_appearance_in_directory(changed, &blocked)
-            .expect_err("appearance save should fail for a file path");
-        assert_eq!(preferences.bubble_appearance(), BubbleAppearance::default());
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert_eq!(fs::read(&blocked).unwrap(), b"sentinel");
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn failed_status_indicator_save_keeps_memory_and_disk_unchanged() {
-        let directory = isolated_preferences_directory();
-        let path = directory.join(PREFERENCES_FILE);
-        let mut preferences = Preferences::default();
-        preferences
-            .save_show_status_indicators_in_directory(false, &directory)
-            .expect("initial disabled value should save");
-        let before = fs::read(&path).expect("saved settings should be readable");
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").expect("blocking file should be written");
-
-        preferences
-            .save_show_status_indicators_in_directory(true, &blocked)
-            .expect_err("save through a file path should fail");
-        assert!(!preferences.show_status_indicators());
-        assert_eq!(
-            fs::read(&path).expect("saved settings should remain"),
-            before
-        );
-        assert!(!Preferences::load_path(&path)
-            .expect("saved settings should still load")
-            .show_status_indicators());
-        assert_eq!(
-            fs::read(&blocked).expect("blocking file should remain"),
-            b"sentinel"
-        );
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
     fn saving_observation_migrates_old_settings_without_losing_unrelated_values() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
@@ -1614,11 +1871,12 @@ mod tests {
         let mut preferences = Preferences::load_path(&path).expect("old preferences should load");
         let machine = "opaque machine:🍃/A".to_owned();
         preferences
-            .save_observation_in_directory(
-                ObservationPreferences {
-                    local: false,
-                    remote: true,
-                    machines: vec![machine.clone()],
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    observation_local: Some(false),
+                    observation_remote: Some(true),
+                    observation_machines: Some(vec![machine.clone()]),
+                    ..PreferencePatch::default()
                 },
                 &directory,
             )
@@ -1636,17 +1894,18 @@ mod tests {
     }
 
     #[test]
-    fn disabled_remote_selection_survives_sanitized_save_and_reload() {
+    fn disabled_remote_selection_survives_patch_and_reload() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
         let mut preferences = Preferences::default();
         let id = "opaque id:/🌲".to_owned();
         preferences
-            .save_observation_in_directory(
-                ObservationPreferences {
-                    local: true,
-                    remote: false,
-                    machines: vec![id.clone(), id.clone(), String::new(), "x".repeat(4097)],
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    observation_local: Some(true),
+                    observation_remote: Some(false),
+                    observation_machines: Some(vec![id.clone()]),
+                    ..PreferencePatch::default()
                 },
                 &directory,
             )
@@ -1658,10 +1917,10 @@ mod tests {
             .observation()
             .includes(&crate::sources::remote_source(&id)));
         preferences
-            .save_observation_in_directory(
-                ObservationPreferences {
-                    remote: true,
-                    ..loaded.observation().clone()
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    observation_remote: Some(true),
+                    ..PreferencePatch::default()
                 },
                 &directory,
             )
@@ -1673,35 +1932,6 @@ mod tests {
         let _ = fs::remove_dir_all(directory);
     }
 
-    #[test]
-    fn failed_observation_save_keeps_memory_and_disk_unchanged() {
-        let directory = isolated_preferences_directory();
-        let path = directory.join(PREFERENCES_FILE);
-        let mut preferences = Preferences::default();
-        preferences
-            .save_in_directory(&directory)
-            .expect("initial save");
-        let before = fs::read(&path).expect("saved preferences");
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").expect("blocking file");
-        preferences
-            .save_observation_in_directory(
-                ObservationPreferences {
-                    local: false,
-                    remote: true,
-                    machines: vec!["opaque".to_owned()],
-                },
-                &blocked,
-            )
-            .expect_err("save through a file must fail");
-        assert_eq!(
-            preferences.observation(),
-            &ObservationPreferences::default()
-        );
-        assert_eq!(fs::read(&path).expect("saved preferences"), before);
-        assert_eq!(fs::read(&blocked).expect("blocking file"), b"sentinel");
-        let _ = fs::remove_dir_all(directory);
-    }
     #[test]
     fn dialogue_roundtrip_reset_and_namespaces_preserve_other_settings() {
         let directory = isolated_preferences_directory();

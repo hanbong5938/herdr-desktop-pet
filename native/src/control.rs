@@ -1,8 +1,14 @@
+use crate::automation::{
+    lock_automation, AutomationState, DomainAction, DomainOperation, DomainRequest,
+    PresentationAction, PresentationOperation, PresentationPatch, PresentationRequest,
+    PresentationSnapshot, SessionIdentity, SharedAutomation,
+};
 use crate::bubble::BubblePlacement;
 use crate::character_service::PackService;
 use crate::character_types::{PackAction, PackListing, PackOperation, PackRequest};
 use crate::herdr::Watchers;
 use crate::lifecycle::{self, LifecycleLock, LifecycleSetting, LifecycleSettings, Paths};
+use crate::session_view::{SessionCursor, SessionFilter, SessionPageCursor, SessionPageRequest};
 use crate::socket;
 use crate::state::AppState;
 use crate::ui;
@@ -24,6 +30,9 @@ use std::time::{Duration, Instant};
 
 const PROTOCOL_VERSION: u64 = 1;
 const MAX_FRAME_BYTES: usize = 16 * 1024;
+const MAX_PROMPT_FRAME_BYTES: usize = 512 * 1024 + 4096;
+const MAX_SESSION_FRAME_BYTES: usize = 512 * 1024;
+const MAX_AUTOMATION_REPLY_BYTES: usize = 68 * 1024;
 const MAX_CONNECTIONS: usize = 32;
 const PACK_LIST_PAGE_SIZE: usize = 8;
 const MAX_PACK_LIST_RECORDS: usize = 32;
@@ -97,6 +106,308 @@ fn lifecycle_reply(result: Result<LifecycleSettings, String>) -> LifecycleReply 
             error: Some(error),
         },
     }
+}
+
+pub(crate) const PRESENTATION_PROTOCOL_VERSION: u64 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PresentationRequestEnvelope {
+    pub(crate) version: u64,
+    pub(crate) kind: String,
+    pub(crate) command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expected_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) patch: Option<PresentationPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PresentationReplyEnvelope {
+    pub(crate) version: u64,
+    pub(crate) kind: String,
+    pub(crate) ok: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) instance_id: Option<String>,
+    pub(crate) snapshot: Option<PresentationSnapshot>,
+    pub(crate) operation: Option<PresentationOperation>,
+}
+
+fn validate_presentation_request(request: &PresentationRequestEnvelope) -> Result<(), String> {
+    if request.version != PRESENTATION_PROTOCOL_VERSION {
+        return Err("unsupported presentation protocol version".to_owned());
+    }
+    if request.kind != "presentation" {
+        return Err("invalid presentation request kind".to_owned());
+    }
+    let has_instance = request
+        .instance_id
+        .as_ref()
+        .is_some_and(|id| !id.is_empty());
+    let has_operation = request
+        .operation_id
+        .as_ref()
+        .is_some_and(|id| !id.is_empty());
+    let valid = match request.command.as_str() {
+        "get" => {
+            request.instance_id.is_none()
+                && request.operation_id.is_none()
+                && request.expected_revision.is_none()
+                && request.patch.is_none()
+        }
+        "set" => has_instance && has_operation && request.patch.is_some(),
+        "reset" => has_instance && has_operation && request.patch.is_none(),
+        "status" => {
+            has_instance
+                && has_operation
+                && request.expected_revision.is_none()
+                && request.patch.is_none()
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("invalid presentation request fields".to_owned())
+    }
+}
+
+fn decode_presentation_request(frame: &[u8]) -> Result<PresentationRequestEnvelope, String> {
+    reject_duplicate_json_keys(frame)
+        .map_err(|error| format!("invalid presentation request: {error}"))?;
+    // Option<T> otherwise makes an explicit null indistinguishable from absence.
+    // Reject forbidden fields even when sent as null.
+    let fields: Map<String, Value> = serde_json::from_slice(frame)
+        .map_err(|error| format!("invalid presentation request: {error}"))?;
+    let forbidden = match fields.get("command").and_then(Value::as_str) {
+        Some("get") => ["instance_id", "operation_id", "expected_revision", "patch"]
+            .iter()
+            .any(|field| fields.contains_key(*field)),
+        Some("set") => false,
+        Some("reset") => fields.contains_key("patch"),
+        Some("status") => fields.contains_key("patch") || fields.contains_key("expected_revision"),
+        _ => true,
+    };
+    if forbidden
+        || fields
+            .get("expected_revision")
+            .is_some_and(|value| !value.is_u64())
+    {
+        return Err("invalid presentation request fields".to_owned());
+    }
+    let request: PresentationRequestEnvelope = serde_json::from_value(Value::Object(fields))
+        .map_err(|error| format!("invalid presentation request: {error}"))?;
+    validate_presentation_request(&request)?;
+    Ok(request)
+}
+
+fn presentation_error(error: String) -> PresentationReplyEnvelope {
+    PresentationReplyEnvelope {
+        version: PRESENTATION_PROTOCOL_VERSION,
+        kind: "presentation".to_owned(),
+        ok: false,
+        error: Some(error),
+        instance_id: None,
+        snapshot: None,
+        operation: None,
+    }
+}
+
+fn presentation_success(
+    instance_id: String,
+    snapshot: Option<PresentationSnapshot>,
+    operation: Option<PresentationOperation>,
+) -> PresentationReplyEnvelope {
+    PresentationReplyEnvelope {
+        version: PRESENTATION_PROTOCOL_VERSION,
+        kind: "presentation".to_owned(),
+        ok: true,
+        error: None,
+        instance_id: Some(instance_id),
+        snapshot,
+        operation,
+    }
+}
+
+fn presentation_response_json(response: &PresentationReplyEnvelope) -> io::Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(response)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if bytes.len() + 1 > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "presentation response exceeds frame limit",
+        ));
+    }
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AutomationRequestEnvelope {
+    pub(crate) version: u64,
+    pub(crate) kind: String,
+    pub(crate) command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request: Option<DomainRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AutomationReplyEnvelope {
+    pub(crate) version: u64,
+    pub(crate) kind: String,
+    pub(crate) ok: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) instance_id: Option<String>,
+    pub(crate) operation: Option<DomainOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionsRequestEnvelope {
+    pub(crate) version: u64,
+    pub(crate) kind: String,
+    pub(crate) command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) page: Option<SessionPageRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) identity: Option<SessionIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionsReplyEnvelope {
+    pub(crate) version: u64,
+    pub(crate) kind: String,
+    pub(crate) ok: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) result: Option<Value>,
+}
+
+fn validate_automation_request(request: &AutomationRequestEnvelope) -> Result<(), String> {
+    if request.version != PROTOCOL_VERSION
+        || !matches!(request.kind.as_str(), "automation" | "prompt")
+    {
+        return Err("invalid automation protocol".to_owned());
+    }
+    let valid = match request.command.as_str() {
+        "request" => {
+            request.instance_id.is_none()
+                && request.operation_id.is_none()
+                && request.request.as_ref().is_some_and(|domain| {
+                    !domain.instance_id.is_empty()
+                        && !domain.operation_id.is_empty()
+                        && match (&*request.kind, &domain.action) {
+                            ("prompt", DomainAction::SessionPrompt { .. }) => true,
+                            ("automation", DomainAction::SessionPrompt { .. }) => false,
+                            ("automation", _) => true,
+                            _ => false,
+                        }
+                })
+        }
+        "status" => {
+            request.kind == "automation"
+                && request.request.is_none()
+                && request
+                    .instance_id
+                    .as_ref()
+                    .is_some_and(|id| !id.is_empty())
+                && request
+                    .operation_id
+                    .as_ref()
+                    .is_some_and(|id| !id.is_empty())
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("invalid automation request fields".to_owned())
+    }
+}
+
+fn decode_automation_request(frame: &[u8]) -> Result<AutomationRequestEnvelope, String> {
+    reject_duplicate_json_keys(frame)?;
+    let fields: Map<String, Value> = serde_json::from_slice(frame)
+        .map_err(|error| format!("invalid automation request: {error}"))?;
+    let forbidden = match fields.get("command").and_then(Value::as_str) {
+        Some("request") => {
+            fields.contains_key("instance_id")
+                || fields.contains_key("operation_id")
+                || !fields.get("request").is_some_and(Value::is_object)
+        }
+        Some("status") => {
+            fields.contains_key("request")
+                || !fields.get("instance_id").is_some_and(Value::is_string)
+                || !fields.get("operation_id").is_some_and(Value::is_string)
+        }
+        _ => true,
+    };
+    if forbidden {
+        return Err("invalid automation request fields".to_owned());
+    }
+    let request: AutomationRequestEnvelope = serde_json::from_value(Value::Object(fields))
+        .map_err(|error| format!("invalid automation request: {error}"))?;
+    validate_automation_request(&request)?;
+    Ok(request)
+}
+
+fn validate_sessions_request(request: &SessionsRequestEnvelope) -> Result<(), String> {
+    if request.version != PROTOCOL_VERSION || request.kind != "sessions" {
+        return Err("invalid sessions protocol".to_owned());
+    }
+    let valid = match request.command.as_str() {
+        "list" => {
+            request.identity.is_none()
+                && request.page.as_ref().is_some_and(|page| {
+                    !page.instance_id.is_empty() && (1..=128).contains(&page.limit)
+                })
+        }
+        "detail" => {
+            request.page.is_none()
+                && request.identity.as_ref().is_some_and(|identity| {
+                    !identity.instance_id.is_empty() && !identity.terminal_id.is_empty()
+                })
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("invalid sessions request fields".to_owned())
+    }
+}
+
+fn decode_sessions_request(frame: &[u8]) -> Result<SessionsRequestEnvelope, String> {
+    reject_duplicate_json_keys(frame)?;
+    let fields: Map<String, Value> = serde_json::from_slice(frame)
+        .map_err(|error| format!("invalid sessions request: {error}"))?;
+    let valid = match fields.get("command").and_then(Value::as_str) {
+        Some("list") => {
+            !fields.contains_key("identity") && fields.get("page").is_some_and(Value::is_object)
+        }
+        Some("detail") => {
+            !fields.contains_key("page") && fields.get("identity").is_some_and(Value::is_object)
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err("invalid sessions request fields".to_owned());
+    }
+    let request: SessionsRequestEnvelope = serde_json::from_value(Value::Object(fields))
+        .map_err(|error| format!("invalid sessions request: {error}"))?;
+    validate_sessions_request(&request)?;
+    Ok(request)
 }
 
 struct UniqueJsonKeys;
@@ -538,7 +849,10 @@ fn reap_finished_clients(inner: &ControlInner) {
 }
 
 fn acquire_client_slot(inner: &ControlInner) -> bool {
-    let mut active = lock_unpoisoned(&inner.active_clients);
+    reserve_client_slot(&mut lock_unpoisoned(&inner.active_clients))
+}
+
+fn reserve_client_slot(active: &mut usize) -> bool {
     if *active >= MAX_CONNECTIONS {
         return false;
     }
@@ -609,19 +923,46 @@ fn write_frame(stream: &mut UnixStream, bytes: &[u8], deadline: Instant) -> io::
     Ok(())
 }
 
+fn read_client_frame(
+    stream: &mut UnixStream,
+    deadline: Instant,
+    limit: usize,
+) -> io::Result<Vec<u8>> {
+    let mut frame = Vec::with_capacity(MAX_FRAME_BYTES);
+    let mut chunk = [0u8; 1024];
+    loop {
+        let read = socket::read_with_deadline(stream, &mut chunk, deadline)?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "control peer closed before frame terminator",
+            ));
+        }
+        let newline = chunk[..read].iter().position(|byte| *byte == b'\n');
+        let count = newline.unwrap_or(read);
+        if frame.len() + count >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control frame exceeds limit",
+            ));
+        }
+        frame.extend_from_slice(&chunk[..count]);
+        if newline.is_some() {
+            if frame.last() == Some(&b'\r') {
+                frame.pop();
+            }
+            return Ok(frame);
+        }
+    }
+}
+
 fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
     let deadline = Instant::now() + CLIENT_TIMEOUT;
-    let mut frame = [0u8; MAX_FRAME_BYTES];
-    let length = match read_frame(&mut stream, &mut frame, deadline) {
-        Ok(length) => length,
+    let frame = match read_client_frame(&mut stream, deadline, MAX_PROMPT_FRAME_BYTES + 1) {
+        Ok(frame) => frame,
         Err(_) => return,
     };
-    if reject_duplicate_json_keys(&frame[..length]).is_err() {
-        let response = ControlResponse::error("unknown", &inner, "invalid control request");
-        let _ = write_response(&mut stream, &response, deadline);
-        return;
-    }
-    let frame_kind: FrameKind = match serde_json::from_slice(&frame[..length]) {
+    let frame_kind: FrameKind = match serde_json::from_slice(&frame) {
         Ok(frame_kind) => frame_kind,
         Err(_) => {
             let response = ControlResponse::error("unknown", &inner, "invalid control request");
@@ -629,8 +970,56 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
             return;
         }
     };
+    if frame_kind.kind.as_deref() == Some("presentation") {
+        if frame.len() > MAX_FRAME_BYTES {
+            return;
+        }
+        let response = decode_presentation_request(&frame)
+            .and_then(|request| dispatch_presentation(&inner, request))
+            .unwrap_or_else(presentation_error);
+        let _ = write_presentation_response(&mut stream, &response, deadline);
+        return;
+    }
+    if matches!(frame_kind.kind.as_deref(), Some("automation" | "prompt")) {
+        if frame_kind.kind.as_deref() != Some("prompt") && frame.len() > MAX_FRAME_BYTES {
+            let _ = write_automation_response(
+                &mut stream,
+                &automation_error("automation request exceeds frame limit".to_owned()),
+                deadline,
+            );
+            return;
+        }
+        let response = decode_automation_request(&frame)
+            .and_then(|request| dispatch_automation(&inner, request))
+            .unwrap_or_else(automation_error);
+        let _ = write_automation_response(&mut stream, &response, deadline);
+        return;
+    }
+    if frame_kind.kind.as_deref() == Some("sessions") {
+        if frame.len() > MAX_FRAME_BYTES {
+            let _ = write_sessions_response(
+                &mut stream,
+                &sessions_error("sessions request exceeds frame limit".to_owned()),
+                deadline,
+            );
+            return;
+        }
+        let response = decode_sessions_request(&frame)
+            .and_then(|request| dispatch_sessions(&inner, request))
+            .unwrap_or_else(sessions_error);
+        let _ = write_sessions_response(&mut stream, &response, deadline);
+        return;
+    }
+    if frame.len() > MAX_FRAME_BYTES {
+        return;
+    }
+    if reject_duplicate_json_keys(&frame).is_err() {
+        let response = ControlResponse::error("unknown", &inner, "invalid control request");
+        let _ = write_response(&mut stream, &response, deadline);
+        return;
+    }
     if frame_kind.kind.as_deref() == Some("pack") {
-        let envelope: PackRequestEnvelope = match serde_json::from_slice(&frame[..length]) {
+        let envelope: PackRequestEnvelope = match serde_json::from_slice(&frame) {
             Ok(request) => request,
             Err(error) => {
                 let response = pack_error("", format!("invalid pack request: {error}"));
@@ -656,7 +1045,7 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
         return;
     }
     if frame_kind.kind.as_deref() == Some("lifecycle") {
-        let result = serde_json::from_slice::<LifecycleRequest>(&frame[..length])
+        let result = serde_json::from_slice::<LifecycleRequest>(&frame)
             .map_err(|error| format!("invalid lifecycle request: {error}"))
             .and_then(|request| {
                 validate_lifecycle_request(&request)?;
@@ -689,7 +1078,7 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
         }
         return;
     }
-    let request: LegacyRequest = match serde_json::from_slice(&frame[..length]) {
+    let request: LegacyRequest = match serde_json::from_slice(&frame) {
         Ok(request) => request,
         Err(_) => {
             let response = ControlResponse::error("unknown", &inner, "invalid control request");
@@ -714,6 +1103,357 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
     let endpoint = request.endpoint.map(PathBuf::from);
     let response = dispatch(&inner, command, endpoint);
     let _ = write_response(&mut stream, &response, deadline);
+}
+
+fn presentation_admission(
+    state: &AppState,
+    stopping: bool,
+    mutation: bool,
+) -> Result<SharedAutomation, String> {
+    if !state.is_ui_ready() {
+        return Err("desktop pet UI is not ready".to_owned());
+    }
+    let handle = state
+        .automation()
+        .ok_or("presentation automation is unavailable")?;
+    if mutation && (stopping || state.scene().shutdown) {
+        return Err("desktop pet is stopping".to_owned());
+    }
+    Ok(handle)
+}
+
+fn dispatch_presentation(
+    inner: &ControlInner,
+    request: PresentationRequestEnvelope,
+) -> Result<PresentationReplyEnvelope, String> {
+    let state = lock_unpoisoned(&inner.shared);
+    let mutation = matches!(request.command.as_str(), "set" | "reset");
+    let handle = presentation_admission(&state, inner.stopping.load(Ordering::Acquire), mutation)?;
+    let mut ledger = lock_automation(&handle);
+    let reply = presentation_ledger_reply(&mut ledger, request)?;
+    drop(ledger);
+    drop(state);
+    if mutation {
+        ui::wake();
+    }
+    Ok(reply)
+}
+fn presentation_ledger_reply(
+    ledger: &mut AutomationState,
+    request: PresentationRequestEnvelope,
+) -> Result<PresentationReplyEnvelope, String> {
+    match request.command.as_str() {
+        "get" => {
+            let snapshot = ledger.snapshot();
+            Ok(presentation_success(
+                snapshot.instance_id.clone(),
+                Some(snapshot),
+                None,
+            ))
+        }
+        "status" => {
+            let operation = ledger.status(
+                request
+                    .instance_id
+                    .as_deref()
+                    .expect("validated instance ID"),
+                request
+                    .operation_id
+                    .as_deref()
+                    .expect("validated operation ID"),
+            )?;
+            Ok(presentation_success(
+                operation.instance_id.clone(),
+                None,
+                Some(operation),
+            ))
+        }
+        "set" | "reset" => {
+            let action = if request.command == "set" {
+                PresentationAction::Set {
+                    patch: request.patch.expect("validated patch"),
+                }
+            } else {
+                PresentationAction::ResetPosition
+            };
+            let operation = ledger.submit(PresentationRequest {
+                instance_id: request.instance_id.expect("validated instance ID"),
+                operation_id: request.operation_id.expect("validated operation ID"),
+                expected_revision: request.expected_revision,
+                action,
+            })?;
+            Ok(presentation_success(
+                operation.instance_id.clone(),
+                None,
+                Some(operation),
+            ))
+        }
+        _ => Err("invalid presentation command".to_owned()),
+    }
+}
+
+fn automation_error(error: String) -> AutomationReplyEnvelope {
+    AutomationReplyEnvelope {
+        version: PROTOCOL_VERSION,
+        kind: "automation".to_owned(),
+        ok: false,
+        error: Some(error),
+        instance_id: None,
+        operation: None,
+    }
+}
+
+fn dispatch_automation(
+    inner: &ControlInner,
+    envelope: AutomationRequestEnvelope,
+) -> Result<AutomationReplyEnvelope, String> {
+    let state = lock_unpoisoned(&inner.shared);
+    let mutation = envelope.command == "request";
+    let handle = presentation_admission(&state, inner.stopping.load(Ordering::Acquire), mutation)?;
+    let mut ledger = lock_automation(&handle);
+    let operation = if let Some(request) = envelope.request {
+        ledger.submit_domain(request)?
+    } else {
+        ledger.domain_status(
+            envelope
+                .instance_id
+                .as_deref()
+                .expect("validated instance ID"),
+            envelope
+                .operation_id
+                .as_deref()
+                .expect("validated operation ID"),
+        )?
+    };
+    drop(ledger);
+    drop(state);
+    if mutation {
+        ui::wake();
+    }
+    Ok(AutomationReplyEnvelope {
+        version: PROTOCOL_VERSION,
+        kind: "automation".to_owned(),
+        ok: true,
+        error: None,
+        instance_id: Some(operation.instance_id.clone()),
+        operation: Some(operation),
+    })
+}
+
+fn sessions_error(error: String) -> SessionsReplyEnvelope {
+    SessionsReplyEnvelope {
+        version: PROTOCOL_VERSION,
+        kind: "sessions".to_owned(),
+        ok: false,
+        error: Some(error),
+        result: None,
+    }
+}
+
+fn dispatch_sessions(
+    inner: &ControlInner,
+    envelope: SessionsRequestEnvelope,
+) -> Result<SessionsReplyEnvelope, String> {
+    let result = {
+        let state = lock_unpoisoned(&inner.shared);
+        if !state.is_ui_ready() {
+            return Err("desktop pet UI is not ready".to_owned());
+        }
+        match envelope.command.as_str() {
+            "list" => {
+                state.automation_session_page(envelope.page.as_ref().expect("validated page"))?
+            }
+            "detail" => state.automation_session_detail(
+                envelope.identity.as_ref().expect("validated identity"),
+            )?,
+            _ => return Err("invalid sessions command".to_owned()),
+        }
+    };
+    let reply = SessionsReplyEnvelope {
+        version: PROTOCOL_VERSION,
+        kind: "sessions".to_owned(),
+        ok: true,
+        error: None,
+        result: Some(result),
+    };
+    if envelope.command == "list" {
+        Ok(budget_sessions_list_response(reply))
+    } else {
+        Ok(reply)
+    }
+}
+
+#[derive(Serialize)]
+struct SessionCursorRef<'a> {
+    source_id: u64,
+    terminal_id: &'a str,
+}
+
+#[derive(Serialize)]
+struct SessionPageCursorRef<'a> {
+    instance_id: &'a str,
+    revision: u64,
+    filter: SessionFilter,
+    position: SessionCursorRef<'a>,
+}
+
+#[derive(Default)]
+struct JsonByteCount(usize);
+
+impl Write for JsonByteCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.checked_add(bytes.len()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "session JSON length overflow")
+        })?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_byte_count<T: Serialize>(value: &T) -> io::Result<usize> {
+    let mut counter = JsonByteCount::default();
+    serde_json::to_writer(&mut counter, value).map_err(io::Error::other)?;
+    Ok(counter.0)
+}
+
+fn budget_sessions_list_response(mut reply: SessionsReplyEnvelope) -> SessionsReplyEnvelope {
+    fn budget(reply: &mut SessionsReplyEnvelope) -> io::Result<Option<&'static str>> {
+        let page = reply
+            .result
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing sessions page"))?;
+        let original_has_more = !page.get("next_cursor").is_some_and(Value::is_null);
+        let mut rows = std::mem::take(
+            page.get_mut("rows")
+                .and_then(Value::as_array_mut)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "missing sessions rows")
+                })?,
+        );
+        page.insert("next_cursor".to_owned(), Value::Null);
+        let base = json_byte_count(reply)?;
+        let Some(base_frame) = base.checked_add(1) else {
+            return Ok(Some("session page envelope exceeds 512KiB frame limit"));
+        };
+        if base_frame > MAX_SESSION_FRAME_BYTES {
+            return Ok(Some("session page envelope exceeds 512KiB frame limit"));
+        }
+        let page = reply
+            .result
+            .as_ref()
+            .and_then(Value::as_object)
+            .expect("page");
+        let instance_id = page
+            .get("instance_id")
+            .and_then(Value::as_str)
+            .expect("instance");
+        let revision = page
+            .get("revision")
+            .and_then(Value::as_u64)
+            .expect("revision");
+        let filter = match page.get("filter").and_then(Value::as_str) {
+            Some("all") => SessionFilter::All,
+            Some("idle") => SessionFilter::Idle,
+            Some("working") => SessionFilter::Working,
+            Some("waiting") => SessionFilter::Waiting,
+            Some("completed") => SessionFilter::Completed,
+            Some("unknown") => SessionFilter::Unknown,
+            Some("offline") => SessionFilter::Offline,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid session filter",
+                ))
+            }
+        };
+        let mut selected = 0;
+        let mut used_rows = 0usize;
+        for row in &rows {
+            let row_bytes = json_byte_count(row)?;
+            let Some(next_rows) = used_rows
+                .checked_add(usize::from(selected > 0))
+                .and_then(|n| n.checked_add(row_bytes))
+            else {
+                break;
+            };
+            let needs_cursor = selected + 1 < rows.len() || original_has_more;
+            let cursor_bytes = if needs_cursor {
+                let key = row.get("key").expect("session key");
+                let cursor = SessionPageCursorRef {
+                    instance_id,
+                    revision,
+                    filter,
+                    position: SessionCursorRef {
+                        source_id: key
+                            .get("source_id")
+                            .and_then(Value::as_u64)
+                            .expect("source"),
+                        terminal_id: key
+                            .get("terminal_id")
+                            .and_then(Value::as_str)
+                            .expect("terminal"),
+                    },
+                };
+                json_byte_count(&cursor)?
+            } else {
+                4 // The base envelope already includes `null`.
+            };
+            let frame_bytes = base_frame
+                .checked_add(next_rows)
+                .and_then(|n| n.checked_sub(4))
+                .and_then(|n| n.checked_add(cursor_bytes));
+            if !frame_bytes.is_some_and(|size| size <= MAX_SESSION_FRAME_BYTES) {
+                break;
+            }
+            selected += 1;
+            used_rows = next_rows;
+        }
+        if selected == 0 && !rows.is_empty() {
+            return Ok(Some("session row exceeds 512KiB frame limit"));
+        }
+        let cursor = if selected > 0 && (selected < rows.len() || original_has_more) {
+            let key = rows[selected - 1].get("key").expect("session key");
+            Some(SessionPageCursor {
+                instance_id: instance_id.to_owned(),
+                revision,
+                filter,
+                position: SessionCursor {
+                    source_id: key
+                        .get("source_id")
+                        .and_then(Value::as_u64)
+                        .expect("source"),
+                    terminal_id: key
+                        .get("terminal_id")
+                        .and_then(Value::as_str)
+                        .expect("terminal")
+                        .to_owned(),
+                },
+            })
+        } else {
+            None
+        };
+        rows.truncate(selected);
+        let page = reply
+            .result
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .expect("page");
+        page.insert("rows".to_owned(), Value::Array(rows));
+        page.insert(
+            "next_cursor".to_owned(),
+            serde_json::to_value(cursor).map_err(io::Error::other)?,
+        );
+        Ok(None)
+    }
+    match budget(&mut reply) {
+        Ok(None) => reply,
+        Ok(Some(message)) => sessions_error(message.to_owned()),
+        Err(error) => sessions_error(format!("cannot budget session page: {error}")),
+    }
 }
 
 fn pack_error(command: &str, error: String) -> PackReplyEnvelope {
@@ -1079,6 +1819,216 @@ fn register_endpoint(inner: &ControlInner, endpoint: PathBuf) -> Result<(), Stri
     Ok(())
 }
 
+struct BoundedJson {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for BoundedJson {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control frame exceeds limit",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_json<T: Serialize>(value: &T, limit: usize) -> io::Result<Vec<u8>> {
+    let mut writer = BoundedJson {
+        bytes: Vec::new(),
+        limit: limit - 1,
+    };
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    writer.bytes.push(b'\n');
+    Ok(writer.bytes)
+}
+
+#[derive(Debug)]
+pub(crate) enum ClientDeadlineError {
+    Elapsed,
+    Other(String),
+}
+
+impl std::fmt::Display for ClientDeadlineError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Elapsed => formatter.write_str("control request deadline elapsed"),
+            Self::Other(error) => formatter.write_str(error),
+        }
+    }
+}
+
+fn client_deadline(deadline: Instant) -> Result<(), ClientDeadlineError> {
+    if Instant::now() >= deadline {
+        Err(ClientDeadlineError::Elapsed)
+    } else {
+        Ok(())
+    }
+}
+
+fn client_io_error(context: &str, error: io::Error, deadline: Instant) -> ClientDeadlineError {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    ) && Instant::now() >= deadline
+    {
+        ClientDeadlineError::Elapsed
+    } else {
+        ClientDeadlineError::Other(format!("{context}: {error}"))
+    }
+}
+
+pub(crate) fn send_automation_request(
+    path: &Path,
+    request: &AutomationRequestEnvelope,
+) -> Result<AutomationReplyEnvelope, String> {
+    send_automation_request_until(path, request, Instant::now() + CLIENT_TIMEOUT)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn send_automation_request_until(
+    path: &Path,
+    request: &AutomationRequestEnvelope,
+    deadline: Instant,
+) -> Result<AutomationReplyEnvelope, ClientDeadlineError> {
+    client_deadline(deadline)?;
+    validate_automation_request(request).map_err(ClientDeadlineError::Other)?;
+    let limit = if request.kind == "prompt" {
+        MAX_PROMPT_FRAME_BYTES
+    } else {
+        MAX_FRAME_BYTES
+    };
+    client_deadline(deadline)?;
+    let bytes = bounded_json(request, limit).map_err(|error| {
+        ClientDeadlineError::Other(format!("automation request exceeds frame limit: {error}"))
+    })?;
+    client_deadline(deadline)?;
+    let mut stream = connect_private_socket_io(path, deadline)
+        .map_err(|error| client_io_error("cannot connect to control socket", error, deadline))?;
+    client_deadline(deadline)?;
+    write_frame(&mut stream, &bytes, deadline)
+        .map_err(|error| client_io_error("cannot send automation request", error, deadline))?;
+    let frame = read_client_frame(&mut stream, deadline, MAX_AUTOMATION_REPLY_BYTES)
+        .map_err(|error| client_io_error("cannot read automation response", error, deadline))?;
+    client_deadline(deadline)?;
+    reject_duplicate_json_keys(&frame).map_err(|error| {
+        ClientDeadlineError::Other(format!("invalid automation response: {error}"))
+    })?;
+    let reply: AutomationReplyEnvelope = serde_json::from_slice(&frame).map_err(|error| {
+        ClientDeadlineError::Other(format!("invalid automation response: {error}"))
+    })?;
+    validate_automation_reply(&reply, request).map_err(ClientDeadlineError::Other)?;
+    client_deadline(deadline)?;
+    Ok(reply)
+}
+
+fn validate_automation_reply(
+    reply: &AutomationReplyEnvelope,
+    request: &AutomationRequestEnvelope,
+) -> Result<(), String> {
+    let identity = request
+        .request
+        .as_ref()
+        .map(|domain| (domain.instance_id.as_str(), domain.operation_id.as_str()))
+        .or_else(|| {
+            request
+                .instance_id
+                .as_deref()
+                .zip(request.operation_id.as_deref())
+        });
+    let valid = reply.version == PROTOCOL_VERSION
+        && reply.kind == "automation"
+        && if reply.ok {
+            reply.error.is_none()
+                && reply.operation.as_ref().is_some_and(|operation| {
+                    reply.instance_id.as_deref() == Some(operation.instance_id.as_str())
+                        && identity
+                            == Some((
+                                operation.instance_id.as_str(),
+                                operation.operation_id.as_str(),
+                            ))
+                })
+        } else {
+            reply.error.as_ref().is_some_and(|error| !error.is_empty())
+                && reply.instance_id.is_none()
+                && reply.operation.is_none()
+        };
+    if valid {
+        Ok(())
+    } else {
+        Err("invalid automation response fields".to_owned())
+    }
+}
+
+pub(crate) fn send_sessions_request(
+    path: &Path,
+    request: &SessionsRequestEnvelope,
+) -> Result<SessionsReplyEnvelope, String> {
+    validate_sessions_request(request)?;
+    let bytes = bounded_json(request, MAX_FRAME_BYTES)
+        .map_err(|error| format!("sessions request exceeds frame limit: {error}"))?;
+    let deadline = Instant::now() + CLIENT_TIMEOUT;
+    let mut stream = connect_private_socket(path, deadline)?;
+    write_frame(&mut stream, &bytes, deadline)
+        .map_err(|error| format!("cannot send sessions request: {error}"))?;
+    let frame = read_client_frame(&mut stream, deadline, MAX_SESSION_FRAME_BYTES)
+        .map_err(|error| format!("cannot read sessions response: {error}"))?;
+    reject_duplicate_json_keys(&frame)
+        .map_err(|error| format!("invalid sessions response: {error}"))?;
+    let reply: SessionsReplyEnvelope = serde_json::from_slice(&frame)
+        .map_err(|error| format!("invalid sessions response: {error}"))?;
+    validate_sessions_reply(&reply, request)?;
+    Ok(reply)
+}
+
+fn validate_sessions_reply(
+    reply: &SessionsReplyEnvelope,
+    request: &SessionsRequestEnvelope,
+) -> Result<(), String> {
+    let expected = request
+        .page
+        .as_ref()
+        .map(|page| page.instance_id.as_str())
+        .or_else(|| {
+            request
+                .identity
+                .as_ref()
+                .map(|identity| identity.instance_id.as_str())
+        });
+    let actual = reply
+        .result
+        .as_ref()
+        .and_then(|value| {
+            if request.command == "list" {
+                value.get("instance_id")
+            } else {
+                value.get("key").and_then(|key| key.get("instance_id"))
+            }
+        })
+        .and_then(Value::as_str);
+    let valid = reply.version == PROTOCOL_VERSION
+        && reply.kind == "sessions"
+        && if reply.ok {
+            reply.error.is_none() && expected == actual
+        } else {
+            reply.error.as_ref().is_some_and(|error| !error.is_empty()) && reply.result.is_none()
+        };
+    if valid {
+        Ok(())
+    } else {
+        Err("invalid sessions response fields".to_owned())
+    }
+}
+
 pub fn send_command(
     socket_path: &Path,
     command: &str,
@@ -1114,37 +2064,128 @@ pub fn send_command(
         .map_err(|error| format!("invalid control response: {error}"))
 }
 
+pub(crate) fn send_presentation_request(
+    socket_path: &Path,
+    request: PresentationRequestEnvelope,
+    timeout: Duration,
+) -> Result<PresentationReplyEnvelope, String> {
+    if socket_path.as_os_str().is_empty() {
+        return Err("control socket path is empty".to_owned());
+    }
+    validate_presentation_request(&request)?;
+    let mut bytes = serde_json::to_vec(&request)
+        .map_err(|error| format!("cannot encode presentation request: {error}"))?;
+    if bytes.len() + 1 > MAX_FRAME_BYTES {
+        return Err("presentation request exceeds frame limit".to_owned());
+    }
+    bytes.push(b'\n');
+    let deadline = Instant::now() + timeout;
+    let mut stream = connect_private_socket(socket_path, deadline)?;
+    write_frame(&mut stream, &bytes, deadline)
+        .map_err(|error| format!("cannot send presentation request: {error}"))?;
+    let mut frame = [0u8; MAX_FRAME_BYTES];
+    let length = read_frame(&mut stream, &mut frame, deadline)
+        .map_err(|error| format!("cannot read presentation response: {error}"))?;
+    decode_presentation_reply(&frame[..length], &request.command)
+}
+
+fn decode_presentation_reply(
+    frame: &[u8],
+    command: &str,
+) -> Result<PresentationReplyEnvelope, String> {
+    reject_duplicate_json_keys(frame)
+        .map_err(|error| format!("invalid presentation response: {error}"))?;
+    let response_kind: FrameKind = serde_json::from_slice(frame)
+        .map_err(|error| format!("invalid presentation response: {error}"))?;
+    if response_kind.kind.is_none() {
+        return Err(
+            "running daemon does not support presentation automation; restart the daemon"
+                .to_owned(),
+        );
+    }
+    let reply: PresentationReplyEnvelope = serde_json::from_slice(frame)
+        .map_err(|error| format!("invalid presentation response: {error}"))?;
+    if reply.version != PRESENTATION_PROTOCOL_VERSION || reply.kind != "presentation" {
+        return Err("unsupported presentation protocol response".to_owned());
+    }
+    let valid = if reply.ok {
+        reply.error.is_none()
+            && reply.instance_id.as_ref().is_some_and(|id| !id.is_empty())
+            && match command {
+                "get" => {
+                    reply.snapshot.as_ref().is_some_and(|snapshot| {
+                        reply.instance_id.as_deref() == Some(snapshot.instance_id.as_str())
+                    }) && reply.operation.is_none()
+                }
+                "set" | "reset" | "status" => {
+                    reply.operation.as_ref().is_some_and(|operation| {
+                        reply.instance_id.as_deref() == Some(operation.instance_id.as_str())
+                    }) && reply.snapshot.is_none()
+                }
+                _ => false,
+            }
+    } else {
+        reply.error.as_ref().is_some_and(|error| !error.is_empty())
+            && reply.instance_id.is_none()
+            && reply.snapshot.is_none()
+            && reply.operation.is_none()
+    };
+    if !valid {
+        return Err("invalid presentation response fields".to_owned());
+    }
+    Ok(reply)
+}
+
 fn send_pack_envelope(
     socket_path: &Path,
     envelope: PackRequestEnvelope,
     timeout: Duration,
 ) -> Result<PackReplyEnvelope, String> {
+    send_pack_envelope_until(socket_path, envelope, Instant::now() + timeout)
+        .map_err(|error| error.to_string())
+}
+
+fn send_pack_envelope_until(
+    socket_path: &Path,
+    envelope: PackRequestEnvelope,
+    deadline: Instant,
+) -> Result<PackReplyEnvelope, ClientDeadlineError> {
+    client_deadline(deadline)?;
     if socket_path.as_os_str().is_empty() {
-        return Err("control socket path is empty".to_owned());
+        return Err(ClientDeadlineError::Other(
+            "control socket path is empty".to_owned(),
+        ));
     }
     if envelope.kind != "pack" {
-        return Err("pack request kind is invalid".to_owned());
+        return Err(ClientDeadlineError::Other(
+            "pack request kind is invalid".to_owned(),
+        ));
     }
     if let Some(request) = envelope.request.as_ref() {
-        validate_pack_request(request)?;
+        validate_pack_request(request).map_err(ClientDeadlineError::Other)?;
     }
-    let deadline = Instant::now() + timeout;
-    let mut stream = connect_private_socket(socket_path, deadline)?;
-    let mut bytes = serde_json::to_vec(&envelope).map_err(|error| error.to_string())?;
-    if bytes.len() + 1 > MAX_FRAME_BYTES {
-        return Err("pack request exceeds frame limit".to_owned());
-    }
-    bytes.push(b'\n');
+    client_deadline(deadline)?;
+    let bytes = bounded_json(&envelope, MAX_FRAME_BYTES).map_err(|error| {
+        ClientDeadlineError::Other(format!("pack request exceeds frame limit: {error}"))
+    })?;
+    client_deadline(deadline)?;
+    let mut stream = connect_private_socket_io(socket_path, deadline)
+        .map_err(|error| client_io_error("cannot connect to control socket", error, deadline))?;
+    client_deadline(deadline)?;
     write_frame(&mut stream, &bytes, deadline)
-        .map_err(|error| format!("cannot send pack request: {error}"))?;
+        .map_err(|error| client_io_error("cannot send pack request", error, deadline))?;
     let mut response = [0u8; MAX_FRAME_BYTES];
     let length = read_frame(&mut stream, &mut response, deadline)
-        .map_err(|error| format!("cannot read pack response: {error}"))?;
+        .map_err(|error| client_io_error("cannot read pack response", error, deadline))?;
+    client_deadline(deadline)?;
     let response: PackReplyEnvelope = serde_json::from_slice(&response[..length])
-        .map_err(|error| format!("invalid pack response: {error}"))?;
+        .map_err(|error| ClientDeadlineError::Other(format!("invalid pack response: {error}")))?;
     if response.version != PACK_PROTOCOL_VERSION || response.kind != "pack" {
-        return Err("invalid pack response envelope".to_owned());
+        return Err(ClientDeadlineError::Other(
+            "invalid pack response envelope".to_owned(),
+        ));
     }
+    client_deadline(deadline)?;
     Ok(response)
 }
 
@@ -1252,10 +2293,22 @@ pub fn send_pack_status(
     operation_id: &str,
     timeout: Duration,
 ) -> Result<PackReplyEnvelope, String> {
+    send_pack_status_until(socket_path, operation_id, Instant::now() + timeout)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn send_pack_status_until(
+    socket_path: &Path,
+    operation_id: &str,
+    deadline: Instant,
+) -> Result<PackReplyEnvelope, ClientDeadlineError> {
+    client_deadline(deadline)?;
     if operation_id.is_empty() {
-        return Err("pack operation ID is empty".to_owned());
+        return Err(ClientDeadlineError::Other(
+            "pack operation ID is empty".to_owned(),
+        ));
     }
-    send_pack_envelope(
+    send_pack_envelope_until(
         socket_path,
         PackRequestEnvelope {
             version: PACK_PROTOCOL_VERSION,
@@ -1266,7 +2319,7 @@ pub fn send_pack_status(
             offset: None,
             limit: None,
         },
-        timeout,
+        deadline,
     )
 }
 
@@ -1336,24 +2389,31 @@ fn bind_private_socket(path: &Path) -> Result<UnixListener, String> {
 }
 
 fn connect_private_socket(path: &Path, deadline: Instant) -> Result<UnixStream, String> {
+    connect_private_socket_io(path, deadline).map_err(|error| {
+        format!(
+            "cannot connect to control socket {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn connect_private_socket_io(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
     if let Ok(metadata) = fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink()
             || !metadata.file_type().is_socket()
             || metadata.uid() != lifecycle::effective_uid()
             || metadata.permissions().mode() & 0o777 != SOCKET_MODE
         {
-            return Err(format!(
-                "control socket {} is not a private user socket",
-                path.display()
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "control socket {} is not a private user socket",
+                    path.display()
+                ),
             ));
         }
     }
-    socket::connect(path, deadline).map_err(|error| {
-        format!(
-            "cannot connect to control socket {}: {error}",
-            path.display()
-        )
-    })
+    socket::connect(path, deadline)
 }
 
 fn is_stale_socket_error(error: &str) -> bool {
@@ -1404,6 +2464,64 @@ fn write_response(
     write_frame(stream, &bytes, deadline)
 }
 
+fn write_presentation_response(
+    stream: &mut UnixStream,
+    response: &PresentationReplyEnvelope,
+    deadline: Instant,
+) -> io::Result<()> {
+    let bytes = match presentation_response_json(response) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => presentation_response_json(
+            &presentation_error("presentation response exceeds frame limit".to_owned()),
+        )?,
+        Err(error) => return Err(error),
+    };
+    write_frame(stream, &bytes, deadline)
+}
+
+fn write_automation_response(
+    stream: &mut UnixStream,
+    response: &AutomationReplyEnvelope,
+    deadline: Instant,
+) -> io::Result<()> {
+    let bytes = match bounded_json(response, MAX_AUTOMATION_REPLY_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => bounded_json(
+            &automation_error("automation response exceeds 68KiB frame limit".to_owned()),
+            MAX_AUTOMATION_REPLY_BYTES,
+        )?,
+        Err(error) => return Err(error),
+    };
+    write_frame(stream, &bytes, deadline)
+}
+
+fn write_sessions_response(
+    stream: &mut UnixStream,
+    response: &SessionsReplyEnvelope,
+    deadline: Instant,
+) -> io::Result<()> {
+    let bytes = match bounded_json(response, MAX_SESSION_FRAME_BYTES) {
+        Ok(bytes) => bytes,
+        // A successful list has already been byte-budgeted; a mismatch is an
+        // internal failure, never a generic wire error hiding skipped rows.
+        Err(error)
+            if response.ok
+                && response
+                    .result
+                    .as_ref()
+                    .is_some_and(|page| page.get("rows").is_some()) =>
+        {
+            return Err(error);
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => bounded_json(
+            &sessions_error("sessions response exceeds 512KiB frame limit".to_owned()),
+            MAX_SESSION_FRAME_BYTES,
+        )?,
+        Err(error) => return Err(error),
+    };
+    write_frame(stream, &bytes, deadline)
+}
+
 fn write_pack_response(
     stream: &mut UnixStream,
     response: &PackReplyEnvelope,
@@ -1423,6 +2541,336 @@ fn lock_unpoisoned<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
 mod tests {
     use super::*;
     use crate::character_types::{CharacterRef, PackRecord};
+    #[test]
+    fn typed_requests_reject_duplicates_unknowns_null_combinations_and_wrong_kinds() {
+        for frame in [
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"preferences_get","surprise":true}}}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"preferences_get"}},"instance_id":null}"#,
+            r#"{"version":1,"kind":"automation","command":"status","instance_id":"i","operation_id":"o","request":null}"#,
+            r#"{"version":1,"kind":"automation","command":"status","instance_id":"i","instance_id":"j","operation_id":"o"}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"session_prompt","key":{"instance_id":"i","source_id":1,"generation":1,"terminal_id":"t"},"text":"hi"}}}"#,
+            r#"{"version":1,"kind":"prompt","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"preferences_get"}}}"#,
+            r#"{"version":1,"kind":"prompt","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"dialogue_list"}}}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"dialogue_list","unexpected":true}}}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"dialogue_list","action":"worktree_remove","token":"t"}}}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"worktree_remove","token":"t","unexpected":true}}}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"worktree_inspect","key":{"instance_id":"i","source_id":1,"generation":1,"terminal_id":"t","unexpected":true}}}}"#,
+            r#"{"version":1,"kind":"prompt","command":"status","instance_id":"i","operation_id":"o"}"#,
+            r#"{"version":1,"kind":"automation","command":"request","request":{"instance_id":"i","operation_id":"o","action":{"action":"preferences_get"},"unexpected":1}}"#,
+        ] {
+            assert!(
+                decode_automation_request(frame.as_bytes()).is_err(),
+                "{frame}"
+            );
+        }
+        for action in [
+            r#"{"action":"dialogue_list"}"#,
+            r#"{"action":"worktree_remove","token":"opaque"}"#,
+            r#"{"action":"worktree_inspect","key":{"instance_id":"i","source_id":1,"generation":1,"terminal_id":"t"}}"#,
+        ] {
+            let frame = format!(
+                r#"{{"version":1,"kind":"automation","command":"request","request":{{"instance_id":"i","operation_id":"o","action":{action}}}}}"#
+            );
+            assert!(decode_automation_request(frame.as_bytes()).is_ok());
+        }
+        for frame in [
+            r#"{"version":1,"kind":"sessions","command":"detail","identity":null}"#,
+            r#"{"version":1,"kind":"sessions","command":"detail","identity":{"instance_id":"i","source_id":1,"generation":1,"terminal_id":"t","unknown":1}}"#,
+            r#"{"version":1,"kind":"sessions","command":"detail","identity":{"instance_id":"i","source_id":1,"generation":1,"terminal_id":"t"},"page":null}"#,
+            r#"{"version":1,"kind":"sessions","command":"list","page":{"instance_id":"i","filter":"all","cursor":null,"limit":129}}"#,
+            r#"{"version":1,"kind":"sessions","command":"list","page":{"instance_id":"i","filter":"all","cursor":null,"limit":32},"page":{"instance_id":"i","filter":"all","cursor":null,"limit":32}}"#,
+        ] {
+            assert!(
+                decode_sessions_request(frame.as_bytes()).is_err(),
+                "{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_boundary_and_session_response_are_bounded() {
+        let prompt = AutomationRequestEnvelope {
+            version: 1,
+            kind: "prompt".into(),
+            command: "request".into(),
+            request: Some(DomainRequest {
+                instance_id: "instance".into(),
+                operation_id: "op".into(),
+                action: DomainAction::SessionPrompt {
+                    key: SessionIdentity {
+                        instance_id: "instance".into(),
+                        source_id: 1,
+                        generation: 2,
+                        terminal_id: "terminal".into(),
+                    },
+                    text: "a".repeat(512 * 1024),
+                },
+            }),
+            instance_id: None,
+            operation_id: None,
+        };
+        let encoded =
+            bounded_json(&prompt, MAX_PROMPT_FRAME_BYTES).expect("512KiB raw prompt fits envelope");
+        assert!(encoded.len() > MAX_FRAME_BYTES);
+        assert!(bounded_json(&prompt, MAX_FRAME_BYTES).is_err());
+        assert!(matches!(
+            decode_automation_request(&encoded[..encoded.len() - 1])
+                .unwrap()
+                .request
+                .unwrap()
+                .action,
+            DomainAction::SessionPrompt { .. }
+        ));
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let expected_len = encoded.len() - 1;
+        let sending = thread::spawn(move || writer.write_all(&encoded));
+        let received = read_client_frame(
+            &mut reader,
+            Instant::now() + Duration::from_secs(5),
+            MAX_PROMPT_FRAME_BYTES + 1,
+        )
+        .unwrap();
+        assert_eq!(received.len(), expected_len);
+        sending.join().unwrap().unwrap();
+        let mut multiline = prompt;
+        if let Some(DomainRequest {
+            action: DomainAction::SessionPrompt { text, .. },
+            ..
+        }) = multiline.request.as_mut()
+        {
+            *text = "line one\nline two\r\n".repeat(10_000);
+        }
+        let encoded = bounded_json(&multiline, MAX_PROMPT_FRAME_BYTES).unwrap();
+        assert!(encoded.len() > MAX_FRAME_BYTES);
+        assert!(decode_automation_request(&encoded[..encoded.len() - 1]).is_ok());
+        let reply = SessionsReplyEnvelope {
+            version: 1,
+            kind: "sessions".into(),
+            ok: true,
+            error: None,
+            result: Some(Value::String("x".repeat(MAX_SESSION_FRAME_BYTES))),
+        };
+        assert!(bounded_json(&reply, MAX_SESSION_FRAME_BYTES).is_err());
+        assert!(bounded_json(
+            &sessions_error("sessions response exceeds 512KiB frame limit".into()),
+            MAX_SESSION_FRAME_BYTES
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn bounded_reader_does_not_extend_past_prompt_allowance() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let sending = thread::spawn(move || {
+            let bytes = vec![b'x'; MAX_PROMPT_FRAME_BYTES + 1024];
+            let _ = writer.write_all(&bytes);
+        });
+        assert!(read_client_frame(
+            &mut reader,
+            Instant::now() + Duration::from_secs(5),
+            MAX_PROMPT_FRAME_BYTES + 1
+        )
+        .is_err());
+        drop(reader);
+        sending.join().unwrap();
+    }
+
+    #[test]
+    fn reply_identity_and_connection_admission_boundaries() {
+        let request = AutomationRequestEnvelope {
+            version: 1,
+            kind: "automation".into(),
+            command: "status".into(),
+            request: None,
+            instance_id: Some("current".into()),
+            operation_id: Some("op".into()),
+        };
+        let reply = AutomationReplyEnvelope {
+            version: 1,
+            kind: "automation".into(),
+            ok: true,
+            error: None,
+            instance_id: Some("stale".into()),
+            operation: Some(DomainOperation {
+                instance_id: "stale".into(),
+                operation_id: "op".into(),
+                kind: "preferences_get".into(),
+                state: crate::automation::DomainOperationState::Accepted,
+                committed: false,
+                native_applied: false,
+                result: None,
+                error_code: None,
+                error: None,
+            }),
+        };
+        assert!(validate_automation_reply(&reply, &request).is_err());
+        let session_request = SessionsRequestEnvelope {
+            version: 1,
+            kind: "sessions".into(),
+            command: "detail".into(),
+            page: None,
+            identity: Some(SessionIdentity {
+                instance_id: "current".into(),
+                source_id: 1,
+                generation: 2,
+                terminal_id: "t".into(),
+            }),
+        };
+        let session_reply = SessionsReplyEnvelope {
+            version: 1,
+            kind: "sessions".into(),
+            ok: true,
+            error: None,
+            result: Some(
+                serde_json::json!({"key":{"instance_id":"stale","source_id":1,"generation":2,"terminal_id":"t"}}),
+            ),
+        };
+        assert!(validate_sessions_reply(&session_reply, &session_request).is_err());
+        let mut active = 0;
+        for _ in 0..MAX_CONNECTIONS {
+            assert!(reserve_client_slot(&mut active));
+        }
+        assert_eq!(active, 32);
+        assert!(!reserve_client_slot(&mut active));
+        assert_eq!(active, 32);
+    }
+
+    #[test]
+    fn automation_replies_retain_large_committed_settings_without_relaxing_requests() {
+        let reply = AutomationReplyEnvelope {
+            version: 1,
+            kind: "automation".into(),
+            ok: true,
+            error: None,
+            instance_id: Some("current".into()),
+            operation: Some(DomainOperation {
+                instance_id: "current".into(),
+                operation_id: "op".into(),
+                kind: "preferences_get".into(),
+                state: crate::automation::DomainOperationState::Applied,
+                committed: true,
+                native_applied: true,
+                result: Some(Value::String("a".repeat(64 * 1024 - 2))),
+                error_code: None,
+                error: None,
+            }),
+        };
+        let encoded = bounded_json(&reply, MAX_AUTOMATION_REPLY_BYTES)
+            .expect("large settings snapshot fits reply");
+        assert!(encoded.len() > MAX_FRAME_BYTES);
+        assert!(bounded_json(&reply, MAX_FRAME_BYTES).is_err());
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        let sending = thread::spawn(move || writer.write_all(&encoded));
+        let received = read_client_frame(
+            &mut reader,
+            Instant::now() + Duration::from_secs(5),
+            MAX_AUTOMATION_REPLY_BYTES,
+        )
+        .unwrap();
+        assert!(serde_json::from_slice::<AutomationReplyEnvelope>(&received).is_ok());
+        sending.join().unwrap().unwrap();
+        let mut oversized = reply;
+        oversized.operation.as_mut().unwrap().result =
+            Some(Value::String("a".repeat(MAX_AUTOMATION_REPLY_BYTES)));
+        assert!(bounded_json(&oversized, MAX_AUTOMATION_REPLY_BYTES).is_err());
+    }
+
+    #[test]
+    fn presentation_wire_rejects_bad_fields_before_submission() {
+        for frame in [
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":"i","operation_id":"o","patch":{"visible":true,"visible":false}}"#,
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":"i","operation_id":"o","patch":{"unknown":true}}"#,
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":"i","operation_id":"o","patch":{"scale":"big"}}"#,
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":"i","operation_id":"o","patch":null}"#,
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":"i","operation_id":"o","expected_revision":null,"patch":{}}"#,
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":0,"operation_id":"o","patch":{}}"#,
+            r#"{"version":1,"kind":"presentation","command":"set","instance_id":"i","operation_id":"o","expected_revision":-1,"patch":{}}"#,
+            r#"{"version":1,"kind":"presentation","command":"reset","instance_id":"i","operation_id":"o","patch":{}}"#,
+            r#"{"version":1,"kind":"presentation","command":"reset","instance_id":"i","operation_id":"o","patch":null}"#,
+            r#"{"version":1,"kind":"presentation","command":"status","instance_id":"i","operation_id":"o","expected_revision":0}"#,
+            r#"{"version":1,"kind":"presentation","command":"status","instance_id":"","operation_id":"o"}"#,
+            r#"{"version":1,"kind":"presentation","command":"get","instance_id":"i"}"#,
+            r#"{"version":1,"kind":"presentation","command":"get","instance_id":null}"#,
+            r#"{"version":1,"kind":"presentation","command":"launch"}"#,
+            r#"{"version":2,"kind":"presentation","command":"get"}"#,
+        ] {
+            assert!(
+                decode_presentation_request(frame.as_bytes()).is_err(),
+                "{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_admission_and_mailbox_read_only_status() {
+        use crate::automation::{new_automation, OperationState, PresentationTarget};
+        let mut state = AppState::new();
+        assert!(presentation_admission(&state, false, false).is_err());
+        state.set_ui_ready();
+        assert!(presentation_admission(&state, false, false).is_err());
+        let automation = new_automation(PresentationTarget::from_scene(&state.scene()), None)
+            .expect("create instance ID");
+        state.set_automation(Arc::clone(&automation));
+        assert!(presentation_admission(&state, true, true).is_err());
+        assert!(presentation_admission(&state, true, false).is_ok());
+        let mut ledger = lock_automation(&automation);
+        let instance = ledger.instance().to_owned();
+        let get =
+            decode_presentation_request(br#"{"version":1,"kind":"presentation","command":"get"}"#)
+                .expect("get request");
+        let get_reply = presentation_ledger_reply(&mut ledger, get).expect("get reply");
+        assert_eq!(get_reply.snapshot.as_ref().expect("snapshot").revision, 0);
+        assert_eq!(get_reply.instance_id.as_deref(), Some(instance.as_str()));
+        let set = format!(
+            r#"{{"version":1,"kind":"presentation","command":"set","instance_id":"{instance}","operation_id":"op","expected_revision":0,"patch":{{"visible":false}}}}"#
+        );
+        let set = decode_presentation_request(set.as_bytes()).expect("set request");
+        let stale = format!(
+            r#"{{"version":1,"kind":"presentation","command":"set","instance_id":"{instance}","operation_id":"stale","expected_revision":1,"patch":{{"visible":false}}}}"#
+        );
+        let stale = decode_presentation_request(stale.as_bytes()).expect("well-shaped request");
+        assert!(presentation_ledger_reply(&mut ledger, stale).is_err());
+        let wrong_instance = decode_presentation_request(
+            br#"{"version":1,"kind":"presentation","command":"reset","instance_id":"previous-daemon","operation_id":"old"}"#,
+        ).expect("well-shaped request");
+        assert!(presentation_ledger_reply(&mut ledger, wrong_instance).is_err());
+        assert_eq!(ledger.snapshot().revision, 0);
+        let accepted = presentation_ledger_reply(&mut ledger, set).expect("accepted request");
+        assert!(matches!(
+            accepted.operation.expect("operation").state,
+            OperationState::Accepted
+        ));
+        assert_eq!(ledger.snapshot().revision, 0);
+        assert!(ledger.snapshot().desired.visible);
+        let status = format!(
+            r#"{{"version":1,"kind":"presentation","command":"status","instance_id":"{instance}","operation_id":"op"}}"#
+        );
+        let status = decode_presentation_request(status.as_bytes()).expect("status request");
+        let status_reply = presentation_ledger_reply(&mut ledger, status).expect("status reply");
+        assert!(matches!(
+            status_reply.operation.expect("operation").state,
+            OperationState::Accepted
+        ));
+        assert_eq!(ledger.drain_queued().len(), 1);
+        state.request_shutdown();
+        assert!(presentation_admission(&state, false, true).is_err());
+        assert!(presentation_admission(&state, false, false).is_ok());
+    }
+
+    #[test]
+    fn presentation_reply_is_bounded_and_old_daemon_explicit() {
+        let reply = presentation_error("x".repeat(MAX_FRAME_BYTES));
+        assert!(presentation_response_json(&reply).is_err());
+        let error = decode_presentation_reply(
+            br#"{"type":"status","version":1,"command":"unknown","ok":false}"#,
+            "get",
+        )
+        .unwrap_err();
+        assert!(error.contains("does not support presentation automation"));
+        let bad = br#"{"version":1,"kind":"presentation","ok":true,"error":null,"instance_id":"i","snapshot":null,"operation":null}"#;
+        assert!(decode_presentation_reply(bad, "get").is_err());
+    }
+
     #[test]
     fn lifecycle_frames_reject_duplicate_unknown_and_wrong_typed_mutations() {
         for frame in [
@@ -1606,5 +3054,363 @@ mod tests {
             error: None,
         };
         assert!(pack_response_json(&response).is_err());
+    }
+    fn page_reply(rows: Vec<Value>, has_more: bool) -> SessionsReplyEnvelope {
+        let next_cursor = if has_more {
+            let key = rows.last().unwrap().get("key").unwrap();
+            Some(SessionPageCursor {
+                instance_id: "daemon".into(),
+                revision: 91,
+                filter: SessionFilter::Working,
+                position: SessionCursor {
+                    source_id: 7,
+                    terminal_id: key["terminal_id"].as_str().unwrap().into(),
+                },
+            })
+        } else {
+            None
+        };
+        SessionsReplyEnvelope {
+            version: PROTOCOL_VERSION,
+            kind: "sessions".into(),
+            ok: true,
+            error: None,
+            result: Some(serde_json::json!({
+                "instance_id": "daemon",
+                "revision": 91,
+                "filter": "working",
+                "total": 151,
+                "matched": 140,
+                "status_summary": {"working": 140, "idle": 11},
+                "rows": rows,
+                "next_cursor": next_cursor,
+            })),
+        }
+    }
+
+    fn page_row(index: usize, label: &str) -> Value {
+        serde_json::json!({
+            "key": {"instance_id":"daemon", "source_id":7, "generation":2,
+                    "terminal_id":format!("term-{index:04}\\/雪\n")},
+            "source_label":label,
+            "metadata":{"title":"quoted \" NUL \u{0} 雪", "agent":"agent"},
+            "availability":"live",
+        })
+    }
+
+    #[test]
+    fn session_wire_pages_collect_every_row_with_actual_escaped_byte_budget() {
+        let label = "a".repeat(4096);
+        let all: Vec<_> = (0..140).map(|index| page_row(index, &label)).collect();
+        let mut collected = Vec::new();
+        let mut first_page_len = 0;
+        while collected.len() < all.len() {
+            let start = collected.len();
+            let end = (start + 128).min(all.len());
+            let reply = budget_sessions_list_response(page_reply(
+                all[start..end].to_vec(),
+                end < all.len(),
+            ));
+            assert!(reply.ok, "{:?}", reply.error);
+            let frame = bounded_json(&reply, MAX_SESSION_FRAME_BYTES).unwrap();
+            assert!(frame.len() <= MAX_SESSION_FRAME_BYTES);
+            let page = reply.result.unwrap();
+            assert_eq!(page["matched"], 140);
+            assert_eq!(page["total"], 151);
+            assert_eq!(page["revision"], 91);
+            assert_eq!(page["filter"], "working");
+            assert_eq!(page["status_summary"]["idle"], 11);
+            let rows = page["rows"].as_array().unwrap();
+            assert!(!rows.is_empty());
+            if start == 0 {
+                first_page_len = rows.len();
+            }
+            for row in rows {
+                assert_eq!(row, &all[collected.len()]);
+                collected.push(row["key"]["terminal_id"].as_str().unwrap().to_owned());
+            }
+            if collected.len() < all.len() {
+                assert_eq!(
+                    page["next_cursor"]["position"]["terminal_id"],
+                    collected.last().unwrap().as_str()
+                );
+            } else {
+                assert!(page["next_cursor"].is_null());
+            }
+        }
+        assert!(first_page_len > 0 && first_page_len < 128);
+        assert_eq!(collected.len(), 140);
+    }
+
+    #[test]
+    fn session_frame_exact_boundary_and_oversize_row_have_no_empty_continuation() {
+        let plain = page_reply(vec![page_row(0, "")], false);
+        let overhead = bounded_json(&plain, MAX_SESSION_FRAME_BYTES).unwrap().len();
+        let label = "a".repeat(MAX_SESSION_FRAME_BYTES - overhead);
+        let exact = budget_sessions_list_response(page_reply(vec![page_row(0, &label)], false));
+        assert!(exact.ok);
+        assert_eq!(
+            bounded_json(&exact, MAX_SESSION_FRAME_BYTES).unwrap().len(),
+            MAX_SESSION_FRAME_BYTES
+        );
+        let oversized = budget_sessions_list_response(page_reply(
+            vec![page_row(0, &format!("{label}a"))],
+            false,
+        ));
+        assert!(!oversized.ok);
+        assert!(oversized.error.unwrap().contains("session row exceeds"));
+        // The first row fits without a cursor, but cannot fit if another row
+        // demands a continuation. It must fail explicitly rather than spin.
+        let required_cursor = budget_sessions_list_response(page_reply(
+            vec![page_row(0, &label), page_row(1, "next")],
+            false,
+        ));
+        assert!(!required_cursor.ok);
+        assert!(required_cursor
+            .error
+            .unwrap()
+            .contains("session row exceeds"));
+        let escaped = page_row(0, &"\\\"\n\u{0}雪".repeat(30_000));
+        let reply = budget_sessions_list_response(page_reply(vec![escaped], false));
+        assert!(reply.ok);
+        assert!(bounded_json(&reply, MAX_SESSION_FRAME_BYTES).is_ok());
+    }
+
+    #[test]
+    fn escaped_long_cursor_is_counted_at_the_emitted_prefix_boundary() {
+        let mut first = page_row(0, "");
+        first["key"]["terminal_id"] = Value::String("id\\\"\u{0}雪".repeat(1400));
+        let overhead = bounded_json(
+            &page_reply(vec![first.clone()], true),
+            MAX_SESSION_FRAME_BYTES,
+        )
+        .unwrap()
+        .len();
+        let mut over = first.clone();
+        first["source_label"] = Value::String("a".repeat(MAX_SESSION_FRAME_BYTES - overhead));
+        over["source_label"] = Value::String("a".repeat(MAX_SESSION_FRAME_BYTES - overhead + 1));
+        // Without a continuation cursor the short next row can fit, hiding
+        // the escaped first-row cursor cost. Force a continuation by making
+        // the second row too large even when the cursor is omitted.
+        let first_without_cursor =
+            json_byte_count(&page_reply(vec![first.clone()], false)).unwrap() + 1;
+        assert!(first_without_cursor < MAX_SESSION_FRAME_BYTES);
+        let next = page_row(
+            1,
+            &"n".repeat(MAX_SESSION_FRAME_BYTES - first_without_cursor + 1),
+        );
+        assert_eq!(
+            json_byte_count(&page_reply(vec![first.clone()], true)).unwrap() + 1,
+            MAX_SESSION_FRAME_BYTES
+        );
+        assert!(
+            json_byte_count(&page_reply(vec![first.clone(), next.clone()], false)).unwrap() + 1
+                > MAX_SESSION_FRAME_BYTES
+        );
+        assert!(
+            json_byte_count(&page_reply(vec![over.clone()], true)).unwrap() + 1
+                > MAX_SESSION_FRAME_BYTES
+        );
+        assert!(
+            json_byte_count(&page_reply(vec![over.clone()], false)).unwrap() + 1
+                <= MAX_SESSION_FRAME_BYTES
+        );
+        let response =
+            budget_sessions_list_response(page_reply(vec![first.clone(), next.clone()], false));
+        assert!(response.ok, "{:?}", response.error);
+        assert_eq!(
+            bounded_json(&response, MAX_SESSION_FRAME_BYTES)
+                .unwrap()
+                .len(),
+            MAX_SESSION_FRAME_BYTES
+        );
+        let page = response.result.unwrap();
+        assert_eq!(page["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(page["rows"][0], first);
+        assert_eq!(
+            page["next_cursor"]["position"]["terminal_id"],
+            first["key"]["terminal_id"]
+        );
+        let continued = budget_sessions_list_response(page_reply(vec![next.clone()], false));
+        assert!(continued.ok, "{:?}", continued.error);
+        assert!(bounded_json(&continued, MAX_SESSION_FRAME_BYTES).is_ok());
+        let continued_page = continued.result.unwrap();
+        assert_eq!(continued_page["rows"][0], next);
+        assert!(continued_page["next_cursor"].is_null());
+        let too_big = budget_sessions_list_response(page_reply(vec![over, next], false));
+        assert!(!too_big.ok);
+        assert!(too_big.error.unwrap().contains("session row exceeds"));
+    }
+
+    #[test]
+    fn client_deadline_rejects_late_trickled_reply_and_distinguishes_early_errors() {
+        use std::io::Read;
+        let directory = std::env::temp_dir().join(format!(
+            "hw{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("peer.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut byte = [0u8; 1];
+            while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {}
+            stream
+                .write_all(b"{\"version\":1,\"kind\":\"automation\"")
+                .unwrap();
+            thread::sleep(Duration::from_millis(500));
+            let _ = stream.write_all(
+                b",\"ok\":false,\"error\":\"late\",\"instance_id\":null,\"operation\":null}\n",
+            );
+        });
+        let request = AutomationRequestEnvelope {
+            version: PROTOCOL_VERSION,
+            kind: "automation".into(),
+            command: "status".into(),
+            request: None,
+            instance_id: Some("daemon".into()),
+            operation_id: Some("op".into()),
+        };
+        let result = send_automation_request_until(
+            &path,
+            &request,
+            Instant::now() + Duration::from_millis(250),
+        );
+        assert!(matches!(result, Err(ClientDeadlineError::Elapsed)));
+        peer.join().unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&directory).unwrap();
+        assert!(matches!(
+            client_io_error(
+                "read",
+                io::Error::from(io::ErrorKind::WouldBlock),
+                Instant::now() + Duration::from_secs(1)
+            ),
+            ClientDeadlineError::Other(_)
+        ));
+        assert!(matches!(
+            client_io_error(
+                "read",
+                io::Error::from(io::ErrorKind::WouldBlock),
+                Instant::now() - Duration::from_secs(1)
+            ),
+            ClientDeadlineError::Elapsed
+        ));
+    }
+    #[test]
+    fn expired_status_does_not_connect_and_early_protocol_failure_is_not_elapsed() {
+        use std::io::Read;
+        let directory = std::env::temp_dir().join(format!(
+            "hw{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("peer.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let request = AutomationRequestEnvelope {
+            version: PROTOCOL_VERSION,
+            kind: "automation".into(),
+            command: "status".into(),
+            request: None,
+            instance_id: Some("daemon".into()),
+            operation_id: Some("op".into()),
+        };
+        assert!(matches!(
+            send_automation_request_until(
+                &path,
+                &request,
+                Instant::now() - Duration::from_millis(1)
+            ),
+            Err(ClientDeadlineError::Elapsed)
+        ));
+        assert!(matches!(
+            send_pack_status_until(&path, "op", Instant::now() - Duration::from_millis(1)),
+            Err(ClientDeadlineError::Elapsed)
+        ));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        listener.set_nonblocking(false).unwrap();
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut byte = [0u8; 1];
+            while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {}
+            let reply = AutomationReplyEnvelope {
+                version: PROTOCOL_VERSION,
+                kind: "automation".into(),
+                ok: true,
+                error: None,
+                instance_id: Some("wrong".into()),
+                operation: Some(DomainOperation {
+                    instance_id: "wrong".into(),
+                    operation_id: "op".into(),
+                    kind: "preferences_get".into(),
+                    state: crate::automation::DomainOperationState::Accepted,
+                    committed: false,
+                    native_applied: false,
+                    result: None,
+                    error_code: None,
+                    error: None,
+                }),
+            };
+            stream
+                .write_all(&bounded_json(&reply, MAX_AUTOMATION_REPLY_BYTES).unwrap())
+                .unwrap();
+        });
+        let error =
+            send_automation_request_until(&path, &request, Instant::now() + Duration::from_secs(2))
+                .unwrap_err();
+        assert!(matches!(error, ClientDeadlineError::Other(_)));
+        peer.join().unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&directory).unwrap();
+    }
+    #[test]
+    fn pack_status_trickle_cannot_extend_absolute_deadline() {
+        use std::io::Read;
+        let directory = std::env::temp_dir().join(format!(
+            "hw{:x}{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("peer.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut byte = [0u8; 1];
+            while stream.read(&mut byte).unwrap() == 1 && byte[0] != b'\n' {}
+            stream
+                .write_all(b"{\"version\":1,\"kind\":\"pack\"")
+                .unwrap();
+            thread::sleep(Duration::from_millis(500));
+            let _ = stream.write_all(b",\"command\":\"status\",\"ok\":false,\"error\":\"late\"}\n");
+        });
+        let reply = send_pack_status_until(
+            &path,
+            "operation",
+            Instant::now() + Duration::from_millis(250),
+        );
+        assert!(matches!(reply, Err(ClientDeadlineError::Elapsed)));
+        peer.join().unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&directory).unwrap();
     }
 }

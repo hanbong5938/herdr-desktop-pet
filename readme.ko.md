@@ -4,7 +4,9 @@
 
 [English](readme.md) · **한국어** · [버전 문서](docs/releases/README.ko.md) · [릴리스](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **안정판 v0.2.0은 현재 `main` 소스와 기본/사전 빌드 설치 대상입니다.** 네이티브 기능에는 캐릭터·말풍선 독립 표시, 간결한 관찰 설정, 단독·원격 전용 watcher 시작, 문맥 설정, 선택 가능한 메뉴 막대 표시·이미지, 연결 워크트리 삭제, 답장 배치·클립보드 및 잘못된 링크 스캐너 수정이 포함됩니다. 이전 v0.1.11 바이너리와 변경 불가한 beta1/2/3 릴리스는 별도의 과거 채널입니다. [v0.2.0 릴리스 기록](docs/releases/v0.2.0.md) · [이전 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어) · [과거 로컬 프리뷰 안내](docs/migrations/unreleased.ko.md)를 참고하세요. 실제 사전 빌드 공개 여부는 이 소스 안내가 아닌 릴리스 목록의 자산으로 확인하세요.
+> **안정판 v0.2.0은 현재 릴리스와 기본/사전 빌드 설치 대상이며, 이 체크아웃에는 아래 미출시 변경도 있습니다.** 배포된 네이티브 기능에는 캐릭터·말풍선 독립 표시, 간결한 관찰 설정, 단독·원격 전용 watcher 시작, 문맥 설정, 선택 가능한 메뉴 막대 표시·이미지, 연결 워크트리 삭제, 답장 배치·클립보드 및 잘못된 링크 스캐너 수정이 포함됩니다. 이전 v0.1.11 바이너리와 변경 불가한 beta1/2/3 릴리스는 별도의 과거 채널입니다. [v0.2.0 릴리스 기록](docs/releases/v0.2.0.md) · [이전 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어) · [과거 로컬 프리뷰 안내](docs/migrations/unreleased.ko.md)를 참고하세요. 실제 사전 빌드 공개 여부는 이 소스 안내가 아닌 릴리스 목록의 자산으로 확인하세요.
+
+> **이 체크아웃의 미출시 기능:** 새 네이티브 자동화 명령과 대사 초안 충돌 처리 기능은 고정된 공개 v0.2.0·과거 베타 바이너리에는 없습니다. 체크아웃도 버전은 `0.2.0`으로 표시합니다. 반드시 `bash scripts/install.sh --source`로 이 소스를 빌드하세요. 기본 설치/`--prebuilt`는 고정된 공개 릴리스를 사용합니다. 기존 데몬을 먼저 종료하거나 설정·상태 디렉터리를 **둘 다** 일관되게 분리하고, `--version` 대신 `status`의 실제 실행 파일을 확인하세요. [미출시 변경](docs/releases/unreleased.md#current-unreleased-checkout--현재-미출시-체크아웃) · [네이티브 CLI 한국어 계약](docs/cli.md#한국어).
 
 <img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">
 
@@ -126,6 +128,8 @@ bash scripts/install.sh --source
 
 소스 설치 프로그램은 고정된 JavaScript 의존성을 설치하고 Rust 실행 파일을 빌드하며 네이티브 rig 런타임·캐릭터 제작 리소스를 패키징한 뒤 앱을 검증합니다. 이미 실행 중인 서버에서 플러그인을 연결·활성화하는 것만으로는 캐릭터가 바로 실행되지 않습니다. `start`를 한 번 실행하거나 `auto_start`가 켜졌다면 이후 정상적인 shell/terminal 클라이언트 attach를 기다리세요. 서버 시작 시에도 자동 `ensure`가 실행됩니다. 연결 중 알 수 없는 `client.attached` 훅 경고가 뜨면 호스트에 필수 패치가 없는 것입니다. 플러그인 액션은 실행 중인 활성화된 Herdr 호스트가 필요하며 아래 네이티브 설정 명령은 호스트 없이도 동작합니다.
 
+미출시 자동화 명령은 사전 빌드나 구형 데몬이 아닌 방금 빌드한 체크아웃 실행 파일 `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet`을 사용하세요. 기존 데몬을 먼저 종료하거나 `start`·후속 명령·`stop`에서 설정과 상태 경로를 모두 격리해 일치시키세요. 바이너리 버전이 둘 다 `0.2.0`일 수 있으므로 의도한 데몬 시작 후 이 소스 실행 파일의 `status`에서 실제 데몬 실행 파일을 확인하세요.
+
 ### 과거 로컬 프리뷰 출처
 
 단독·원격 전용 watcher, 독립 표시, 간결한 관찰 설정, 문맥 설정·조건부 복구는 이전 로컬 `worktree/rapid-harbor-d2a6`의 네 커밋(`078f5c2`, `e828c77`, `f638f0c`, `bf23ced`)에서 시작됐습니다. 이후 메뉴 막대 모드·이미지와 워크트리 삭제는 `bf23ced`에는 없었습니다. 이 기능은 beta3에 포함되었고 이제 안정판 v0.2.0 `main`에도 있으므로 특별한 로컬 브랜치·로컬 전용 가져오기 안내는 필요하지 않습니다. 과거 `bf23ced` 체크아웃만 있으면 원래 조건부 복구 동작을 사용하며 이후 추가 기능은 없습니다. [과거 프리뷰 기록](docs/migrations/unreleased.ko.md)을 참고하세요.
@@ -236,7 +240,10 @@ PNG를 네이티브 디코딩하기 전에 **모든 청크의 CRC**(투명도·�
 - **이 대사 초기화**는 저장하지 않은 초안이 사라질 때 확인을 요청한 뒤 해당 사용자 대사를 제거합니다. **캐릭터 대사 전체 초기화…**는 언제나 확인을 요청하고 해당 캐릭터의 한국어·영어 사용자 대사를 모두 제거합니다. 없는 항목은 기존 팩·기본 반응·상태 메시지의 폴백을 따르며, 빈 입력으로 말풍선을 숨기지는 않습니다.
 - 초안은 캐릭터·언어·항목별로 분리됩니다. 앱 실행 중 문맥이나 UI 언어를 바꾸고 창을 닫았다 다시 열어도 메모리에 유지되지만 재시작 후에는 저장한 대사만 남습니다. **Command+Z**로 실행 취소하고 **Shift+Command+Z**로 다시 실행하며, 기록은 현재 편집 문맥에만 적용됩니다. 저장 실패 시 초안과 이전에 저장한 대사를 유지합니다.
 - 대사는 팩 파일이 아닌 `preferences.json`에 저장됩니다. 기본·가져온 캐릭터는 캐릭터 ID 기준이므로 리비전 간에 사용자 대사를 공유하고 팩 업데이트·이전 리비전 복원 후에도 유지합니다. 외부 `--assets` 캐릭터는 정규화된 경로를 기준으로 별도 저장되어 기본 캐릭터와 대사가 섞이지 않습니다. 실행 중 원본 폴더 이름을 바꿔도 활성화 시 확정한 경로 키로 저장·초기화할 수 있습니다. 새 `--assets` 경로로 앱을 다시 실행하면 다른 경로 키이므로 이전 사용자 대사가 자동으로 연결되지 않습니다.
+
 - 관리 팩의 registry 파일 두 개가 모두 손상되어 저장소가 읽기 전용 폴백 상태가 되어도, 현재 목록 generation의 내장 캐릭터 원본 대사는 활성화나 registry 복구 없이 읽을 수 있습니다. 사용할 수 없는 관리 팩 리비전은 계속 조회할 수 없습니다.
+
+**이 미출시 체크아웃**에서는 외부에서 대사가 저장돼도 로컬 편집 초안을 조용히 덮어쓰지 않습니다. 리비전·항목 충돌은 오래된 저장을 차단합니다. **저장값 불러오기**는 최신 확정 텍스트를 명시적으로 가져오고 **초안 기준 갱신**은 로컬 텍스트를 새 기준에 유지한 뒤 저장 전에 다시 검증합니다. 충돌을 표시하는 동안 텍스트·선택/포커스·실행 취소 기록을 보존하며 IME 미확정 조합 중에는 불러오기/기준 갱신을 조합 종료까지 미룹니다. 공개 v0.2.0 바이너리에는 이 충돌 UI가 없습니다. [대사 CLI 계약](docs/cli.md#한국어)을 참고하세요.
 
 사용자 문구는 해당 대사만 대체합니다. 관측된 세션 수·상태 전환·반응 시간·호스트 연결 끊김 안내는 바꾸지 않습니다.
 
@@ -273,6 +280,23 @@ PET="./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"
 
 `settings get`/`set`은 구조화된 JSON을 출력합니다. `set`은 키 `auto_start` 또는 `exit_with_herdr`, 값 `on` 또는 `off`만 정확히 허용하고 다른 설정을 바꾸거나 캐릭터를 실행하지 않습니다. 잘못된 키·값·인자 또는 저장 실패는 조용히 초기화하지 않고 오류로 처리합니다. `status`에는 `auto_start`, `exit_with_herdr`가 표시됩니다. 추가 액션 ID: 실행 관리 `start`, `ensure`, `stop`, `restart`, `status`, `settings`; 표시 `show`, `hide`, `toggle`; 클릭 통과 `passthrough`, `alpha_passthrough`; 말풍선 `show_bubble`, `hide_bubble`, `bubble_above`, `bubble_below`, `bubble_left`, `bubble_right`, `bubble_auto`; 위치·크기 `reset`, `bigger`, `smaller`.
 
+
+### 네이티브 자동화 CLI (미출시 소스 체크아웃 전용)
+
+`bash scripts/install.sh --source`로 만든 실행 파일을 사용하고 고정된 사전 빌드를 사용하지 마세요. `herdr plugin action invoke`는 별도의 Herdr 실행 관리 인터페이스입니다. 체크아웃의 `herdr-desktop-pet --help`에서 실제 옵션을 확인하세요. `presentation get/set/reset/status`는 절대 표시·위치·크기, `preferences get/set/status`는 저장·실효 설정, `sessions list/show/prompt/status`는 관측된 로컬 세션 조회·특정 로컬 에이전트로 메시지 제출, `dialogue list/get/set/reset-entry/reset-character/status`는 대상별 대사, `worktree inspect/remove/status`는 되돌릴 수 없는 삭제 전 만료되는 일회용 검사 토큰을 다룹니다. 공개 `orchestrate` 명령·HTTP·셸 대체·새 서비스는 없고 같은 사용자만 접근하는 비공개 Unix 제어 소켓을 사용합니다.
+
+| 명령 형태 | 필수 구분 |
+| --- | --- |
+| `presentation set --visible on --expected-revision N --operation-id OPID --wait 15` | 절대값 필드 하나 이상 필요; 같은 데몬 작업은 `presentation status OPID --instance ID`로 확인합니다. `--scale`은 유한한 절대 크기입니다. 접수된 명시 필드는 최종 정규화된 장면 값으로 저장되며 저장 실패한 필드는 후속 요청에 유령처럼 남지 않습니다. |
+| `preferences get`; `preferences set --menu-bar always --expected-revision N --operation-id OPID` | 메뉴 막대 모드 등 설정은 **체크아웃 전용** CLI에서 변경하며 `preferences status --instance ID --operation-id OPID`는 이 명령 계열에만 적용됩니다. CLI `--language`는 저장소 접근 전에 `system|ko|en`만 정확히 허용합니다. 반복 `--machine ID`는 목록 **전체를 교체**하며 알 수 없거나 비활성 ID를 거절합니다. GUI에서는 저장된 이용 불가 ID를 유지/제거하면서 현재 활성 ID만 추가할 수 있습니다. |
+| `sessions list --instance ID --limit 128`; `sessions show --instance ID --source N --generation N --terminal TERMINAL_ID` | 1–128은 **페이지 크기**이지 전체 행 상한이 아닙니다. 각 응답 페이지는 JSON 이스케이프·커서·줄바꿈을 포함해 인코딩된 프레임 512 KiB 안에 들어가며 필요하면 더 짧은 행 접두열을 반환합니다. CLI는 일관된 전체 페이지를 수집합니다. `sessions prompt`에는 동일한 네 식별 옵션과 `--text`·`--file`·`--stdin` 중 정확히 하나가 필요합니다. ACK는 에이전트 완료가 아닙니다. |
+| `dialogue list`; `dialogue get --target 'IDENTITY_JSON' --locale ko --slot idle` | `--target`은 단순 팩 ID가 아닌 `dialogue list`가 반환한 완전한 **identity** JSON입니다. Character(ID) override는 그 ID의 저작 리비전 간에 공유되지만 저작 reference/generation과 선택적 `--baseline` CAS는 정확히 일치해야 합니다. baseline을 생략하면 최신 기준을 한 번 읽고 변경을 한 번만 요청합니다. 네이티브 적용은 저장 성공만이 아니라 활성 렌더러 토큰과 해당 대상 override 토큰으로 입증됩니다. |
+| `worktree inspect --instance ID --source N --generation N --terminal TERMINAL_ID` | 반환된 체크아웃·작업 공간·토큰을 확인한 뒤 별도로 `worktree remove --token TOKEN`을 실행합니다. 경로·강제·휴지통·실행 취소 옵션은 없으며 백엔드 `force: false`라도 무시된 파일이 삭제될 수 있습니다. 실제 사용자 체크아웃을 시험 대상으로 사용하지 마세요. |
+
+도메인 변경 명령은 전송 전 `--operation-id OPID`, 유한한 `--wait SECONDS`(최대 86400초; presentation은 0도 허용, 다른 도메인은 양수만 허용) 또는 `--no-wait`를 받으며 기본 대기는 15초입니다. 제출 ACK 이후 폴링은 잠자기·상태 RPC·디코딩 전체에 하나의 절대 대기 기한을 사용하며 도메인 읽기·색상 일부 변경용 읽기에도 적용됩니다. 매번 전체 폴링 시간을 새로 얻거나 늦은 결과를 성공으로 처리하지 않습니다. 기한 초과는 취소·롤백·재전송 근거가 아니고, 조기 전송 실패라면 전달 결과가 불명확할 수 있습니다. 같은 계열의 `status --instance ID --operation-id OPID`로 확인하세요. presentation·pack 상태 조회는 대신 위치 인자 `OPID`를 사용합니다. 재시작 후 상태가 만료됐거나 불명이더라도 원래 변경이 실행되지 않았다는 증거가 아닙니다. 요청 접수, 저장 확정, 네이티브 적용, 에이전트 완료는 서로 다릅니다.
+
+대사 편집기는 최초 준비된 메타데이터로 손대지 않은 필드를 포커스 중에도 채웁니다. 메타데이터 도착 전 원문 초안(공백·IME 조합 포함)은 보존하고 조합 해제 후 보류된 초기 동기화를 마칩니다. 선택은 정확한 저작 reference 또는 이용 불가 reference와 초안을 유지하며 임의로 다른 리비전으로 바꾸지 않습니다. 자동 폴링은 캐시된 메타데이터 오류를 재시도하지 않고 명시적인 창 다시 열기·선택 또는 새 읽기에서 한 번 재시도할 수 있습니다. 열린 설정 창의 조용한 색상 충돌 확인은 초안 텍스트·포커스·선택·실행 취소를 바꾸지 않고 컨트롤 활성 상태만 갱신하며 창을 닫으면 멈춥니다. 식별 JSON·작업 상태·안전 절차는 [한국어 계약](docs/cli.md#한국어) / [English contract](docs/cli.md#english)에 있습니다.
+
 ## 캐릭터 팩
 
 메뉴 막대 패널의 **캐릭터** 탭 또는 체크아웃의 네이티브 CLI로 관리합니다.
@@ -290,6 +314,8 @@ PET="./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"
 ```
 
 예시 경로·`CHARACTER_ID`·리비전 번호를 실제 값으로 바꾸세요.
+
+팩 명령의 `CHARACTER_ID`는 위치 인자입니다(`pack select ID`, `pack restore ID --revision N`); 선택에 `--id`는 사용하지 않습니다. **미출시 체크아웃**의 팩 변경에는 `--operation-id ID`, `--expected-generation N`, `--wait SECONDS` 또는 `--no-wait`도 사용할 수 있습니다. 기본 오프라인 변경은 자체 워커가 동기 완료하지만 명시적인 비동기/유한 대기는 실행 중인 데몬이 있어야 하고 몰래 시작하지 않습니다. ACK 이후 유한 대기는 잠자기·상태 응답 전체·디코딩에 하나의 절대 기한을 사용하고 재전송하지 않으며 늦게 온 최종 응답을 기한 내 성공으로 처리하지 않습니다. `--no-wait`도 최초 응답에 이미 포함된 최종 실패를 숨기지 않습니다. 실패·취소·불확실한 최종 상태는 0이 아닌 종료 코드로 끝나며 접수/대기 상태는 ACK일 뿐입니다. 결과가 불명확하면 `pack status OPID`를 확인하세요. 접수는 네이티브 적용·저장 성공과 다릅니다. 이 추가 옵션을 공개 v0.2.0 바이너리의 기능으로 간주하지 마세요.
 
 - 캐릭터 폴더나 `.herdrchar` 파일을 가져올 수 있습니다. 가져오기만 해서는 활성 캐릭터가 바뀌지 않습니다.
 - **캐릭터** 탭의 행·리비전 선택은 **적용** 전까지 후보만 지정합니다. 네이티브 CLI의 `pack select`는 최신 리비전을, `pack restore`는 기존 과거 리비전을 즉시 선택하며 UI의 적용 단계가 필요하지 않습니다.
