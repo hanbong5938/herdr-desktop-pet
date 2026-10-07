@@ -10,6 +10,7 @@ import {
 export const MANAGED_STATIC_PAGES = [
   "Home", "Home-ko", "Versioning-and-Compatibility", "Unreleased", "Publishing",
   "Migration-v0.1.4-to-v0.1.6", "Upgrade-Unreleased", "Upgrade-Unreleased-ko",
+  "Migration-v0.1.11-to-v0.2.0",
   "Release-Status", "Older-Releases", "_Sidebar",
 ] as const;
 const MANIFEST = ".wiki-managed-pages";
@@ -87,6 +88,7 @@ function sourceSlug(path: string): string | undefined {
     "docs/releases/unreleased.md": "Unreleased",
     "docs/releases/publishing.md": "Publishing",
     "docs/migrations/v0.1.4-to-v0.1.6.md": "Migration-v0.1.4-to-v0.1.6",
+    "docs/migrations/v0.1.11-to-v0.2.0.md": "Migration-v0.1.11-to-v0.2.0",
     "docs/migrations/unreleased.md": "Upgrade-Unreleased",
     "docs/migrations/unreleased.ko.md": "Upgrade-Unreleased-ko",
   };
@@ -308,6 +310,7 @@ export async function generateWiki(options: WikiOptions): Promise<string[]> {
     "- [Versioning and compatibility](Versioning-and-Compatibility)", "- [Unreleased](Unreleased)",
     "- [Upgrade unreleased](Upgrade-Unreleased)", "- [미출시 업그레이드](Upgrade-Unreleased-ko)",
     "- [v0.1.4 → v0.1.6 migration](Migration-v0.1.4-to-v0.1.6)",
+    ...(sources.has("Migration-v0.1.11-to-v0.2.0") ? ["- [v0.1.11 / beta3 → v0.2.0 migration](Migration-v0.1.11-to-v0.2.0)"] : []),
     ...lineSlugs.map((slug) => `- [Release line ${slug.slice(13)}](${slug})`),
     ...orderedTags.filter((tag) => sources.has(`Release-${tag}`)).map((tag) => `- [${tag} — ${publicationState(tag, records.get(tag))}](Release-${tag})`),
     "- [Older releases](Older-Releases)", "- [Publishing](Publishing)",
