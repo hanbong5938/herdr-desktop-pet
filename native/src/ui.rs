@@ -750,6 +750,10 @@ struct AppDelegateIvars {
 struct AnchorKey {
     frame: Option<FrameId>,
     artwork: NSRect,
+    // The unanimated canvas identifies the attachment transform. PNG's
+    // presented artwork rect can move with a click/reaction without moving
+    // the pet or changing the attachment.
+    attachment_artwork: NSRect,
     backend_epoch: u64,
     viewport: PresentationViewport,
     scale: f64,
@@ -769,13 +773,17 @@ struct CachedAnchor {
 impl AnchorKey {
     fn same_transform(self, other: Self) -> bool {
         self.backend_epoch == other.backend_epoch
-            && rect_nearly_equal(self.artwork, other.artwork)
+            && rect_nearly_equal(self.attachment_artwork, other.attachment_artwork)
             && self.scale == other.scale
-            && self.viewport == other.viewport
+            && self.viewport.backing_scale == other.viewport.backing_scale
+            && self.viewport.epoch == other.viewport.epoch
     }
 
     fn same_query(self, other: Self) -> bool {
-        self.same_transform(other) && self.frame == other.frame
+        self.same_transform(other)
+            && self.frame == other.frame
+            && rect_nearly_equal(self.artwork, other.artwork)
+            && self.viewport == other.viewport
     }
 }
 
@@ -786,8 +794,8 @@ fn visual_relative_for(visual: Option<VisualAnchor>, current: AnchorKey) -> Opti
 }
 
 // Both the renderer refresh and lifecycle tests use this placement invalidation.
-// Comparing raw bounds misses a same-bounds return after a transform change;
-// comparing only effective bounds misses a discarded, previously applied visual.
+// A valid head is latched until the actual attachment transform changes; an
+// animated frame or pose can change the sampled head without moving the bubble.
 fn accept_visual_anchor(
     previous: Option<VisualAnchor>,
     key: AnchorKey,
@@ -803,7 +811,9 @@ fn accept_visual_anchor(
                 && relative.width > 0.0
                 && relative.height > 0.0 =>
         {
-            Some(VisualAnchor { key, relative })
+            previous
+                .filter(|old| old.key.same_transform(key))
+                .or(Some(VisualAnchor { key, relative }))
         }
         SpeechAnchorStatus::TemporarilyUnavailable if rig => {
             previous.filter(|old| old.key.same_transform(key))
@@ -813,8 +823,9 @@ fn accept_visual_anchor(
         | SpeechAnchorStatus::TemporarilyUnavailable
         | SpeechAnchorStatus::ReadyAnchor(_) => None,
     };
-    let invalidated =
-        before != visual_relative_for(selected, key) || (previous.is_some() && selected.is_none());
+    let invalidated = previous.is_some_and(|old| !old.key.same_transform(key))
+        || before != visual_relative_for(selected, key)
+        || (previous.is_some() && selected.is_none());
     (selected, invalidated)
 }
 
@@ -7320,14 +7331,16 @@ impl Ui {
     }
 
     fn current_anchor_key(&self, scale: f64) -> AnchorKey {
+        let attachment_artwork = self.display_geometry.canvas_frame(scale);
         let artwork = if matches!(&self.active, PreparedCharacter::Png(_)) {
             self.image_view.frame()
         } else {
-            self.display_geometry.canvas_frame(scale)
+            attachment_artwork
         };
         AnchorKey {
             frame: self.displayed_frame,
             artwork,
+            attachment_artwork,
             backend_epoch: self.active.token().backend_epoch,
             viewport: PresentationViewport {
                 width: artwork.size.width,
@@ -9878,6 +9891,7 @@ mod tests {
         AnchorKey {
             frame: None,
             artwork: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 350.0)),
+            attachment_artwork: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 350.0)),
             backend_epoch: 11,
             viewport: PresentationViewport {
                 width: 400.0,
@@ -9965,28 +9979,16 @@ mod tests {
             SpeechAnchorStatus::ReadyAnchor(new_head),
             true,
         );
-        assert!(changed);
-        let recovered_geometry = placed_attached_bubble(
-            visual_relative_for(recovered, key),
-            test_panel(),
-            (280.0, 140.0),
-            test_visible(),
-            BubblePlacement::Left,
-        );
+        assert!(!changed);
         assert_eq!(
-            recovered_geometry.side,
-            Some(crate::bubble::BubbleSide::Left)
-        );
-        assert_ne!(recovered_geometry, initial_geometry);
-        assert_eq!(
-            recovered_geometry,
             placed_attached_bubble(
-                Some(new_head),
+                visual_relative_for(recovered, key),
                 test_panel(),
-                (280.0, 140.0),
+                body,
                 test_visible(),
                 BubblePlacement::Left,
             ),
+            initial_geometry,
         );
         let (anchorless, changed) =
             accept_visual_anchor(recovered, key, SpeechAnchorStatus::ReadyAnchorless, true);
@@ -10002,6 +10004,161 @@ mod tests {
             .side,
             Some(crate::bubble::BubbleSide::Above),
         );
+    }
+
+    #[test]
+    fn animated_heads_and_png_pose_frames_keep_attachment_until_real_transform_changes() {
+        let body = (320.0, 180.0);
+        for rig in [true, false] {
+            let key = AnchorKey {
+                frame: (!rig).then_some(FrameId::new(0)),
+                ..test_anchor_key()
+            };
+            let (mut visual, changed) =
+                accept_visual_anchor(None, key, SpeechAnchorStatus::ReadyAnchor(test_head()), rig);
+            assert!(changed);
+            let initial = placed_attached_bubble(
+                visual_relative_for(visual, key),
+                test_panel(),
+                body,
+                test_visible(),
+                BubblePlacement::Left,
+            );
+            let mut previous_key = key;
+            for step in 1..=12 {
+                let mut current = key;
+                if !rig {
+                    // Click poses change both source frame and the transient
+                    // presentation rect used to sample the PNG head.
+                    current.frame = Some(FrameId::new(step % 2));
+                    current.artwork.origin.x += step as f64;
+                    current.artwork.size.width += step as f64;
+                    current.viewport.width = current.artwork.size.width;
+                    assert!(anchor_query_needed(
+                        Some(&CachedAnchor { key: previous_key }),
+                        current,
+                        rig,
+                    ));
+                }
+                let head = BubbleRect {
+                    x: test_head().x + (step * 2) as f64,
+                    y: test_head().y + step as f64,
+                    ..test_head()
+                };
+                let (next, changed) = accept_visual_anchor(
+                    visual,
+                    current,
+                    SpeechAnchorStatus::ReadyAnchor(head),
+                    rig,
+                );
+                assert!(!changed);
+                assert_eq!(
+                    placed_attached_bubble(
+                        visual_relative_for(next, current),
+                        test_panel(),
+                        body,
+                        test_visible(),
+                        BubblePlacement::Left,
+                    ),
+                    initial,
+                );
+                visual = next;
+                previous_key = current;
+            }
+
+            let moved = BubbleRect {
+                x: test_panel().x + 75.0,
+                y: test_panel().y + 40.0,
+                ..test_panel()
+            };
+            let translated = placed_attached_bubble(
+                visual_relative_for(visual, previous_key),
+                moved,
+                body,
+                test_visible(),
+                BubblePlacement::Left,
+            );
+            assert!(close(translated.window.x - initial.window.x, 75.0));
+            assert!(close(translated.window.y - initial.window.y, 40.0));
+
+            let scaled = AnchorKey {
+                attachment_artwork: NSRect::new(
+                    key.attachment_artwork.origin,
+                    NSSize::new(500.0, 437.5),
+                ),
+                artwork: NSRect::new(key.artwork.origin, NSSize::new(500.0, 437.5)),
+                viewport: PresentationViewport {
+                    width: 500.0,
+                    height: 437.5,
+                    epoch: key.viewport.epoch + 1,
+                    ..key.viewport
+                },
+                scale: 1.25,
+                ..key
+            };
+            assert_eq!(visual_relative_for(visual, scaled), None);
+            let scaled_head = BubbleRect {
+                x: 140.0,
+                y: 90.0,
+                width: 180.0,
+                height: 230.0,
+            };
+            let (scaled_visual, changed) = accept_visual_anchor(
+                visual,
+                scaled,
+                SpeechAnchorStatus::ReadyAnchor(scaled_head),
+                rig,
+            );
+            assert!(changed);
+            let scaled_geometry = placed_attached_bubble(
+                visual_relative_for(scaled_visual, scaled),
+                test_panel(),
+                body,
+                test_visible(),
+                BubblePlacement::Left,
+            );
+            assert_ne!(scaled_geometry, initial);
+            assert_eq!(
+                scaled_geometry,
+                placed_attached_bubble(
+                    Some(scaled_head),
+                    test_panel(),
+                    body,
+                    test_visible(),
+                    BubblePlacement::Left,
+                ),
+            );
+
+            let replaced = AnchorKey {
+                backend_epoch: scaled.backend_epoch + 1,
+                ..scaled
+            };
+            let replacement_head = BubbleRect {
+                x: 170.0,
+                ..scaled_head
+            };
+            let (replacement, changed) = accept_visual_anchor(
+                scaled_visual,
+                replaced,
+                SpeechAnchorStatus::ReadyAnchor(replacement_head),
+                rig,
+            );
+            assert!(changed);
+            assert_eq!(
+                visual_relative_for(replacement, replaced),
+                Some(replacement_head)
+            );
+            assert_ne!(
+                placed_attached_bubble(
+                    visual_relative_for(replacement, replaced),
+                    test_panel(),
+                    body,
+                    test_visible(),
+                    BubblePlacement::Left,
+                ),
+                scaled_geometry,
+            );
+        }
     }
 
     #[test]
@@ -10104,7 +10261,10 @@ mod tests {
                 ..key
             },
             AnchorKey {
-                artwork: NSRect::new(NSPoint::new(5.0, 0.0), key.artwork.size),
+                attachment_artwork: NSRect::new(
+                    NSPoint::new(5.0, 0.0),
+                    key.attachment_artwork.size,
+                ),
                 ..key
             },
             AnchorKey {
