@@ -7,6 +7,7 @@ on:
     paths:
       - "docs/releases/**"
       - "docs/migrations/**"
+      - "docs/validation/**"
       - "scripts/wiki-docs.ts"
       - "scripts/release-docs.ts"
       - "scripts/publish-wiki.sh"

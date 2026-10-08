@@ -1,6 +1,6 @@
 # 0.3.0-beta.1 세션 검색: 다른 Mac 실제 GUI 수동 점검표
 
-이 문서는 **실제 베타 자산을 받은 뒤** 그 Mac의 로그인된 데스크톱에서 사람이 수행할 점검입니다. 소스 프로브나 기존 자동 테스트의 재실행 지침이 아닙니다. 세션 검색·상태 필터·정렬은 안정판 v0.2.0 이후의 새 minor 기능입니다. 이 문서 작성 시 계획한 [`beta/0.3.0-beta.1`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.3.0-beta.1) 링크는 **실제 게시·업로드를 증명하지 않으므로**, 사용할 때 Release 카탈로그의 실물 자산을 확인하세요. 안정판 v0.2.0/latest 및 beta/0.2.0-beta.1/.2/.3 태그·자산은 이 점검에서 교체하지 않습니다. 사용자가 실제 활성/key 창 GUI 수락 전에 병합·베타 준비를 허가했으므로, 이 문서는 통과 보고서가 아닙니다. [게시 준비 당시 기능·근거](unreleased.md#prepublication-working-copy-addition-session-search-and-ordering)와 [안정판 이전·프로필 보존](../migrations/v0.1.11-to-v0.2.0.md)을 참고하세요.
+이 문서는 **실제 베타 자산을 받은 뒤** 그 Mac의 로그인된 데스크톱에서 사람이 수행할 점검입니다. 소스 프로브나 기존 자동 테스트의 재실행 지침이 아닙니다. 세션 검색·상태 필터·정렬은 안정판 v0.2.0 이후의 새 minor 기능입니다. 이 문서 작성 시 계획한 [`beta/0.3.0-beta.1`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.3.0-beta.1) 링크는 **실제 게시·업로드를 증명하지 않으므로**, 사용할 때 Release 카탈로그의 실물 자산을 확인하세요. 안정판 v0.2.0/latest 및 beta/0.2.0-beta.1/.2/.3 태그·자산은 이 점검에서 교체하지 않습니다. 사용자가 실제 활성/key 창 GUI 수락 전에 병합·베타 준비를 허가했으므로, 이 문서는 통과 보고서가 아닙니다. [게시 준비 당시 기능·근거](../releases/unreleased.md#prepublication-working-copy-addition-session-search-and-ordering)와 [안정판 이전·프로필 보존](../migrations/v0.1.11-to-v0.2.0.md)을 참고하세요.
 
 ## 시작 전: 실행 주체와 데이터 보호
 
