@@ -2,6 +2,7 @@ use crate::bubble::{BubblePlacement, BubbleSize};
 use crate::dialogue::{DialogueOverrides, DialogueSlot, DialogueTarget};
 use crate::i18n::LanguagePreference;
 use crate::lifecycle::config_directory;
+use crate::session_view::SessionSort;
 use crate::sources::ObservationPreferences;
 use crate::state::{normalize_scale, DEFAULT_SCALE};
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -405,6 +406,57 @@ impl<'de> Visitor<'de> for BubbleSizeVisitor {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SessionListPreferences {
+    pub(crate) sort: SessionSort,
+    pub(crate) running_first: bool,
+}
+
+impl Default for SessionListPreferences {
+    fn default() -> Self {
+        Self {
+            sort: SessionSort::Stable,
+            running_first: false,
+        }
+    }
+}
+
+impl SessionListPreferences {
+    fn from_disk(value: Value) -> (Self, Map<String, Value>) {
+        let Value::Object(mut fields) = value else {
+            return (Self::default(), Map::new());
+        };
+        let sort = match fields.remove("sort").as_ref().and_then(Value::as_str) {
+            Some("title_asc") => SessionSort::TitleAsc,
+            Some("source_asc") => SessionSort::SourceAsc,
+            _ => SessionSort::Stable,
+        };
+        let running_first = fields
+            .remove("running_first")
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        (
+            Self {
+                sort,
+                running_first,
+            },
+            fields,
+        )
+    }
+
+    fn to_disk(self, mut extra: Map<String, Value>) -> Value {
+        let sort = match self.sort {
+            SessionSort::Stable => "stable",
+            SessionSort::TitleAsc => "title_asc",
+            SessionSort::SourceAsc => "source_asc",
+        };
+        extra.insert("sort".to_owned(), Value::String(sort.to_owned()));
+        extra.insert("running_first".to_owned(), Value::Bool(self.running_first));
+        Value::Object(extra)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Preferences {
     visible: bool,
@@ -424,6 +476,8 @@ pub struct Preferences {
     bubble_appearance: BubbleAppearance,
     observation: ObservationPreferences,
     dialogue_overrides: DialogueOverrides,
+    session_list: SessionListPreferences,
+    session_list_extra: Map<String, Value>,
     /// Top-level keys from a newer build, written back unchanged on save.
     extra: Map<String, Value>,
 }
@@ -460,6 +514,8 @@ struct DiskPreferences {
     observation: ObservationPreferences,
     #[serde(default)]
     dialogue_overrides: DialogueOverrides,
+    #[serde(default)]
+    session_list: Value,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -492,6 +548,8 @@ impl Default for Preferences {
             bubble_appearance: BubbleAppearance::default(),
             observation: ObservationPreferences::default(),
             dialogue_overrides: DialogueOverrides::default(),
+            session_list: SessionListPreferences::default(),
+            session_list_extra: Map::new(),
             extra: Map::new(),
         }
     }
@@ -569,6 +627,8 @@ impl Preferences {
             .validate()
             .map_err(|error| format!("preferences dialogue overrides are invalid: {error}"))?;
         disk.dialogue_overrides.prune_empty();
+        let (session_list, session_list_extra) =
+            SessionListPreferences::from_disk(disk.session_list);
         let mut preferences = Self {
             visible: disk.visible,
             passthrough: disk.passthrough,
@@ -589,6 +649,8 @@ impl Preferences {
             bubble_appearance: disk.bubble_appearance,
             observation: disk.observation,
             dialogue_overrides: disk.dialogue_overrides,
+            session_list,
+            session_list_extra,
             extra: disk.extra,
         };
         preferences.sanitize();
@@ -769,6 +831,28 @@ impl Preferences {
         &self.observation
     }
 
+    pub(crate) fn session_list(&self) -> SessionListPreferences {
+        self.session_list
+    }
+
+    pub(crate) fn save_session_list(
+        &mut self,
+        preference: SessionListPreferences,
+    ) -> Result<(), String> {
+        let directory = preferences_directory()?;
+        self.save_session_list_in_directory(preference, &directory)
+    }
+
+    fn save_session_list_in_directory(
+        &mut self,
+        preference: SessionListPreferences,
+        directory: &Path,
+    ) -> Result<(), String> {
+        let mut candidate = self.candidate();
+        candidate.session_list = preference;
+        self.save_candidate_in_directory(candidate, directory)
+    }
+
     fn save_menu_bar_icon_in_directory(
         &mut self,
         preference: Option<MenuBarIconPreference>,
@@ -826,6 +910,7 @@ impl Preferences {
             bubble_appearance: self.bubble_appearance,
             observation: self.observation.clone(),
             dialogue_overrides: self.dialogue_overrides.clone(),
+            session_list: self.session_list.to_disk(self.session_list_extra.clone()),
             extra: self.extra.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&disk)
@@ -1386,6 +1471,8 @@ mod tests {
             bubble_appearance: BubbleAppearance::default(),
             observation: ObservationPreferences::default(),
             dialogue_overrides: DialogueOverrides::default(),
+            session_list: SessionListPreferences::default(),
+            session_list_extra: Map::new(),
             extra: Map::new(),
         };
         preferences.sanitize();
@@ -1403,6 +1490,162 @@ mod tests {
         ));
         fs::create_dir(&path).expect("isolated preferences directory should be created");
         path
+    }
+
+    #[test]
+    fn session_list_old_partial_future_and_malformed_values_do_not_invalidate_preferences() {
+        let cases = [
+            (None, SessionListPreferences::default()),
+            (
+                Some(serde_json::json!({"running_first": true})),
+                SessionListPreferences {
+                    sort: SessionSort::Stable,
+                    running_first: true,
+                },
+            ),
+            (
+                Some(serde_json::json!({"sort": "title_asc"})),
+                SessionListPreferences {
+                    sort: SessionSort::TitleAsc,
+                    running_first: false,
+                },
+            ),
+            (
+                Some(serde_json::json!({"sort": "future_sort", "running_first": true})),
+                SessionListPreferences {
+                    sort: SessionSort::Stable,
+                    running_first: true,
+                },
+            ),
+            (
+                Some(serde_json::json!({"sort": 42, "running_first": "yes"})),
+                SessionListPreferences::default(),
+            ),
+            (
+                Some(serde_json::json!([1, 2])),
+                SessionListPreferences::default(),
+            ),
+            (Some(Value::Null), SessionListPreferences::default()),
+        ];
+        for (session_list, expected) in cases {
+            let directory = isolated_preferences_directory();
+            let path = directory.join(PREFERENCES_FILE);
+            let mut disk = serde_json::json!({
+                "visible": false, "passthrough": true, "scale": 0.875,
+                "position": [13.0, 27.0], "future_setting": {"a": 1}
+            });
+            if let Some(value) = session_list {
+                disk["session_list"] = value;
+            }
+            fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+            let loaded = Preferences::load_path(&path).expect("old or new fields should load");
+            assert_eq!(loaded.session_list(), expected);
+            assert!(!loaded.visible());
+            assert!(loaded.passthrough());
+            assert_eq!(loaded.position(), Some((13.0, 27.0)));
+            assert_eq!(loaded.extra["future_setting"], serde_json::json!({"a": 1}));
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn session_list_roundtrip_and_unrelated_save_retain_existing_and_future_values() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "visible": false, "passthrough": true, "scale": 0.875,
+                "position": [3.0, 9.0], "menu_bar_mode": "recovery_only",
+                "future_setting": {"a": [1, 2]},
+                "session_list": {
+                    "sort": "future_sort", "running_first": "invalid",
+                    "future_field": {"nested": [3, 4]}
+                },
+                "bubble_sizes": {
+                    "compact": {"width": "invalid", "height": 120},
+                    "expanded": {"width": 490, "height": 310}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut preferences = Preferences::load_path(&path).unwrap();
+        let expected_sizes = BubbleSizes {
+            compact: None,
+            expanded: Some(BubbleSize {
+                width: 490.0,
+                height: 310.0,
+            }),
+        };
+        assert_eq!(preferences.bubble_sizes(), expected_sizes);
+        let requested = SessionListPreferences {
+            sort: SessionSort::SourceAsc,
+            running_first: true,
+        };
+        preferences
+            .save_session_list_in_directory(requested, &directory)
+            .unwrap();
+        assert_eq!(preferences.session_list(), requested);
+        assert_eq!(preferences.bubble_sizes(), expected_sizes);
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["session_list"]["sort"], "source_asc");
+        assert_eq!(saved["session_list"]["running_first"], true);
+        assert_eq!(
+            saved["session_list"]["future_field"],
+            serde_json::json!({"nested": [3, 4]})
+        );
+        assert_eq!(saved["future_setting"], serde_json::json!({"a": [1, 2]}));
+        assert_eq!(saved["menu_bar_mode"], "recovery_only");
+        assert_eq!(saved["position"], serde_json::json!([3.0, 9.0]));
+
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().bubble_sizes(),
+            expected_sizes
+        );
+        let mut reloaded = Preferences::load_path(&path).unwrap();
+        assert_eq!(reloaded.session_list(), requested);
+        let mut candidate = reloaded.candidate();
+        candidate.menu_bar_mode = MenuBarMode::Always;
+        reloaded
+            .save_candidate_in_directory(candidate, &directory)
+            .unwrap();
+        let later: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(later["session_list"], saved["session_list"]);
+        assert_eq!(later["future_setting"], saved["future_setting"]);
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().session_list(),
+            requested
+        );
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().bubble_sizes(),
+            expected_sizes
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_session_list_save_keeps_memory_and_existing_disk_unchanged() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let blocked = directory.join("not-a-directory");
+        let original = SessionListPreferences {
+            sort: SessionSort::TitleAsc,
+            running_first: true,
+        };
+        let mut preferences = Preferences::default();
+        preferences
+            .save_session_list_in_directory(original, &directory)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        fs::write(&blocked, b"sentinel").unwrap();
+        preferences
+            .save_session_list_in_directory(SessionListPreferences::default(), &blocked)
+            .expect_err("save through a file path should fail");
+        assert_eq!(preferences.session_list(), original);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&blocked).unwrap(), b"sentinel");
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -2332,6 +2575,7 @@ mod tests {
             bubble_appearance: valid.bubble_appearance,
             observation: valid.observation.clone(),
             dialogue_overrides: DialogueOverrides::default(),
+            session_list: valid.session_list.to_disk(Map::new()),
             extra: Map::new(),
         })
         .unwrap();

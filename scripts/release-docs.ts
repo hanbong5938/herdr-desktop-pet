@@ -1,3 +1,7 @@
+import { definition } from "micromark-core-commonmark";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { normalizeIdentifier } from "micromark-util-normalize-identifier";
+import type { Nodes, Root } from "mdast";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, posix, resolve } from "node:path";
 
@@ -74,37 +78,124 @@ function escaped(text: string, index: number): boolean {
   return count % 2 !== 0;
 }
 
-// Mask code without changing offsets: links inside examples must remain literal.
-function codeMask(markdown: string): Uint8Array {
+type Span = { start: number; end: number };
+type DefinitionSpan = Span & {
+  label: Span;
+  destination: Span;
+  prefixes: Span[];
+  title: string | null | undefined;
+  url: string;
+};
+
+// The optional title is an attempted micromark construct. Reject invalid
+// parenthesized titles inside that attempt, so micromark can keep a preceding
+// destination-only definition when the invalid title starts on the next line.
+const guardedDefinition: typeof definition = {
+  name: "herdrCommonmarkDefinition",
+  tokenize(effects, ok, nok) {
+    const context = this;
+    return definition.tokenize.call(context, {
+      ...effects,
+      attempt(construct, success, failure) {
+        // The definition grammar has one attempt: its optional title.
+        const titleConstruct = construct as typeof definition;
+        return effects.attempt({
+          ...titleConstruct,
+          tokenize(titleEffects, titleOk, titleNok) {
+            const from = context.events.length;
+            return titleConstruct.tokenize.call(context, titleEffects, (code) => {
+              for (let index = from; index < context.events.length; index++) {
+                const [event, token] = context.events[index]!;
+                if (event !== "exit" || token.type !== "definitionTitle") continue;
+                const title = context.sliceSerialize(token);
+                if (title[0] !== "(") continue;
+                for (let at = 1; at < title.length - 1; at++) {
+                  if (title[at] === "(" && !escaped(title, at)) return titleNok(code);
+                }
+              }
+              return titleOk(code);
+            }, titleNok);
+          },
+        }, success, failure);
+      },
+    }, ok, nok);
+  },
+};
+
+function markdownStructure(markdown: string): { tree: Root; definitions: DefinitionSpan[]; mask: Uint8Array } {
+  const definitions: DefinitionSpan[] = [];
   const mask = new Uint8Array(markdown.length);
-  let offset = 0;
-  let fence: { character: string; length: number } | undefined;
-  for (const line of markdown.split(/(?<=\n)/)) {
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*?)(?:\r?\n)?$/.exec(line);
-    if (fence) {
-      mask.fill(1, offset, offset + line.length);
-      if (marker && marker[1]![0] === fence.character && marker[1]!.length >= fence.length && !marker[2]!.trim()) fence = undefined;
-    } else if (marker && (marker[1]![0] !== "`" || !marker[2]!.includes("`"))) {
-      fence = { character: marker[1]![0]!, length: marker[1]!.length };
-      mask.fill(1, offset, offset + line.length);
+  const prefixTokens: { type: string; span: Span }[] = [];
+  let active: { span: Span; label?: Span; destination?: Span; literal?: Span } | undefined;
+  const span = (token: { type: string; start: { offset?: number }; end: { offset?: number } }): Span => {
+    const start = token.start.offset;
+    const end = token.end.offset;
+    if (start === undefined || end === undefined || start < 0 || end < start || end > markdown.length) {
+      throw new Error(`Invalid Markdown token span: ${token.type}`);
     }
-    offset += line.length;
-  }
-  for (let i = 0; i < markdown.length; i++) {
-    if (mask[i] || markdown[i] !== "`" || escaped(markdown, i)) continue;
-    let end = i;
-    while (markdown[end] === "`") end++;
-    const delimiter = markdown.slice(i, end);
-    let close = markdown.indexOf(delimiter, end);
-    while (close !== -1 && (mask[close] || markdown[close - 1] === "`" || markdown[close + delimiter.length] === "`")) {
-      close = markdown.indexOf(delimiter, close + delimiter.length);
+    return { start, end };
+  };
+  const tree = fromMarkdown(markdown, {
+    extensions: [{ disable: { null: ["definition"] }, contentInitial: { 91: guardedDefinition } }],
+    mdastExtensions: [{
+      beforeEnter(token) {
+        if (token.type === "definition") {
+          if (active) throw new Error("Nested Markdown definition tokens");
+          active = { span: span(token) };
+        }
+      },
+      afterExit(token) {
+        const part = span(token);
+        if (["blockQuotePrefix", "listItemIndent", "linePrefix"].includes(token.type)) prefixTokens.push({ type: token.type, span: part });
+        if (active) {
+          if (token.type === "definitionLabelString") active.label = part;
+          if (token.type === "definitionDestinationString") active.destination = part;
+          if (token.type === "definitionDestinationLiteral") active.literal = part;
+          if (token.type === "definition") {
+            const { span: whole, label, destination, literal } = active;
+            if (!label || (!destination && !literal) || part.start !== whole.start || part.end !== whole.end) {
+              throw new Error("Incomplete Markdown definition token spans");
+            }
+            const url = destination ?? { start: literal!.start + 1, end: literal!.start + 1 };
+            if (label.start < whole.start || label.end > whole.end || url.start < whole.start || url.end > whole.end ||
+              (literal && markdown.slice(literal.start, literal.end) !== "<>" && !destination)) {
+              throw new Error("Ambiguous Markdown definition token spans");
+            }
+            definitions.push({ ...whole, label, destination: url, prefixes: [], title: undefined, url: "" });
+            mask.fill(1, whole.start, whole.end);
+            active = undefined;
+          }
+        }
+      },
+    }],
+  });
+  definitions.sort((left, right) => left.start - right.start);
+  const definitionsByStart = new Map(definitions.map((definition) => [definition.start, definition]));
+  const visit = (node: Nodes | Root): void => {
+    if (node.type === "code" || node.type === "inlineCode") {
+      if (!node.position) throw new Error("Missing Markdown code position");
+      const { start, end } = span({ type: node.type, start: node.position.start, end: node.position.end });
+      mask.fill(1, start, end);
     }
-    if (close !== -1) {
-      mask.fill(1, i, close + delimiter.length);
-      i = close + delimiter.length - 1;
-    } else i = end - 1;
+    if (node.type === "definition") {
+      const match = definitionsByStart.get(node.position?.start.offset ?? -1);
+      if (!match) throw new Error("Markdown definition tree/token mismatch");
+      match.title = node.title;
+      match.url = node.url;
+    }
+    if ("children" in node) for (const child of node.children) visit(child);
+  };
+  visit(tree);
+  if (definitions.some((definition) => definition.title === undefined)) throw new Error("Unmatched Markdown definition tokens");
+  for (const definition of definitions) {
+    definition.prefixes = prefixTokens.filter(({ type, span: part }) => {
+      if (part.start <= definition.start || part.end > definition.end) return false;
+      if (type !== "linePrefix") return true;
+      const lineStart = markdown.lastIndexOf("\n", part.start - 1) + 1;
+      return prefixTokens.some(({ type: other, span }) => other === "blockQuotePrefix" && span.start === part.end && part.start >= lineStart);
+    }).map(({ span }) => span);
   }
-  return mask;
+  return { tree, definitions, mask };
 }
 
 type Destination = { start: number; end: number; after: number };
@@ -144,36 +235,47 @@ function inlineWhitespaceEnd(text: string, start: number): number {
 }
 
 // Recognize an entire inline suffix before masking it or resolving its target.
-// An invalid title must leave the suffix as ordinary Markdown for the scanner.
+// Try a bare destination first, including quote-prefixed names. Only if that
+// cannot complete the suffix may a quoted title follow an empty destination.
 function inlineTailAt(text: string, open: number): { destination: Destination; end: number } | undefined {
   if (text[open] !== "(") return undefined;
   const destinationStart = inlineWhitespaceEnd(text, open + 1);
   if (destinationStart < 0) return undefined;
-  const destination = destinationAt(text, destinationStart);
-  if (!destination) return undefined;
-  let close = inlineWhitespaceEnd(text, destination.after);
-  if (close < 0) return undefined;
-  if (["\"", "'", "("].includes(text[close] ?? "")) {
-    // A bare destination requires separating whitespace; <angle> destinations
-    // may be followed immediately by a title.
-    if (close === destination.after && text[destination.start - 1] !== "<") return undefined;
-    const delimiter = text[close]!;
-    const closing = delimiter === "(" ? ")" : delimiter;
-    let titleEnd = close + 1;
-    for (; titleEnd < text.length; titleEnd++) {
-      if (text[titleEnd] === "\n") {
-        let previous = titleEnd - 1;
-        while (previous > close && /[ \t\r]/.test(text[previous]!)) previous--;
-        if (text[previous] === "\n") return undefined;
+  const suffix = (destination: Destination): { destination: Destination; end: number } | undefined => {
+    let close = inlineWhitespaceEnd(text, destination.after);
+    if (close < 0) return undefined;
+    if (["\"", "'", "("].includes(text[close] ?? "")) {
+      // A bare destination requires separating whitespace; <angle> destinations
+      // may be followed immediately by a title.
+      if (close === destination.after && text[destination.start - 1] !== "<" && destination.start !== destination.end) return undefined;
+      const delimiter = text[close]!;
+      const closing = delimiter === "(" ? ")" : delimiter;
+      let titleEnd = close + 1;
+      for (; titleEnd < text.length; titleEnd++) {
+        if (text[titleEnd] === "\n") {
+          let previous = titleEnd - 1;
+          while (previous > close && /[ \t\r]/.test(text[previous]!)) previous--;
+          if (text[previous] === "\n") return undefined;
+        }
+        if (escaped(text, titleEnd)) continue;
+        if (delimiter === "(" && text[titleEnd] === "(") return undefined;
+        if (text[titleEnd] === closing) break;
       }
-      if (escaped(text, titleEnd)) continue;
-      if (delimiter === "(" && text[titleEnd] === "(") return undefined;
-      if (text[titleEnd] === closing) break;
+      if (titleEnd === text.length) return undefined;
+      close = inlineWhitespaceEnd(text, titleEnd + 1);
     }
-    if (titleEnd === text.length) return undefined;
-    close = inlineWhitespaceEnd(text, titleEnd + 1);
+    return close >= 0 && text[close] === ")" ? { destination, end: close + 1 } : undefined;
+  };
+  if (text[destinationStart] === ")") {
+    return suffix({ start: destinationStart, end: destinationStart, after: destinationStart });
   }
-  return close >= 0 && text[close] === ")" ? { destination, end: close + 1 } : undefined;
+  const bare = destinationAt(text, destinationStart);
+  const completed = bare && suffix(bare);
+  if (completed) return completed;
+  if (destinationStart > open + 1 && ["\"", "'"].includes(text[destinationStart] ?? "")) {
+    return suffix({ start: destinationStart, end: destinationStart, after: destinationStart });
+  }
+  return undefined;
 }
 
 function labelEnd(text: string, start: number, mask: Uint8Array): number {
@@ -187,7 +289,7 @@ function labelEnd(text: string, start: number, mask: Uint8Array): number {
 }
 
 function referenceId(label: string): string {
-  return label.replace(/\\([\\[\]])/g, "$1").trim().replace(/\s+/g, " ").toLowerCase();
+  return normalizeIdentifier(label);
 }
 
 /** Resolve relative Markdown destinations; fragment includes its leading #. */
@@ -200,67 +302,15 @@ export function rewriteRelativeLinks(
   if (posix.isAbsolute(sourcePath) || normalizedSource === ".." || normalizedSource.startsWith("../") || sourcePath.includes("\\")) {
     throw new Error(`Source path must be repository-relative: ${sourcePath}`);
   }
-  const mask = codeMask(markdown);
+  const { tree, definitions, mask } = markdownStructure(markdown);
   const changes: { start: number; end: number; value: string }[] = [];
-  type Reference = { destination: Destination; start: number; end: number; labelStart: number; labelEnd: number; images: { start: number; end: number }[]; link: boolean };
+  type Reference = DefinitionSpan & { images: Span[]; link: boolean };
   const references = new Map<string, Reference>();
   const reserved = new Set<string>();
-  const lineEnd = (at: number): number => {
-    const newline = markdown.indexOf("\n", at);
-    return newline < 0 ? markdown.length : newline + 1;
-  };
-  const lineContentEnd = (at: number): number => {
-    const end = lineEnd(at);
-    return markdown[end - 1] === "\n" ? end - (markdown[end - 2] === "\r" ? 2 : 1) : end;
-  };
-  // A title belongs to a definition only if its closing delimiter and the
-  // remainder of its final line are valid. Never consume unrelated paragraphs.
-  // A rejected header is ordinary prose, not a definition to mask or rewrite.
-  const definitionEnd = (destination: Destination): number | undefined => {
-    const destinationLineEnd = lineEnd(destination.after);
-    const contentEnd = lineContentEnd(destination.after);
-    let opener = destination.after;
-    while (opener < contentEnd && /[ \t]/.test(markdown[opener]!)) opener++;
-    const sameLine = opener < contentEnd;
-    if (sameLine && opener === destination.after) return undefined;
-    if (!sameLine && destinationLineEnd < markdown.length) {
-      opener = destinationLineEnd;
-      while (opener < lineContentEnd(opener) && /[ \t]/.test(markdown[opener]!)) opener++;
-    }
-    if (!["\"", "'", "("].includes(markdown[opener] ?? "")) return sameLine ? undefined : destinationLineEnd;
-    const closing = markdown[opener] === "(" ? ")" : markdown[opener]!;
-    for (let i = opener + 1; i < markdown.length; i++) {
-      if (markdown[i] === "\n" && !markdown.slice(i + 1, lineContentEnd(i + 1)).trim()) return sameLine ? undefined : destinationLineEnd;
-      if (closing === ")" && markdown[i] === "(" && !escaped(markdown, i)) return sameLine ? undefined : destinationLineEnd;
-      if (markdown[i] !== closing || escaped(markdown, i)) continue;
-      if (markdown.slice(i + 1, lineContentEnd(i + 1)).trim()) return sameLine ? undefined : destinationLineEnd;
-      return lineEnd(i);
-    }
-    return sameLine ? undefined : destinationLineEnd;
-  };
-  let offset = 0;
-  for (const line of markdown.split(/(?<=\n)/)) {
-    const match = /^ {0,3}\[([^\]\r\n]+)\]:[ \t]*/.exec(line);
-    if (match && !mask[offset] && !match[1]!.startsWith("^")) {
-      const id = referenceId(match[1]!);
-      reserved.add(id);
-      let validLabel = id.length > 0;
-      for (let i = 0; validLabel && i < match[1]!.length; i++) {
-        if (match[1]![i] === "[" && !escaped(match[1]!, i)) validLabel = false;
-      }
-      const start = offset + match[0].length;
-      const candidate = destinationAt(markdown, start);
-      const destination = candidate && (markdown.slice(start, candidate.start).match(/\n/g)?.length ?? 0) <= 1 ? candidate : undefined;
-      const end = validLabel && destination ? definitionEnd(destination) : undefined;
-      if (end !== undefined && destination) {
-        mask.fill(1, offset, end);
-        if (!references.has(id)) {
-          const labelStart = offset + match[0].indexOf("[") + 1;
-          references.set(id, { destination, start: offset, end, labelStart, labelEnd: labelStart + match[1]!.length, images: [], link: false });
-        }
-      }
-    }
-    offset += line.length;
+  for (const definition of definitions) {
+    const id = referenceId(markdown.slice(definition.label.start, definition.label.end));
+    reserved.add(id);
+    if (!references.has(id)) references.set(id, { ...definition, images: [], link: false });
   }
   const resolveDestination = (destination: Destination, isImage: boolean): string | undefined => {
     const raw = markdown.slice(destination.start, destination.end);
@@ -282,6 +332,17 @@ export function rewriteRelativeLinks(
     const value = query ? (resolvedHash < 0 ? resolved + query : resolved.slice(0, resolvedHash) + query + resolved.slice(resolvedHash)) : resolved;
     return value.replace(/\(/g, "%28").replace(/\)/g, "%29");
   };
+  const imageReferenceEnd = (open: number, close: number, limit: number): number | undefined => {
+    const inline = inlineTailAt(markdown, close + 1);
+    if (inline && inline.end <= limit) return inline.end;
+    if (markdown[close + 1] === "[") {
+      const selectorEnd = labelEnd(markdown, close + 1, mask);
+      if (selectorEnd < 0 || selectorEnd >= limit) return undefined;
+      const selector = markdown.slice(close + 2, selectorEnd) || markdown.slice(open + 1, close);
+      return references.has(referenceId(selector)) ? selectorEnd + 1 : undefined;
+    }
+    return references.has(referenceId(markdown.slice(open + 1, close))) ? close + 1 : undefined;
+  };
   // Check only rendered anchors in a prospective link label. Images can sit
   // inside links, but links written in image alt text are not nested anchors.
   const containsInnerLink = (start: number, end: number): boolean => {
@@ -292,15 +353,11 @@ export function rewriteRelativeLinks(
       const image = at > 0 && markdown[at - 1] === "!" && !escaped(markdown, at - 1);
       const tail = inlineTailAt(markdown, labelClose + 1);
       if (image) {
-        if (tail && tail.end <= end) {
-          at = tail.end - 1;
-        } else if (markdown[labelClose + 1] === "[") {
-          const selectorEnd = labelEnd(markdown, labelClose + 1, mask);
-          at = selectorEnd >= 0 && selectorEnd < end ? selectorEnd : labelClose;
-        } else {
-          at = labelClose;
+        const imageEnd = imageReferenceEnd(at, labelClose, end);
+        if (imageEnd !== undefined) {
+          at = imageEnd - 1;
+          continue;
         }
-        continue;
       }
       if (tail && tail.end <= end) return true;
       if (markdown[labelClose + 1] === "(") continue;
@@ -353,11 +410,21 @@ export function rewriteRelativeLinks(
         else reference.link = true;
       }
     }
-    // Scan inside labels as well: [![alt][art]][art] has two uses.
+    // Scan inside link labels, but a genuine image's ALT is not rendered Markdown.
+    if (isImage && imageReferenceEnd(i, end, markdown.length) !== undefined) i = end;
   }
+  const newline = markdown.includes("\r\n") ? "\r\n" : "\n";
+  const firstBlock = tree.children[0];
+  const insertion = firstBlock?.type === "heading" && firstBlock.position?.start.offset === (markdown.charCodeAt(0) === 0xfeff ? 1 : 0)
+    ? (() => {
+      const lineEnd = markdown.indexOf("\n", firstBlock.position!.end.offset);
+      return lineEnd < 0 ? markdown.length : lineEnd + 1;
+    })()
+    : (markdown.charCodeAt(0) === 0xfeff ? 1 : 0);
+  const clones: string[] = [];
   let nextImageId = 1;
   for (const reference of references.values()) {
-    const { destination } = reference;
+    const destination: Destination = { ...reference.destination, after: reference.destination.end };
     const linkValue = reference.link || !reference.images.length ? resolveDestination(destination, false) : undefined;
     const imageValue = reference.images.length ? resolveDestination(destination, true) : undefined;
     if (reference.images.length && reference.link && linkValue !== undefined) {
@@ -368,23 +435,51 @@ export function rewriteRelativeLinks(
         for (const selector of reference.images) {
           changes.push({ start: selector.start, end: selector.end, value: `[${id}]` });
         }
-        const clone = markdown.slice(reference.start, reference.labelStart) + id
-          + markdown.slice(reference.labelEnd, destination.start) + imageValue
-          + markdown.slice(destination.end, reference.end);
-        const newline = markdown.slice(reference.start, reference.end).includes("\r\n") ? "\r\n" : "\n";
-        changes.push({ start: reference.start, end: reference.start, value: clone.endsWith("\n") ? clone : clone + newline });
+        const removals = reference.prefixes.sort((left, right) => left.start - right.start);
+        let clone = "";
+        let cursor = reference.start;
+        const replacements = [
+          { ...reference.label, value: id },
+          { ...destination, value: imageValue },
+          ...removals.map((part) => ({ ...part, value: "" })),
+        ].sort((left, right) => left.start - right.start || left.end - right.end);
+        for (const part of replacements) {
+          if (part.start < cursor || part.end > reference.end) throw new Error("Overlapping Markdown definition clone spans");
+          clone += markdown.slice(cursor, part.start) + part.value;
+          cursor = part.end;
+        }
+        clone += markdown.slice(cursor, reference.end);
+        const candidate = markdownStructure(clone);
+        if (candidate.tree.children.length !== 1 || candidate.tree.children[0]?.type !== "definition" ||
+          candidate.definitions.length !== 1 || candidate.definitions[0]?.start !== 0 ||
+          candidate.tree.children[0].title !== reference.title ||
+          candidate.tree.children[0].url !== imageValue ||
+          referenceId(candidate.tree.children[0].label ?? "") !== referenceId(id)) {
+          throw new Error("Markdown image definition clone failed root round-trip");
+        }
+        clones.push(clone);
       }
     }
     const value = reference.images.length && !reference.link ? imageValue : linkValue;
     if (value !== undefined) changes.push({ start: destination.start, end: destination.end, value });
   }
+  if (clones.length) {
+    const separator = (value: string): string => value.endsWith("\n") ? newline : newline + newline;
+    const before = insertion === 0 || insertion === 1 ? "" : separator(markdown.slice(0, insertion));
+    changes.push({
+      start: insertion, end: insertion,
+      value: before + clones.map((clone) => clone + separator(clone)).join(newline),
+    });
+  }
   changes.sort((left, right) => left.start - right.start || left.end - right.end);
   let result = "";
   let cursor = 0;
+  let occupiedEnd = 0;
   for (const change of changes) {
-    if (change.start < cursor) continue;
+    if (change.start < occupiedEnd || change.end > markdown.length) throw new Error("Overlapping Markdown rewrites");
     result += markdown.slice(cursor, change.start) + change.value;
     cursor = change.end;
+    if (change.end > change.start) occupiedEnd = change.end;
   }
   return result + markdown.slice(cursor);
 }
