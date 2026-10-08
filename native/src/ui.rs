@@ -2092,14 +2092,20 @@ define_class!(
 
         #[unsafe(method(toggleObservationCatalogError:))]
         fn toggle_observation_catalog_error(&self, _sender: Option<&AnyObject>) {
-            with_ui_mut(|ui| ui.menu_panel.toggle_observation_error(None));
+            with_ui_mut(|ui| {
+                ui.menu_panel.toggle_observation_error(None);
+                ui.sync_character_menu_frame();
+            });
         }
 
         #[unsafe(method(toggleObservationMachineError:))]
         fn toggle_observation_machine_error(&self, sender: Option<&AnyObject>) {
             let Some(button) = sender.and_then(|sender| sender.downcast_ref::<NSButton>()) else { return };
             let Some(id) = button.identifier().map(|id| id.to_string()) else { return };
-            with_ui_mut(|ui| ui.menu_panel.toggle_observation_error(Some(&id)));
+            with_ui_mut(|ui| {
+                ui.menu_panel.toggle_observation_error(Some(&id));
+                ui.sync_character_menu_frame();
+            });
         }
 
         #[unsafe(method(copyObservationReconnect:))]
@@ -2113,7 +2119,10 @@ define_class!(
                 &NSString::from_str(&command),
                 unsafe { NSPasteboardTypeString },
             );
-            with_ui_mut(|ui| ui.menu_panel.observation_copy_feedback(&id, success));
+            with_ui_mut(|ui| {
+                ui.menu_panel.observation_copy_feedback(&id, success);
+                ui.sync_character_menu_frame();
+            });
         }
 
         #[unsafe(method(setBubbleTheme:))]
@@ -4120,7 +4129,7 @@ impl Ui {
         bubble_root.ivars().palette.set(palette);
         bubble_root.set_opaque_surface(prefs.show_status_indicators());
         let menu_target = MenuTarget::new(mtm);
-        let character_menu = CharacterMenu::new(&menu_target, locale, mtm);
+        let mut character_menu = CharacterMenu::new(&menu_target, locale, mtm);
         let character_browser = CharacterBrowser::new(&menu_target, locale, mtm);
         let official_characters = packs.official_catalog();
         let character_previews =
@@ -4345,6 +4354,8 @@ impl Ui {
                 .as_deref()
                 .map(|error| (Message::MenuBarIconLoadFailure, error)),
         );
+        menu_panel.set_character_content_height(character_menu.natural_height());
+        character_menu.set_frame(menu_panel.character_frame());
         let status_bar = NSStatusBar::systemStatusBar();
         let status_item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
         let status_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
@@ -4594,6 +4605,7 @@ impl Ui {
             self.prefs.menu_bar_icon().is_some(),
             Some((summary, detail)),
         );
+        self.sync_character_menu_frame();
     }
 
     fn apply_menu_bar_icon(&mut self, image: Retained<NSImage>) {
@@ -4603,6 +4615,7 @@ impl Ui {
         self.menu_panel
             .set_menu_bar_icon(&image, self.prefs.menu_bar_icon().is_some(), None);
         self.menu_bar_icon_image = image;
+        self.sync_character_menu_frame();
     }
 
     // Call only after the prepared asset has been published outside the UI borrow.
@@ -5481,6 +5494,27 @@ impl Ui {
         }
     }
 
+    fn sync_menu_panel_state(&mut self) {
+        let scene = self.last_scene.clone();
+        let status = status_text(&scene, self.locale);
+        if let Ok(state) = self.shared.lock() {
+            self.menu_panel.sync(
+                &scene,
+                self.prefs.menu_bar_mode(),
+                self.prefs.language(),
+                &status,
+                state.lifecycle_settings(),
+                state.observation_preferences(),
+                state.observation_catalog(),
+            );
+        }
+    }
+
+    fn sync_character_menu_frame(&mut self) {
+        self.character_menu
+            .set_frame(self.menu_panel.character_frame());
+    }
+
     fn refresh_character_menu(&mut self) {
         if let Some(operation_id) = self.character_selection.operation_id() {
             let operation = self.packs.cached_status(operation_id);
@@ -5494,21 +5528,6 @@ impl Ui {
         if let Some(error) = self.pack_error.as_ref() {
             listing.error = Some(error.clone());
         }
-        if self.menu_panel.is_visible() && !self.last_scene.shutdown {
-            let scene = self.last_scene.clone();
-            let status = status_text(&scene, self.locale);
-            if let Ok(state) = self.shared.lock() {
-                self.menu_panel.sync(
-                    &scene,
-                    self.prefs.menu_bar_mode(),
-                    self.prefs.language(),
-                    &status,
-                    state.lifecycle_settings(),
-                    state.observation_preferences(),
-                    state.observation_catalog(),
-                );
-            }
-        }
         let busy = self.packs.ui_mutation_busy() || self.character_selection.is_busy();
         self.character_menu.refresh(
             &listing,
@@ -5517,6 +5536,12 @@ impl Ui {
             self._menu_target.as_ref(),
             self.mtm,
         );
+        let height_changed = self
+            .menu_panel
+            .set_character_content_height(self.character_menu.natural_height());
+        if self.menu_panel.is_visible() && !self.last_scene.shutdown {
+            self.sync_menu_panel_state();
+        }
         let active_key = self
             .active_portrait_source(&listing)
             .map(|source| PreviewKey {
@@ -5579,6 +5604,11 @@ impl Ui {
             self.start_browser_timer();
         }
         self.browser_preview_revision = self.character_previews.revision();
+        if height_changed && self.menu_panel.is_visible() && self.menu_panel.is_character_tab() {
+            self.reanchor_menu_panel();
+        } else {
+            self.sync_character_menu_frame();
+        }
     }
 
     fn open_character_browser(&mut self) {
@@ -9621,13 +9651,21 @@ impl Ui {
                 }
             }
         }
+        let was_visible = self.menu_panel.is_visible();
+        self.refresh_character_menu();
+        if !was_visible && !self.last_scene.shutdown {
+            self.sync_menu_panel_state();
+        }
         if let Some(frame) = anchor_visible_frame(self.mtm, anchor) {
-            self.menu_panel.show_at(anchor, frame);
-            self.refresh_character_menu();
+            self.menu_panel.reanchor_at(anchor, frame);
+            self.sync_character_menu_frame();
+            self.menu_panel.show();
             if self.menu_panel.is_visible() {
                 self.menu_panel.refresh_bubble_color_controls();
                 self.queue_language_apply();
             }
+        } else {
+            self.sync_character_menu_frame();
         }
     }
 
@@ -10163,10 +10201,12 @@ impl Ui {
             self.menu_panel
                 .sync_observation(self.prefs.observation(), state.observation_catalog());
         }
+        self.sync_character_menu_frame();
     }
 
     fn select_menu_tab(&mut self, index: usize) {
         self.menu_panel.select_tab(index);
+        self.reanchor_menu_panel();
     }
 
     fn save_lifecycle_setting(&mut self, key: LifecycleSetting) {
@@ -10183,7 +10223,7 @@ impl Ui {
         }
     }
 
-    fn reanchor_menu_panel(&self) {
+    fn reanchor_menu_panel(&mut self) {
         if self.menu_panel.is_visible() {
             if let Some(anchor) = self.settings_anchor {
                 if let Some(frame) = anchor_visible_frame(self.mtm, anchor) {
@@ -10191,6 +10231,7 @@ impl Ui {
                 }
             }
         }
+        self.sync_character_menu_frame();
     }
 
     fn quit(&mut self) {
