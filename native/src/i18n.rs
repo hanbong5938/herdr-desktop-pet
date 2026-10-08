@@ -156,6 +156,39 @@ impl UiLocale {
     }
 }
 
+pub(crate) const fn cli_preference_feedback(locale: UiLocale, saved: bool) -> &'static str {
+    match (locale, saved) {
+        (UiLocale::Ko, true) => "자동화 설정 저장됨",
+        (UiLocale::En, true) => "Automation settings saved",
+        (UiLocale::Ko, false) => "자동화 설정 실패",
+        (UiLocale::En, false) => "Automation settings failed",
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CliPromptFeedback {
+    Sending,
+    Acknowledged,
+    Failed,
+    UnknownDelivery,
+}
+
+pub(crate) const fn cli_prompt_feedback(
+    locale: UiLocale,
+    feedback: CliPromptFeedback,
+) -> &'static str {
+    match (locale, feedback) {
+        (UiLocale::Ko, CliPromptFeedback::Sending) => "Herdr에 프롬프트 전송 중",
+        (UiLocale::En, CliPromptFeedback::Sending) => "Sending prompt to Herdr",
+        (UiLocale::Ko, CliPromptFeedback::Acknowledged) => "Herdr가 프롬프트를 수락함",
+        (UiLocale::En, CliPromptFeedback::Acknowledged) => "Herdr acknowledged prompt",
+        (UiLocale::Ko, CliPromptFeedback::Failed) => "프롬프트 전송 실패",
+        (UiLocale::En, CliPromptFeedback::Failed) => "Prompt delivery failed",
+        (UiLocale::Ko, CliPromptFeedback::UnknownDelivery) => "프롬프트 전달 여부 불확실",
+        (UiLocale::En, CliPromptFeedback::UnknownDelivery) => "Prompt delivery uncertain",
+    }
+}
+
 /// Resolve an explicit preference or the first supported primary language in
 /// an ordered system language list. Both hyphenated BCP-47 tags and the
 /// underscore form returned by some platform APIs are accepted.
@@ -224,7 +257,12 @@ pub(crate) enum Message {
     ApplyBubbleColors,
     ResetBubbleColors,
     InvalidBubbleColor,
+    BubbleColorsReload,
+    BubbleColorsRebase,
+    BubbleColorDraftConflict,
+    PreferenceRevisionConflict,
     BubbleAppearanceSaveFailure,
+    PresentationSaveFailure,
     StatusIndicatorsSaveFailure,
     MenuClickBehavior,
     MenuFullPassthrough,
@@ -336,6 +374,14 @@ pub(crate) enum Message {
     DialogueResetConfirm,
     DialogueResetConfirmHelp,
     DialogueSaveFailed,
+    DialogueDraftConflict,
+    DialogueReloadSaved,
+    DialogueRebaseDraft,
+    FinishMarkedText,
+    CliDialoguePending,
+    CliDialogueSaved,
+    CliDialogueConflict,
+    CliDialogueFailed,
     DialogueHeadTap,
     DialogueBodyTap,
     DialoguePet,
@@ -372,6 +418,11 @@ pub(crate) enum Message {
     WorktreeUnknownDelivery,
     WorktreeRejected,
     WorktreeFailed,
+    CliWorktreePending,
+    CliWorktreeAcknowledged,
+    CliWorktreeObserved,
+    CliWorktreeUncertain,
+    CliWorktreeConflict,
     FullSpeechBubbleMessage,
     AllSessions,
     ComposerSelectSession,
@@ -500,7 +551,12 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ApplyBubbleColors => "색상 적용",
             Message::ResetBubbleColors => "색상 초기화",
             Message::InvalidBubbleColor => "색상은 #RRGGBB 형식이어야 합니다",
+            Message::BubbleColorsReload => "저장값 불러오기",
+            Message::BubbleColorsRebase => "초안 기준 갱신",
+            Message::BubbleColorDraftConflict => "저장 색상 변경됨 — 불러오기 / 기준 갱신",
+            Message::PreferenceRevisionConflict => "설정 버전 충돌",
             Message::BubbleAppearanceSaveFailure => "말풍선 모양 설정 저장 실패",
+            Message::PresentationSaveFailure => "펫 표시 설정 저장 실패",
             Message::StatusIndicatorsSaveFailure => "상태 아이콘·색상 설정 저장 실패",
             Message::MenuClickBehavior => "클릭 동작",
             Message::MenuFullPassthrough => "펫 전체 클릭 통과",
@@ -622,6 +678,14 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
                 "한국어와 영어의 모든 사용자 대사가 삭제됩니다. 팩 원본은 변경되지 않습니다."
             }
             Message::DialogueSaveFailed => "대사 저장 실패",
+            Message::DialogueDraftConflict => "저장된 대사가 변경되었습니다. 초안을 다시 불러오거나 새 대사에 맞춰 재설정하세요.",
+            Message::DialogueReloadSaved => "저장값 불러오기",
+            Message::DialogueRebaseDraft => "초안 기준 갱신",
+            Message::FinishMarkedText => "입력 중인 글자 조합을 완료하세요.",
+            Message::CliDialoguePending => "자동화 대사 변경 적용 대기 중",
+            Message::CliDialogueSaved => "자동화 대사 저장됨",
+            Message::CliDialogueConflict => "자동화 대사 충돌 · 다시 읽어 확인하세요",
+            Message::CliDialogueFailed => "자동화 대사 저장 실패",
             Message::DialogueHeadTap => "머리 터치",
             Message::DialogueBodyTap => "몸 터치",
             Message::DialoguePet => "쓰다듬기",
@@ -658,6 +722,11 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::WorktreeUnknownDelivery => "삭제 결과를 확인할 수 없습니다. 확인 없이 다시 시도하지 마세요",
             Message::WorktreeRejected => "Herdr 서버가 워크트리 삭제를 거부했습니다",
             Message::WorktreeFailed => "워크트리를 삭제하지 못했습니다",
+            Message::CliWorktreePending => "자동화 워크트리 삭제 요청 중",
+            Message::CliWorktreeAcknowledged => "Herdr가 삭제 요청을 수락함 · 관찰 대기 중",
+            Message::CliWorktreeObserved => "워크트리 삭제가 관찰됨",
+            Message::CliWorktreeUncertain => "워크트리 삭제 결과 불확실 · 재시도 전 확인하세요",
+            Message::CliWorktreeConflict => "워크트리 상태가 변경됨 · 다시 확인하세요",
             Message::FullSpeechBubbleMessage => "전체 말풍선 메시지",
             Message::AllSessions => "전체",
             Message::ComposerSelectSession => "답장할 로컬 세션 카드를 선택하세요",
@@ -773,6 +842,11 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::ResetBubbleColors => "Reset colors",
             Message::InvalidBubbleColor => "Colors must use #RRGGBB",
             Message::BubbleAppearanceSaveFailure => "Bubble appearance could not be saved",
+            Message::BubbleColorsReload => "Reload saved",
+            Message::BubbleColorsRebase => "Rebase draft",
+            Message::BubbleColorDraftConflict => "Saved colors changed — reload or rebase",
+            Message::PreferenceRevisionConflict => "Settings revision conflict",
+            Message::PresentationSaveFailure => "Pet display settings could not be saved",
             Message::StatusIndicatorsSaveFailure => {
                 "Status icon and color setting could not be saved"
             }
@@ -896,6 +970,14 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
                 "Removes all personal dialogue in Korean and English. The pack stays unchanged."
             }
             Message::DialogueSaveFailed => "Could not save dialogue",
+            Message::DialogueDraftConflict => "Saved dialogue changed. Reload it or rebase your draft.",
+            Message::DialogueReloadSaved => "Reload saved",
+            Message::DialogueRebaseDraft => "Rebase draft",
+            Message::FinishMarkedText => "Finish composing text first.",
+            Message::CliDialoguePending => "Automation dialogue awaiting display",
+            Message::CliDialogueSaved => "Automation dialogue saved",
+            Message::CliDialogueConflict => "Automation dialogue conflict · read again",
+            Message::CliDialogueFailed => "Automation dialogue save failed",
             Message::DialogueHeadTap => "Head tap",
             Message::DialogueBodyTap => "Body tap",
             Message::DialoguePet => "Pet",
@@ -932,6 +1014,11 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::WorktreeUnknownDelivery => "Removal outcome is unknown. Check before trying again",
             Message::WorktreeRejected => "The Herdr server rejected worktree removal",
             Message::WorktreeFailed => "Could not remove worktree",
+            Message::CliWorktreePending => "Automation worktree removal requested",
+            Message::CliWorktreeAcknowledged => "Herdr acknowledged removal · awaiting observation",
+            Message::CliWorktreeObserved => "Worktree removal observed",
+            Message::CliWorktreeUncertain => "Worktree removal uncertain · check before retrying",
+            Message::CliWorktreeConflict => "Worktree changed · review again",
             Message::FullSpeechBubbleMessage => "Full speech bubble message",
             Message::AllSessions => "All",
             Message::ComposerSelectSession => "Select a local session card to reply",
