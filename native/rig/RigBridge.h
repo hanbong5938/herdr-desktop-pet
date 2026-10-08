@@ -23,13 +23,16 @@ typedef struct {
     const char *base_path;
     const char *pose_path;
     const char *overrides_path;
-    const char *motion_path;
     const char *base_pose_id;
     const char *pose_id;
     const HerdrRigModelInput *models;
     uint32_t model_count;
     const uint8_t *bindings;
     int32_t initial_pose_kind;
+    /* Borrowed from the sealed Rust asset for the duration of herdr_rig_create.
+     * The native host copies these bytes before returning. */
+    const uint8_t *initial_motion_bytes;
+    size_t initial_motion_length;
 } HerdrRigAssetInput;
 
 typedef struct {

@@ -92,6 +92,7 @@ struct TrackedOperation {
     submitted: bool,
     current: bool,
     owned_apply: bool,
+    official_id: Option<String>,
     rejected: Option<String>,
 }
 
@@ -125,6 +126,17 @@ impl CharacterSelection {
             .as_ref()
             .map(|operation| operation.id.as_str())
     }
+    pub fn official_operation_id(&self) -> Option<&str> {
+        self.operation
+            .as_ref()
+            .filter(|operation| operation.official_id.is_some())
+            .map(|operation| operation.id.as_str())
+    }
+    pub fn official_pack_id(&self) -> Option<&str> {
+        self.operation
+            .as_ref()
+            .and_then(|operation| operation.official_id.as_deref())
+    }
 
     pub fn operation(&self) -> Option<&PackOperation> {
         self.operation
@@ -141,10 +153,6 @@ impl CharacterSelection {
         self.operation
             .as_ref()
             .and_then(|op| op.rejected.as_deref())
-    }
-
-    pub fn operation_rejected(&self) -> bool {
-        self.operation_error().is_some()
     }
 
     /// A prior nonbusy attempt remains in diagnostics, not a freshly staged candidate's footer.
@@ -179,7 +187,9 @@ impl CharacterSelection {
             return false;
         }
         match self.operation_status() {
-            Some(OperationStatus::Completed) if tracked.owned_apply => self.candidate.is_some(),
+            Some(OperationStatus::Completed) if tracked.owned_apply => {
+                self.candidate.is_some() || tracked.official_id.is_some()
+            }
             Some(OperationStatus::CommittedPendingApply) => {
                 tracked.observed.as_ref().is_none_or(|op| {
                     !op.generation.is_some_and(|generation| {
@@ -264,6 +274,7 @@ impl CharacterSelection {
         // A fresh intent cannot inherit a previous Apply's completion or its footer result.
         if let Some(operation) = self.operation.as_mut() {
             operation.owned_apply = false;
+            operation.official_id = None;
         }
         Ok(())
     }
@@ -323,6 +334,7 @@ impl CharacterSelection {
             current: true,
             owned_apply: true,
             rejected: None,
+            official_id: None,
         });
         Ok(request)
     }
@@ -349,6 +361,35 @@ impl CharacterSelection {
         true
     }
 
+    /// An official install is one owned Apply intent, not a candidate staged from
+    /// the previously installed head. Keep an existing candidate until native
+    /// activation of the new exact revision has actually been observed.
+    pub fn reserve_official(
+        &mut self,
+        operation_id: String,
+        official_id: String,
+    ) -> Result<(), SelectionError> {
+        if self.is_busy() {
+            return Err(SelectionError::Busy);
+        }
+        if operation_id.is_empty() {
+            return Err(SelectionError::InvalidOperationId);
+        }
+        if self.listing.is_none() {
+            return Err(SelectionError::NoListing);
+        }
+        self.operation = Some(TrackedOperation {
+            id: operation_id,
+            observed: None,
+            submitted: false,
+            current: true,
+            owned_apply: true,
+            official_id: Some(official_id),
+            rejected: None,
+        });
+        Ok(())
+    }
+
     pub fn reserve_other(&mut self, operation_id: String) {
         self.operation = Some(TrackedOperation {
             id: operation_id,
@@ -356,6 +397,7 @@ impl CharacterSelection {
             submitted: false,
             current: true,
             owned_apply: false,
+            official_id: None,
             rejected: None,
         });
     }
@@ -408,27 +450,55 @@ impl CharacterSelection {
     }
 
     fn resolve_completed(&mut self) {
-        let (Some(candidate), Some(listing), Some(operation)) =
-            (&self.candidate, &self.listing, &self.operation)
-        else {
+        let (Some(listing), Some(operation)) = (&self.listing, &self.operation) else {
             return;
         };
-        if operation.owned_apply
-            && operation.current
-            && operation.observed.as_ref().is_some_and(|observed| {
-                OperationStatus::from_operation(observed) == OperationStatus::Completed
-                    && observed.ui_applied
-                    && observed.committed
-                    && observed
-                        .generation
-                        .is_some_and(|generation| listing.generation >= generation)
-                    && listing.selected == candidate.reference
-                    && listing.active.as_ref() == Some(&candidate.reference)
-                    && !listing.override_active
-            })
+        let Some(observed) = operation.observed.as_ref() else {
+            return;
+        };
+        if !operation.owned_apply
+            || !operation.current
+            || OperationStatus::from_operation(observed) != OperationStatus::Completed
+            || !observed.ui_applied
+            || !observed.committed
+            || !observed
+                .generation
+                .is_some_and(|generation| listing.generation >= generation)
         {
-            self.candidate = None;
-            self.stale = false;
+            return;
+        }
+        if let Some(id) = operation.official_id.as_ref() {
+            if observed.generation == Some(listing.generation) {
+                // At this generation the installed head identifies this import's
+                // revision; the matching live selection confirms native apply.
+                if listing.selected.id != *id
+                    || !listing
+                        .packs
+                        .iter()
+                        .any(|pack| pack.id == *id && pack.head == listing.selected.revision)
+                    || listing.active.as_ref() != Some(&listing.selected)
+                    || listing.override_active
+                {
+                    return;
+                }
+            }
+            // A later generation supersedes the completed intent. PackOperation
+            // does not carry its exact installed revision, so a newer listing's
+            // head/selection cannot prove it is still the imported revision.
+            // Release admission without rewriting that newer listing.
+        } else if listing.active.as_ref() != Some(&listing.selected)
+            || listing.override_active
+            || !self
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.reference == listing.selected)
+        {
+            return;
+        }
+        self.candidate = None;
+        self.stale = false;
+        if let Some(operation) = self.operation.as_mut() {
+            operation.official_id = None;
         }
     }
 
@@ -483,6 +553,20 @@ mod tests {
             generation,
             error: None,
         }
+    }
+
+    fn installed_official_listing() -> PackListing {
+        let mut current = listing();
+        current.generation = 8;
+        current.selected = reference("fox", 4);
+        current.active = Some(reference("fox", 4));
+        current.packs.push(PackRecord {
+            id: "fox".into(),
+            name: "Fox".into(),
+            head: 4,
+            revisions: vec![4],
+        });
+        current
     }
 
     #[test]
@@ -902,5 +986,307 @@ mod tests {
         selection.reconcile(&current);
         selection.stage_head("default").unwrap();
         assert!(selection.can_apply());
+    }
+    #[test]
+    fn official_completion_requires_exact_installed_head_and_native_active() {
+        let mut selection = CharacterSelection::new();
+        let mut current = listing();
+        selection.reconcile(&current);
+        selection.stage_head("cat").unwrap();
+        selection
+            .reserve_official("download".into(), "fox".into())
+            .unwrap();
+        assert_eq!(selection.stage_head("cat"), Err(SelectionError::Busy));
+        selection.record_operation(&status("download", "completed", Some(8), false));
+        assert!(selection.is_busy());
+        selection.record_operation(&status("download", "completed", Some(8), true));
+        assert!(selection.is_busy());
+        assert_eq!(
+            selection.candidate().unwrap().reference,
+            reference("cat", 3)
+        );
+        current.generation = 8;
+        current.packs.push(PackRecord {
+            id: "fox".into(),
+            name: "Fox".into(),
+            head: 4,
+            revisions: vec![4],
+        });
+        current.selected = reference("fox", 4);
+        selection.reconcile(&current);
+        assert!(selection.is_busy()); // Disk selection is not native activation.
+        current.active = Some(reference("fox", 4));
+        current.override_active = true;
+        selection.reconcile(&current);
+        assert!(selection.is_busy());
+        current.packs[1].head = 5;
+        current.packs[1].revisions.push(5);
+        current.override_active = false;
+        selection.reconcile(&current);
+        assert!(selection.is_busy()); // Matching ID is not enough; revision must be the head.
+        current.packs[1].head = 4;
+        selection.reconcile(&current);
+        assert!(selection.candidate().is_none());
+        assert!(!selection.is_busy());
+        assert!(selection.official_operation_id().is_none());
+    }
+
+    #[test]
+    fn official_completion_after_unrelated_remove_releases_admission() {
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing());
+        selection.stage_head("cat").unwrap();
+        selection
+            .reserve_official("download".into(), "fox".into())
+            .unwrap();
+        selection.record_operation(&status("download", "completed", Some(8), true));
+
+        let mut current = installed_official_listing();
+        current.generation = 9;
+        current.packs.retain(|pack| pack.id != "cat");
+        selection.reconcile(&current);
+
+        assert!(!selection.is_busy());
+        assert!(selection.candidate().is_none());
+        assert_eq!(selection.official_operation_id(), None);
+        assert_eq!(
+            selection.operation_status(),
+            Some(OperationStatus::Completed)
+        );
+        assert_eq!(selection.last_observation().unwrap().generation, Some(8));
+        assert_eq!(selection.generation(), Some(9));
+        selection.stage_head("default").unwrap();
+        let request = selection.request_apply("next".into()).unwrap();
+        assert_eq!(request.expected_generation, Some(9));
+        assert!(matches!(request.action, PackAction::Select { id } if id == "default"));
+    }
+
+    #[test]
+    fn superseded_official_completion_preserves_new_selection_head_removal_and_override() {
+        let mut selected_other = installed_official_listing();
+        selected_other.generation = 9;
+        selected_other.selected = reference("cat", 3);
+        selected_other.active = Some(reference("cat", 3));
+
+        let mut changed_head = installed_official_listing();
+        changed_head.generation = 9;
+        changed_head.packs[1].head = 5;
+        changed_head.packs[1].revisions.push(5);
+        changed_head.selected = reference("fox", 5);
+        changed_head.active = Some(reference("fox", 5));
+
+        let mut removed = installed_official_listing();
+        removed.generation = 9;
+        removed.packs.pop();
+        removed.selected = CharacterRef::builtin();
+        removed.active = Some(CharacterRef::builtin());
+
+        let mut overridden = installed_official_listing();
+        overridden.generation = 9;
+        overridden.override_active = true;
+
+        for (current, next_id, next_revision) in [
+            (selected_other, "fox", 4),
+            (changed_head, "fox", 5),
+            (removed, "cat", 3),
+            (overridden, "cat", 3),
+        ] {
+            let mut selection = CharacterSelection::new();
+            selection.reconcile(&listing());
+            selection.stage_revision(reference("cat", 1)).unwrap();
+            selection
+                .reserve_official("download".into(), "fox".into())
+                .unwrap();
+            selection.record_operation(&status("download", "completed", Some(8), true));
+            selection.reconcile(&current);
+
+            assert!(!selection.is_busy(), "{current:?}");
+            assert!(selection.candidate().is_none(), "{current:?}");
+            assert_eq!(selection.generation(), Some(9));
+            assert_eq!(selection.listing.as_ref(), Some(&current));
+            assert_eq!(selection.operation_id(), Some("download"));
+            assert_eq!(
+                selection.operation_status(),
+                Some(OperationStatus::Completed)
+            );
+            selection.stage_head(next_id).unwrap();
+            assert_eq!(
+                selection.candidate().unwrap().reference,
+                reference(next_id, next_revision)
+            );
+            selection.reconcile(&current);
+            assert_eq!(
+                selection.candidate().unwrap().reference,
+                reference(next_id, next_revision)
+            );
+        }
+    }
+
+    #[test]
+    fn newer_listing_before_official_terminal_result_releases_admission() {
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing());
+        selection.stage_head("cat").unwrap();
+        selection
+            .reserve_official("download".into(), "fox".into())
+            .unwrap();
+
+        let mut current = installed_official_listing();
+        current.generation = 9;
+        current.selected = reference("cat", 3);
+        current.active = Some(reference("cat", 3));
+        selection.reconcile(&current);
+        assert!(selection.is_busy());
+        assert_eq!(selection.stage_head("fox"), Err(SelectionError::Busy));
+
+        let mut completed = status("download", "completed", Some(8), true);
+        completed.error = Some("post-apply cleanup warning".into());
+        selection.record_operation(&completed);
+        assert!(!selection.is_busy());
+        assert!(selection.candidate().is_none());
+        assert_eq!(selection.official_operation_id(), None);
+        assert_eq!(selection.last_observation(), Some(&completed));
+        assert_eq!(selection.listing.as_ref(), Some(&current));
+        selection.stage_head("fox").unwrap();
+        assert_eq!(
+            selection.candidate().unwrap().reference,
+            reference("fox", 4)
+        );
+    }
+
+    #[test]
+    fn failed_official_operation_keeps_old_candidate_and_unknown_blocks_retry() {
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing());
+        selection.stage_revision(reference("cat", 1)).unwrap();
+        selection
+            .reserve_official("first".into(), "fox".into())
+            .unwrap();
+        selection.record_operation(&status("first", "committed_pending_apply", Some(8), false));
+        assert!(selection.is_busy()); // Committed registry not observed yet.
+        let mut committed = listing();
+        committed.generation = 8;
+        committed.selected = reference("fox", 4);
+        committed.packs.push(PackRecord {
+            id: "fox".into(),
+            name: "Fox".into(),
+            head: 4,
+            revisions: vec![4],
+        });
+        selection.reconcile(&committed);
+        assert!(!selection.is_busy());
+        assert_eq!(
+            selection.candidate().unwrap().reference,
+            reference("cat", 1)
+        );
+        selection
+            .reserve_official("retry".into(), "fox".into())
+            .unwrap();
+        selection.record_operation(&status("retry", "durability_unknown", Some(9), false));
+        assert_eq!(selection.stage_head("cat"), Err(SelectionError::Busy));
+        let mut failed = CharacterSelection::new();
+        failed.reconcile(&listing());
+        failed.stage_revision(reference("cat", 1)).unwrap();
+        failed
+            .reserve_official("failed-download".into(), "fox".into())
+            .unwrap();
+        failed.record_operation(&status("failed-download", "failed", None, false));
+        assert_eq!(failed.candidate().unwrap().reference, reference("cat", 1));
+        assert!(!failed.is_busy());
+    }
+
+    #[test]
+    fn official_submission_rejection_releases_admission_without_losing_selection() {
+        let mut selection = CharacterSelection::new();
+        assert_eq!(
+            selection.reserve_official("download".into(), "fox".into()),
+            Err(SelectionError::NoListing)
+        );
+        selection.reconcile(&listing());
+        selection.stage_head("cat").unwrap();
+        assert_eq!(
+            selection.reserve_official("".into(), "fox".into()),
+            Err(SelectionError::InvalidOperationId)
+        );
+        selection
+            .reserve_official("download".into(), "fox".into())
+            .unwrap();
+        assert!(selection.is_busy());
+        assert_eq!(selection.official_operation_id(), Some("download"));
+        assert!(selection.submission_failed("download", "worker unavailable".into()));
+        assert!(!selection.is_busy());
+        assert_eq!(
+            selection.candidate().unwrap().reference,
+            reference("cat", 3)
+        );
+        assert_eq!(selection.operation_error(), Some("worker unavailable"));
+        selection.stage_head("cat").unwrap();
+        assert!(selection.official_operation_id().is_none());
+    }
+    #[test]
+    fn official_completion_requires_both_listing_and_native_ack_in_either_order() {
+        for operation_first in [true, false] {
+            let mut selection = CharacterSelection::new();
+            selection.reconcile(&listing());
+            selection.stage_revision(reference("cat", 1)).unwrap();
+            selection
+                .reserve_official("download".into(), "fox".into())
+                .unwrap();
+            let completed = status("download", "completed", Some(8), true);
+            let committed = installed_official_listing();
+            if operation_first {
+                selection.record_operation(&completed);
+                assert!(selection.is_busy());
+                assert_eq!(selection.generation(), Some(7));
+                selection.reconcile(&committed);
+            } else {
+                selection.reconcile(&committed);
+                assert!(selection.is_busy());
+                selection.record_operation(&completed);
+            }
+            assert!(!selection.is_busy());
+            assert!(selection.candidate().is_none());
+            assert_eq!(selection.listing.as_ref(), Some(&committed));
+            assert_eq!(selection.official_operation_id(), None);
+        }
+    }
+
+    #[test]
+    fn pending_official_listing_does_not_infer_native_apply_and_unknown_blocks_retry() {
+        for operation_first in [true, false] {
+            let mut selection = CharacterSelection::new();
+            selection.reconcile(&listing());
+            selection.stage_head("cat").unwrap();
+            selection
+                .reserve_official("download".into(), "fox".into())
+                .unwrap();
+            let mut committed = installed_official_listing();
+            committed.active = Some(CharacterRef::builtin());
+            let pending = status("download", "committed_pending_apply", Some(8), false);
+            if operation_first {
+                selection.record_operation(&pending);
+                assert!(selection.is_busy());
+                selection.reconcile(&committed);
+            } else {
+                selection.reconcile(&committed);
+                assert!(selection.is_busy());
+                selection.record_operation(&pending);
+            }
+            assert!(!selection.is_busy());
+            assert_eq!(selection.official_operation_id(), Some("download"));
+            assert!(selection.stale());
+            assert_eq!(
+                selection.request_apply("blind".into()),
+                Err(SelectionError::Stale)
+            );
+            selection.stage_head("fox").unwrap();
+            assert!(selection.can_apply());
+            selection
+                .reserve_official("uncertain".into(), "fox".into())
+                .unwrap();
+            selection.record_operation(&status("uncertain", "durability_unknown", Some(9), false));
+            assert!(selection.is_busy());
+            assert_eq!(selection.stage_head("cat"), Err(SelectionError::Busy));
+        }
     }
 }

@@ -19,6 +19,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[repr(C)]
@@ -68,13 +69,14 @@ struct CAssetInput {
     base_path: *const c_char,
     pose_path: *const c_char,
     overrides_path: *const c_char,
-    motion_path: *const c_char,
     base_pose_id: *const c_char,
     pose_id: *const c_char,
     models: *const CModelInput,
     model_count: u32,
     bindings: *const u8,
     initial_pose_kind: i32,
+    initial_motion_bytes: *const u8,
+    initial_motion_length: usize,
 }
 
 #[repr(C)]
@@ -214,10 +216,15 @@ static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 struct TempSnapshot {
     root: PathBuf,
+    // Preview snapshots must be removed by the portrait worker, never AppKit.
+    cleanup: Option<mpsc::Sender<PathBuf>>,
 }
 
 impl TempSnapshot {
-    fn materialize(asset: &RigAsset) -> Result<(Self, SnapshotPaths), String> {
+    fn materialize(
+        asset: &RigAsset,
+        cleanup: Option<mpsc::Sender<PathBuf>>,
+    ) -> Result<(Self, SnapshotPaths), String> {
         let root = snapshot_root()?;
         let write = |name: &str, bytes: &[u8]| -> Result<CString, String> {
             let path = root.join(name);
@@ -243,7 +250,6 @@ impl TempSnapshot {
                 .map(|bytes| write("pose.psd", bytes.as_slice()))
                 .transpose()?;
             let overrides = write("overrides.json", asset.overrides.as_slice())?;
-            let motion = write("motion.json", asset.motion.as_slice())?;
             let base_pose_id = CString::new(asset.base_pose_id.as_bytes())
                 .map_err(|_| "base pose id contains NUL".to_owned())?;
             let pose_id = asset
@@ -275,14 +281,13 @@ impl TempSnapshot {
                 base,
                 pose,
                 overrides,
-                motion,
                 base_pose_id,
                 pose_id,
                 models,
             })
         })();
         match result {
-            Ok(paths) => Ok((Self { root }, paths)),
+            Ok(paths) => Ok((Self { root, cleanup }, paths)),
             Err(error) => {
                 let _ = fs::remove_dir_all(&root);
                 Err(error)
@@ -293,10 +298,13 @@ impl TempSnapshot {
 
 impl Drop for TempSnapshot {
     fn drop(&mut self) {
-        // RigDecodeJob has already received cancellation when the FFI handle is
-        // dropped. Removing these private snapshots now prevents stale pack
-        // bytes from surviving a canceled operation.
-        let _ = fs::remove_dir_all(&self.root);
+        // The native handle is already canceled/destroyed before its paths
+        // are released. Preview cleanup is queued to the portrait worker.
+        if let Some(cleanup) = &self.cleanup {
+            let _ = cleanup.send(std::mem::take(&mut self.root));
+        } else {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }
 
@@ -311,7 +319,6 @@ struct SnapshotPaths {
     base: CString,
     pose: Option<CString>,
     overrides: CString,
-    motion: CString,
     base_pose_id: CString,
     pose_id: Option<CString>,
     models: Vec<SnapshotModelPaths>,
@@ -329,9 +336,12 @@ fn snapshot_root() -> Result<PathBuf, String> {
         let path = temp.join(format!("herdr-rig-{pid}-{now}-{sequence}"));
         match fs::create_dir(&path) {
             Ok(()) => {
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|error| {
-                    format!("cannot seal private rig snapshot directory: {error}")
-                })?;
+                if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(0o700)) {
+                    let _ = fs::remove_dir(&path);
+                    return Err(format!(
+                        "cannot seal private rig snapshot directory: {error}"
+                    ));
+                }
                 return Ok(path);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -360,6 +370,75 @@ fn call_result(code: i32, error: *mut c_char) -> Result<(), String> {
         Ok(())
     } else {
         Err(bridge_error(error))
+    }
+}
+
+/// Immutable, sealed filesystem inputs. This value contains no native/AppKit
+/// objects and can cross from the portrait worker to the main-thread host.
+pub(crate) struct RigSnapshot {
+    snapshot: TempSnapshot,
+    paths: SnapshotPaths,
+    metadata: CharacterMetadata,
+    content_digest: String,
+    width: u32,
+    height: u32,
+    independent_models: bool,
+    bindings: Option<[u8; 10]>,
+    initial_pose_kind: i32,
+    initial_motion: std::sync::Arc<Vec<u8>>,
+}
+
+impl RigSnapshot {
+    fn materialize(
+        asset: RigAsset,
+        cleanup: Option<mpsc::Sender<PathBuf>>,
+    ) -> Result<Self, String> {
+        let independent_models = asset.supports_independent_models();
+        let initial_motion = match (&asset.models, &asset.bindings) {
+            (Some(models), Some(bindings)) => {
+                let index = usize::from(
+                    *bindings
+                        .get(usize::try_from(asset.initial_pose_kind).map_err(|_| {
+                            "independent rig initial pose kind is invalid".to_owned()
+                        })?)
+                        .ok_or_else(|| "independent rig initial pose kind is invalid".to_owned())?,
+                );
+                models
+                    .get(index)
+                    .ok_or_else(|| "independent rig initial binding is invalid".to_owned())?
+                    .motion
+                    .clone()
+            }
+            (None, None) => asset.motion.clone(),
+            _ => return Err("independent rig bindings are invalid".to_owned()),
+        };
+        let (snapshot, paths) = TempSnapshot::materialize(&asset, cleanup)?;
+        Ok(Self {
+            snapshot,
+            paths,
+            metadata: asset.metadata,
+            content_digest: asset.content_digest,
+            width: asset.width,
+            height: asset.height,
+            independent_models,
+            bindings: asset.bindings,
+            initial_pose_kind: asset.initial_pose_kind,
+            initial_motion,
+        })
+    }
+
+    pub(crate) fn for_preview(
+        asset: RigAsset,
+        cleanup: mpsc::Sender<PathBuf>,
+    ) -> Result<Self, String> {
+        Self::materialize(asset, Some(cleanup))
+    }
+
+    fn accept_token(self, token: &RendererToken) -> Result<Self, String> {
+        if self.content_digest != token.content_digest {
+            return Err("renderer token does not match validated content".to_owned());
+        }
+        Ok(self)
     }
 }
 
@@ -396,8 +475,30 @@ impl RigPreparation {
         token: RendererToken,
         mtm: MainThreadMarker,
     ) -> Result<Self, String> {
-        let independent_models = asset.supports_independent_models();
-        let (snapshot, paths) = TempSnapshot::materialize(&asset)?;
+        if asset.content_digest != token.content_digest {
+            return Err("renderer token does not match validated content".to_owned());
+        }
+        Self::from_snapshot(RigSnapshot::materialize(asset, None)?, token, mtm)
+    }
+
+    pub(crate) fn from_snapshot(
+        sealed: RigSnapshot,
+        token: RendererToken,
+        mtm: MainThreadMarker,
+    ) -> Result<Self, String> {
+        let sealed = sealed.accept_token(&token)?;
+        let RigSnapshot {
+            snapshot,
+            paths,
+            metadata,
+            width,
+            height,
+            independent_models,
+            bindings,
+            initial_pose_kind,
+            initial_motion,
+            ..
+        } = sealed;
         let operation_id = CString::new(token.operation_id.as_bytes())
             .map_err(|_| "renderer operation id contains NUL".to_owned())?;
         let reference_id = CString::new(token.reference.id.as_bytes())
@@ -414,19 +515,18 @@ impl RigPreparation {
                 motion_path: model.motion.as_ptr(),
             })
             .collect();
-        let bindings = asset.bindings.unwrap_or([0; 10]);
+        let bindings = bindings.unwrap_or([0; 10]);
         let model_count = u32::try_from(model_inputs.len())
             .map_err(|_| "v5 model count exceeds the native ABI".to_owned())?;
         let c_asset = CAssetInput {
-            width: asset.width,
-            height: asset.height,
+            width,
+            height,
             base_path: paths.base.as_ptr(),
             pose_path: paths
                 .pose
                 .as_ref()
                 .map_or(std::ptr::null(), |path| path.as_ptr()),
             overrides_path: paths.overrides.as_ptr(),
-            motion_path: paths.motion.as_ptr(),
             base_pose_id: paths.base_pose_id.as_ptr(),
             pose_id: paths
                 .pose_id
@@ -443,7 +543,9 @@ impl RigPreparation {
             } else {
                 bindings.as_ptr()
             },
-            initial_pose_kind: asset.initial_pose_kind,
+            initial_pose_kind,
+            initial_motion_bytes: initial_motion.as_ptr(),
+            initial_motion_length: initial_motion.len(),
         };
         let c_token = CTokenInput {
             operation_id: operation_id.as_ptr(),
@@ -466,10 +568,10 @@ impl RigPreparation {
             mtm,
             handle: Some(handle),
             snapshot: Some(snapshot),
-            metadata: asset.metadata,
+            metadata,
             token,
-            width: asset.width,
-            height: asset.height,
+            width,
+            height,
             independent_models,
         })
     }
@@ -837,3 +939,110 @@ impl Drop for PreparedRig {
 
 // Rust's public adapter intentionally keeps the token and metadata on the
 // prepared value; Main's PreparedCharacter can delegate to these accessors.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character_types::CharacterRef;
+    use std::sync::Arc;
+
+    #[test]
+    fn worker_sealed_snapshot_is_consumed_without_rematerialization_and_cleaned_off_main() {
+        let (cleanup, paths) = mpsc::channel();
+        let cleanup_worker = std::thread::spawn(move || {
+            let path: PathBuf = paths.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(path.join("base.psd").exists());
+            fs::remove_dir_all(&path).unwrap();
+            path
+        });
+        let asset = RigAsset {
+            width: 384,
+            height: 512,
+            base: Arc::new(vec![1, 2, 3, 4]),
+            pose: None,
+            overrides: Arc::new(b"{}".to_vec()),
+            motion: Arc::new(b"{}".to_vec()),
+            base_pose_id: "idle".to_owned(),
+            pose_id: None,
+            metadata: CharacterMetadata { dialogue: None },
+            content_digest: "a".repeat(64),
+            models: None,
+            bindings: None,
+            initial_pose_kind: -1,
+        };
+        let sealed = std::thread::spawn(move || RigSnapshot::for_preview(asset, cleanup).unwrap())
+            .join()
+            .unwrap();
+        let root = sealed.snapshot.root.clone();
+        assert_eq!(fs::read(root.join("base.psd")).unwrap(), [1, 2, 3, 4]);
+        assert_eq!(
+            fs::metadata(root.join("base.psd"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o400
+        );
+        let token = RendererToken::new(
+            "portrait-preview".to_owned(),
+            CharacterRef::builtin(),
+            "a".repeat(64),
+        )
+        .unwrap();
+        let accepted = sealed.accept_token(&token).unwrap();
+        assert_eq!(
+            accepted.paths.base.as_bytes(),
+            root.join("base.psd").as_os_str().as_bytes()
+        );
+        drop(accepted); // Sends only a path; worker owns filesystem removal.
+        assert_eq!(cleanup_worker.join().unwrap(), root);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn sealed_v5_snapshot_keeps_the_motion_of_its_initial_semantic_binding() {
+        let (cleanup, paths) = mpsc::channel();
+        let first_motion = Arc::new(b"first model".to_vec());
+        let idle_motion = Arc::new(b"bound idle model".to_vec());
+        let model = |id: &str, motion: Arc<Vec<u8>>| crate::assets::RigModelAsset {
+            id: id.to_owned(),
+            file: Arc::new(vec![1]),
+            overrides: Arc::new(b"{}".to_vec()),
+            motion,
+        };
+        let asset = RigAsset {
+            width: 384,
+            height: 512,
+            base: Arc::new(vec![1]),
+            pose: None,
+            overrides: Arc::new(b"{}".to_vec()),
+            motion: first_motion.clone(),
+            base_pose_id: "first".to_owned(),
+            pose_id: None,
+            metadata: CharacterMetadata { dialogue: None },
+            content_digest: "b".repeat(64),
+            models: Some(
+                (0..10)
+                    .map(|index| {
+                        let motion = match index {
+                            0 => first_motion.clone(),
+                            1 => idle_motion.clone(),
+                            _ => Arc::new(vec![index]),
+                        };
+                        model(&format!("model-{index}"), motion)
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+            ),
+            bindings: Some([1, 0, 2, 3, 4, 5, 6, 7, 8, 9]),
+            initial_pose_kind: 0,
+        };
+        let sealed = std::thread::spawn(move || RigSnapshot::for_preview(asset, cleanup).unwrap())
+            .join()
+            .unwrap();
+        assert!(Arc::ptr_eq(&sealed.initial_motion, &idle_motion));
+        assert_eq!(sealed.initial_motion.as_slice(), b"bound idle model");
+        drop(sealed);
+        fs::remove_dir_all(paths.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    }
+}

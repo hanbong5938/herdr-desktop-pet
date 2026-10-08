@@ -331,6 +331,14 @@ impl AssetPack {
             metadata: self.metadata,
         }
     }
+    /// The first frame of the validated idle clip; no other animation frames
+    /// need to be decoded by AppKit for a browser portrait.
+    pub(crate) fn idle_first_png(&self) -> Option<&[u8]> {
+        let frame = self.clips.phases[0].frames.first()?;
+        self.frames
+            .get(frame.index())
+            .map(|asset| asset.png.as_slice())
+    }
 }
 
 impl ManagedPack {
@@ -353,6 +361,12 @@ impl ManagedPack {
                 allow_builtin,
             )
         }
+    }
+
+    /// Parses the same immutable archive bytes whose release hash was verified.
+    pub(crate) fn load_archive_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let archive = self::pack_archive::parse(bytes)?;
+        Self::load_from_source(PackSource::Snapshot(snapshot_from_archive(archive)), false)
     }
 
     pub(crate) fn load_from_directory(directory: &File) -> Result<Self, String> {
