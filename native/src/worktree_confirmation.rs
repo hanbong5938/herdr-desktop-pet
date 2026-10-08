@@ -48,6 +48,11 @@ impl WorktreeConfirmations {
         Self::default()
     }
 
+    pub(crate) fn has_pending(&self) -> bool {
+        let now = Instant::now();
+        self.entries.values().any(|entry| now < entry.expires_at)
+    }
+
     pub(crate) fn issue(
         &mut self,
         instance_id: &str,

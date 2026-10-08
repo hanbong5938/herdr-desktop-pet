@@ -11,13 +11,39 @@ use crate::session_view::{
     SessionView, WorktreeRemoveTarget, WorktreeRemoveTargetError,
 };
 use crate::sources::{remote_machine_id, remote_source, ObservationPreferences, SourceCatalog};
+use herdr_update_coordinator::UpdateContext;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_COMPLETIONS: usize = 64;
+const UPDATE_PREPARE_LIFETIME: Duration = Duration::from_secs(20);
+
+#[derive(Clone, Debug)]
+pub(crate) struct UpdatePrepare {
+    pub operation_id: String,
+    pub token: String,
+}
+
+#[derive(Debug)]
+struct PendingUpdate {
+    request: UpdatePrepare,
+    reply: Option<mpsc::Sender<Result<(), String>>>,
+    taken: bool,
+    prepared: bool,
+    stop_claimed: bool,
+    expires: Instant,
+}
+
+impl PendingUpdate {
+    fn matches(&self, operation_id: &str, token: &str) -> bool {
+        self.request.operation_id == operation_id && self.request.token == token
+    }
+}
+
 const COMPLETION_MAX_AGE: Duration = Duration::from_secs(30);
 /// Only export stored, displayable metadata. In particular, raw source paths,
 /// full working directories, and worktree root/checkout paths are not session wire data.
@@ -183,6 +209,7 @@ struct SourceState {
     connected: bool,
     coherent: bool,
     counts: SourceCounts,
+    snapshot_revision: Option<u64>,
     // Populated only by a complete, accepted snapshot for this generation.
     pane_ids: Option<Arc<[String]>>,
 }
@@ -198,8 +225,14 @@ pub struct AppState {
     reset_position_revision: u64,
     automation: Option<SharedAutomation>,
     shutdown: bool,
+    updater_stopping: bool,
+    update_context: Option<UpdateContext>,
+    pending_update: Option<PendingUpdate>,
+    cancelled_updates: VecDeque<String>,
     lifecycle_settings: LifecycleSettings,
     ui_ready: bool,
+    /// Global across sources and reconnects; only complete accepted snapshots advance it.
+    coherent_snapshot_revision: u64,
     sources: HashMap<String, SourceState>,
     observation: ObservationPreferences,
     observation_catalog: SourceCatalog,
@@ -230,6 +263,11 @@ impl AppState {
             reset_position_revision: 0,
             automation: None,
             shutdown: false,
+            updater_stopping: false,
+            update_context: None,
+            pending_update: None,
+            cancelled_updates: VecDeque::new(),
+            coherent_snapshot_revision: 0,
             lifecycle_settings: LifecycleSettings {
                 auto_start: true,
                 exit_with_herdr: true,
@@ -251,6 +289,201 @@ impl AppState {
             unknown: 0,
             connected_sources: 0,
             disconnected_sources: 0,
+        }
+    }
+    pub(crate) fn set_update_context(&mut self, context: UpdateContext) {
+        self.update_context = Some(context);
+    }
+
+    pub(crate) fn update_context(&self) -> Option<&UpdateContext> {
+        self.update_context.as_ref()
+    }
+
+    pub(crate) fn updater_stopping(&self) -> bool {
+        self.updater_stopping
+    }
+
+    pub(crate) fn update_prepared(&self) -> bool {
+        self.pending_update
+            .as_ref()
+            .is_some_and(|pending| pending.prepared)
+    }
+
+    pub(crate) fn update_mutation_allowed(&self) -> Result<(), String> {
+        if self.pending_update.is_some() {
+            Err("application update is preparing or in progress; retry later".to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn queue_update_prepare(
+        &mut self,
+        operation_id: String,
+        token: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    ) -> Result<(), String> {
+        if !self.ui_ready || self.shutdown {
+            return Err("desktop pet is not ready for an update".into());
+        }
+        if self.pending_update.is_some() {
+            return Err("another application update is preparing".into());
+        }
+        self.pending_update = Some(PendingUpdate {
+            request: UpdatePrepare {
+                operation_id,
+                token,
+            },
+            reply: Some(reply),
+            taken: false,
+            prepared: false,
+            stop_claimed: false,
+            expires: Instant::now() + UPDATE_PREPARE_LIFETIME,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn take_update_prepare(&mut self) -> Option<UpdatePrepare> {
+        self.expire_update_prepare();
+        let pending = self.pending_update.as_mut()?;
+        if pending.taken {
+            return None;
+        }
+        pending.taken = true;
+        Some(pending.request.clone())
+    }
+
+    pub(crate) fn finish_update_prepare(
+        &mut self,
+        operation_id: &str,
+        token: &str,
+        result: Result<(), String>,
+    ) -> bool {
+        self.expire_update_prepare();
+        if !self.pending_update.as_ref().is_some_and(|pending| {
+            pending.matches(operation_id, token) && pending.taken && !pending.prepared
+        }) {
+            return false;
+        }
+        let pending = self
+            .pending_update
+            .as_mut()
+            .expect("matched pending update");
+        let success = result.is_ok();
+        let delivered = pending
+            .reply
+            .take()
+            .is_some_and(|reply| reply.send(result).is_ok());
+        if success && delivered {
+            pending.prepared = true;
+        } else {
+            self.pending_update = None;
+        }
+        success && delivered
+    }
+
+    /// Accept only a background-proven recovery for this exact prepared
+    /// original. A claimed Stop or ordinary Quit wins over a late journal.
+    pub(crate) fn reconcile_update_prepare(
+        &mut self,
+        operation_id: &str,
+        context: &UpdateContext,
+    ) -> bool {
+        if self.shutdown
+            || self.updater_stopping
+            || self.update_context.as_ref() != Some(context)
+            || !self.pending_update.as_ref().is_some_and(|pending| {
+                pending.request.operation_id == operation_id
+                    && pending.prepared
+                    && !pending.stop_claimed
+            })
+        {
+            return false;
+        }
+        self.pending_update = None;
+        true
+    }
+
+    pub(crate) fn cancel_update_prepare(&mut self, operation_id: &str, token: &str) {
+        if self
+            .pending_update
+            .as_ref()
+            .is_some_and(|p| p.matches(operation_id, token))
+        {
+            let pending = self.pending_update.take().expect("matched pending update");
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("update preparation cancelled".into()));
+            }
+            if pending.prepared {
+                self.cancelled_updates
+                    .push_back(pending.request.operation_id);
+            }
+        }
+    }
+
+    pub(crate) fn take_cancelled_update_prepare(&mut self) -> Option<String> {
+        self.expire_update_prepare();
+        self.cancelled_updates.pop_front()
+    }
+
+    /// Own this exact Stop while the socket writer sends the accepted reply.
+    /// The UI remains alive and all mutation ingress remains frozen.
+    pub(crate) fn claim_update_stop(
+        &mut self,
+        operation_id: &str,
+        token: &str,
+    ) -> Result<(), String> {
+        self.expire_update_prepare();
+        if self.shutdown
+            || !self
+                .pending_update
+                .as_ref()
+                .is_some_and(|p| p.matches(operation_id, token) && p.prepared && !p.stop_claimed)
+        {
+            return Err("updater Stop requires a live unclaimed prepared operation".into());
+        }
+        self.pending_update
+            .as_mut()
+            .expect("matched prepared update")
+            .stop_claimed = true;
+        Ok(())
+    }
+
+    /// Only a fully written reply may commit a matching Stop. An ordinary Quit
+    /// invalidates the claim instead of being reclassified as an updater exit.
+    pub(crate) fn commit_update_stop(
+        &mut self,
+        operation_id: &str,
+        token: &str,
+    ) -> Result<(), String> {
+        if self.shutdown
+            || !self
+                .pending_update
+                .as_ref()
+                .is_some_and(|p| p.matches(operation_id, token) && p.prepared && p.stop_claimed)
+        {
+            return Err("updater Stop claim changed before reply completion".into());
+        }
+        self.pending_update = None;
+        self.updater_stopping = true;
+        self.shutdown = true;
+        Ok(())
+    }
+
+    fn expire_update_prepare(&mut self) {
+        if self
+            .pending_update
+            .as_ref()
+            .is_some_and(|p| !p.stop_claimed && Instant::now() >= p.expires)
+        {
+            let pending = self.pending_update.take().expect("expired pending update");
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("update preparation timed out".into()));
+            }
+            if pending.prepared {
+                self.cancelled_updates
+                    .push_back(pending.request.operation_id);
+            }
         }
     }
 
@@ -538,6 +771,20 @@ impl AppState {
         }
         Ok(target)
     }
+    /// Baseline for a dispatch against the currently resolved, live card.
+    /// Status transitions and reconnects cannot supply a new full-snapshot proof.
+    pub(crate) fn worktree_snapshot_revision(&self, target: &WorktreeRemoveTarget) -> Option<u64> {
+        if self.worktree_remove_target(&target.key).ok().as_ref() != Some(target) {
+            return None;
+        }
+        let source = self.sources.get(&target.source)?;
+        if source.generation != target.key.generation || !source.coherent || !source.connected {
+            return None;
+        }
+        source.pane_ids.as_ref()?;
+        source.snapshot_revision
+    }
+
     /// The watcher supplies complete pane IDs independently of agent rows:
     /// an exited agent can leave a shell pane behind. A reconnect can prove
     /// absence only if the registered source ID/path is unchanged and its new
@@ -554,6 +801,7 @@ impl AppState {
             return None;
         }
         let source = self.sources.get(&target.source)?;
+        let revision = source.snapshot_revision?;
         if !source.connected || !source.coherent || source.generation < target.key.generation {
             return None;
         }
@@ -566,6 +814,8 @@ impl AppState {
         )?;
         Some(json!({
             "source_id": target.key.source_id,
+            "source": target.source,
+            "snapshot_revision": revision,
             "generation": source.generation,
             "pane_absent": !panes.iter().any(|id| id == &target.pane_id),
             "session_absent": session_absent,
@@ -711,6 +961,7 @@ impl AppState {
     }
 
     pub fn apply_control(&mut self, action: &str) -> Result<(), String> {
+        self.update_mutation_allowed()?;
         let mut patch = PresentationPatch::default();
         let action = match action {
             "show" => {
@@ -823,6 +1074,16 @@ impl AppState {
 
     /// Request an orderly daemon shutdown without changing persisted settings.
     pub fn request_shutdown(&mut self) {
+        if let Some(pending) = self.pending_update.take() {
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("update preparation cancelled".into()));
+            }
+            if pending.prepared {
+                self.cancelled_updates
+                    .push_back(pending.request.operation_id);
+            }
+        }
+        self.updater_stopping = false;
         self.shutdown = true;
     }
 
@@ -878,6 +1139,7 @@ impl AppState {
                 coherent: false,
                 counts,
                 pane_ids: None,
+                snapshot_revision: None,
             },
         );
         self.recompute_aggregate();
@@ -963,15 +1225,20 @@ impl AppState {
         if existing.generation != generation {
             return false;
         }
+        let Some(next_revision) = self.coherent_snapshot_revision.checked_add(1) else {
+            return false;
+        };
         if !self
             .session_store
             .replace_source(source, generation, records)
         {
             return false;
         }
+        self.coherent_snapshot_revision = next_revision;
         if let Some(existing) = self.sources.get_mut(source) {
             existing.connected = true;
             existing.coherent = true;
+            existing.snapshot_revision = Some(next_revision);
             if existing
                 .pane_ids
                 .as_ref()
@@ -1125,6 +1392,164 @@ mod tests {
     use super::*;
     use crate::session_view::SessionFilter;
     use std::time::{Duration, Instant};
+    #[test]
+    fn updater_prepare_admission_requires_main_thread_acceptance_and_matching_stop() {
+        let mut state = AppState::new();
+        state.set_ui_ready();
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("operation-a".into(), "secret-a".into(), sender)
+            .unwrap();
+        assert!(state.update_mutation_allowed().is_err());
+        assert!(state.claim_update_stop("operation-a", "secret-a").is_err());
+        let prepared = state.take_update_prepare().unwrap();
+        assert_eq!(prepared.operation_id, "operation-a");
+        assert!(!state.finish_update_prepare("operation-a", "wrong", Ok(())));
+        assert!(state.finish_update_prepare("operation-a", "secret-a", Ok(())));
+        assert!(receiver.recv().unwrap().is_ok());
+        assert!(state.claim_update_stop("operation-b", "secret-a").is_err());
+        assert!(state.claim_update_stop("operation-a", "wrong").is_err());
+        state.claim_update_stop("operation-a", "secret-a").unwrap();
+        assert!(!state.scene().shutdown);
+        assert!(!state.updater_stopping());
+        assert!(state.update_mutation_allowed().is_err());
+        assert!(state.claim_update_stop("operation-a", "secret-a").is_err());
+        assert!(state.commit_update_stop("operation-a", "wrong").is_err());
+        state.pending_update.as_mut().unwrap().expires = Instant::now() - Duration::from_secs(1);
+        assert!(state.take_cancelled_update_prepare().is_none());
+        state.commit_update_stop("operation-a", "secret-a").unwrap();
+        assert!(state.scene().shutdown && state.updater_stopping());
+        assert!(state.commit_update_stop("operation-a", "secret-a").is_err());
+        state.request_shutdown();
+        assert!(!state.updater_stopping());
+    }
+
+    #[test]
+    fn expired_prepare_cannot_ack_late_or_stop_and_unfreezes() {
+        let mut state = AppState::new();
+        state.set_ui_ready();
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("operation-a".into(), "secret-a".into(), sender)
+            .unwrap();
+        let pending = state.take_update_prepare().unwrap();
+        state.pending_update.as_mut().unwrap().expires = Instant::now() - Duration::from_secs(1);
+        assert!(!state.finish_update_prepare(&pending.operation_id, &pending.token, Ok(())));
+        assert!(receiver.recv().unwrap().is_err());
+        assert!(state.update_mutation_allowed().is_ok());
+        assert!(state.claim_update_stop("operation-a", "secret-a").is_err());
+    }
+
+    #[test]
+    fn cancelled_prepared_update_unfreezes_without_reviving_stop() {
+        let mut state = AppState::new();
+        state.set_ui_ready();
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("operation-a".into(), "secret-a".into(), sender)
+            .unwrap();
+        state.take_update_prepare().unwrap();
+        assert!(state.finish_update_prepare("operation-a", "secret-a", Ok(())));
+        assert!(receiver.recv().unwrap().is_ok());
+        state.cancel_update_prepare("operation-a", "secret-a");
+        assert_eq!(
+            state.take_cancelled_update_prepare().as_deref(),
+            Some("operation-a")
+        );
+        assert!(state.claim_update_stop("operation-a", "secret-a").is_err());
+        assert!(state.update_mutation_allowed().is_ok());
+    }
+
+    #[test]
+    fn recovered_prepare_only_releases_exact_live_original_and_never_a_claimed_stop() {
+        use herdr_update_coordinator::ExecutableIdentity;
+        use std::collections::BTreeMap;
+        use std::path::PathBuf;
+
+        let image = ExecutableIdentity {
+            path: PathBuf::from("/isolated/app"),
+            sha256: "original image".into(),
+        };
+        let context = UpdateContext {
+            executable: image.path.clone(),
+            version: "0.2.0".into(),
+            instance_id: "original".into(),
+            config_dir: PathBuf::from("/isolated/profile"),
+            host_plugin_config_dir: None,
+            state_dir: PathBuf::from("/isolated/state"),
+            herdr_socket: PathBuf::from("/isolated/original.sock"),
+            running: image,
+            running_origin: None,
+            assets_override: None,
+            environment: BTreeMap::new(),
+            locale: "en".into(),
+        };
+        let mut state = AppState::new();
+        state.set_ui_ready();
+        state.set_update_context(context.clone());
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("old".into(), "secret".into(), sender)
+            .unwrap();
+        state.take_update_prepare().unwrap();
+        assert!(state.finish_update_prepare("old", "secret", Ok(())));
+        receiver.recv().unwrap().unwrap();
+        assert!(state.update_mutation_allowed().is_err());
+        let mut other = context.clone();
+        other.running.sha256 = "new image".into();
+        assert!(!state.reconcile_update_prepare("old", &other));
+        assert!(!state.reconcile_update_prepare("new", &context));
+        assert!(state.update_mutation_allowed().is_err());
+        assert!(state.reconcile_update_prepare("old", &context));
+        assert!(state.update_mutation_allowed().is_ok());
+        assert!(state.claim_update_stop("old", "secret").is_err());
+
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("new".into(), "new-secret".into(), sender)
+            .unwrap();
+        state.take_update_prepare().unwrap();
+        assert!(state.finish_update_prepare("new", "new-secret", Ok(())));
+        receiver.recv().unwrap().unwrap();
+        assert!(!state.reconcile_update_prepare("old", &context));
+        assert!(state.update_mutation_allowed().is_err());
+        state.claim_update_stop("new", "new-secret").unwrap();
+        assert!(!state.reconcile_update_prepare("new", &context));
+        assert!(state.update_mutation_allowed().is_err());
+        state.request_shutdown();
+        assert!(!state.reconcile_update_prepare("new", &context));
+    }
+
+    #[test]
+    fn failed_stop_reply_thaws_and_user_quit_beats_claim() {
+        let mut state = AppState::new();
+        state.set_ui_ready();
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("failed-reply".into(), "token".into(), sender)
+            .unwrap();
+        state.take_update_prepare().unwrap();
+        assert!(state.finish_update_prepare("failed-reply", "token", Ok(())));
+        receiver.recv().unwrap().unwrap();
+        state.claim_update_stop("failed-reply", "token").unwrap();
+        assert!(!state.scene().shutdown);
+        state.cancel_update_prepare("failed-reply", "token");
+        assert!(state.update_mutation_allowed().is_ok());
+        assert!(!state.updater_stopping());
+        assert!(state.commit_update_stop("failed-reply", "token").is_err());
+
+        let (sender, receiver) = mpsc::channel();
+        state
+            .queue_update_prepare("user-quit".into(), "token".into(), sender)
+            .unwrap();
+        state.take_update_prepare().unwrap();
+        assert!(state.finish_update_prepare("user-quit", "token", Ok(())));
+        receiver.recv().unwrap().unwrap();
+        state.claim_update_stop("user-quit", "token").unwrap();
+        state.request_shutdown();
+        assert!(state.scene().shutdown && !state.updater_stopping());
+        assert!(state.commit_update_stop("user-quit", "token").is_err());
+    }
 
     fn connect(state: &mut AppState, source: &str, generation: u64) {
         assert!(state.begin_source(source.to_owned(), generation));
@@ -1612,10 +2037,18 @@ mod tests {
             .key
             .clone();
         let target = state.worktree_remove_target(&key).unwrap();
+        assert_eq!(state.worktree_snapshot_revision(&target), Some(1));
+        assert!(state.update_source(source, 1, true, live));
+        assert_eq!(state.worktree_snapshot_revision(&target), Some(1));
+        let mut different_source = target.clone();
+        different_source.source = "/private/another.sock".into();
+        assert_eq!(state.worktree_snapshot_revision(&different_source), None);
         assert_eq!(
             state.automation_worktree_observation(&target),
-            Some(json!({"source_id":key.source_id,"generation":1,
-                        "pane_absent":false,"session_absent":false}))
+            Some(
+                json!({"source_id":key.source_id,"source":source,"generation":1,
+                        "snapshot_revision":1,"pane_absent":false,"session_absent":false})
+            )
         );
         let empty: [AgentRecord; 0] = [];
         assert!(state.publish_source_snapshot(
@@ -1630,8 +2063,10 @@ mod tests {
         // The agent exited, but the containing shell pane remains.
         assert_eq!(
             state.automation_worktree_observation(&target),
-            Some(json!({"source_id":key.source_id,"generation":1,
-                        "pane_absent":false,"session_absent":true}))
+            Some(
+                json!({"source_id":key.source_id,"source":source,"generation":1,
+                        "snapshot_revision":2,"pane_absent":false,"session_absent":true})
+            )
         );
         assert!(state.publish_source_snapshot(
             source,
@@ -1644,10 +2079,13 @@ mod tests {
         ));
         assert_eq!(
             state.automation_worktree_observation(&target),
-            Some(json!({"source_id":key.source_id,"generation":1,
-                        "pane_absent":true,"session_absent":false}))
+            Some(
+                json!({"source_id":key.source_id,"source":source,"generation":1,
+                        "snapshot_revision":3,"pane_absent":true,"session_absent":false})
+            )
         );
         assert!(state.update_source(source, 1, false, live));
+        assert_eq!(state.worktree_snapshot_revision(&target), None);
         assert_eq!(state.automation_worktree_observation(&target), None);
         connect(&mut state, source, 2);
         assert_eq!(state.automation_worktree_observation(&target), None);
@@ -1672,8 +2110,10 @@ mod tests {
         ));
         assert_eq!(
             state.automation_worktree_observation(&target),
-            Some(json!({"source_id":key.source_id,"generation":2,
-                        "pane_absent":true,"session_absent":true}))
+            Some(
+                json!({"source_id":key.source_id,"source":source,"generation":2,
+                        "snapshot_revision":4,"pane_absent":true,"session_absent":true})
+            )
         );
         assert!(state.remove_source(source, 2));
         connect(&mut state, source, 3);
@@ -1687,6 +2127,24 @@ mod tests {
             Instant::now(),
         ));
         assert_eq!(state.automation_worktree_observation(&target), None);
+        let other = "/private/another.sock";
+        connect(&mut state, other, 1);
+        assert!(state.publish_source_snapshot(
+            other,
+            1,
+            [&row],
+            live,
+            Arc::from(vec!["target-pane".to_owned()]),
+            &[],
+            Instant::now(),
+        ));
+        let other_key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
+        let other_target = state.worktree_remove_target(&other_key).unwrap();
+        assert_eq!(state.worktree_snapshot_revision(&other_target), Some(6));
     }
 
     #[test]

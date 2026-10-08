@@ -20,7 +20,7 @@ use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSColor, NSControlSize,
     NSControlStateValueOn, NSEvent, NSFont, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
     NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSearchField, NSTextAlignment, NSTextField,
-    NSView,
+    NSTextView, NSView,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSString};
 use std::cell::{Cell, RefCell};
@@ -70,6 +70,7 @@ struct CardsIntent {
     reply_composition_active: bool,
     search_composition_active: bool,
     resize_frozen: bool,
+    update_frozen: bool,
     pending_selection: Option<SessionKey>,
     pending_filter: Option<SessionFilter>,
     pending_query: Option<String>,
@@ -81,6 +82,28 @@ struct CardsIntent {
     deferred_selection_applied: bool,
 }
 impl CardsIntent {
+    fn accepts_leaf_input(&self) -> bool {
+        !self.update_frozen
+    }
+
+    fn choose_filter(&mut self, filter: SessionFilter) -> bool {
+        if !self.accepts_leaf_input() {
+            return false;
+        }
+        self.pending_filter = Some(filter);
+        self.deferred_refresh = true;
+        true
+    }
+
+    fn choose_sort(&mut self, sort: SessionSort) -> bool {
+        if !self.accepts_leaf_input() {
+            return false;
+        }
+        self.pending_sort = Some(sort);
+        self.deferred_refresh = true;
+        true
+    }
+
     fn composing(&self) -> bool {
         self.reply_composition_active || self.search_composition_active
     }
@@ -98,9 +121,14 @@ impl CardsIntent {
         })
     }
 
-    fn toggle_running_first(&mut self, applied: SessionListPreferences) {
+    fn toggle_running_first(&mut self, applied: SessionListPreferences) -> bool {
+        if !self.accepts_leaf_input() {
+            return false;
+        }
         self.pending_running_first =
             Some(!self.pending_running_first.unwrap_or(applied.running_first));
+        self.deferred_refresh = true;
+        true
     }
 
     fn clear_pending_preferences(&mut self) {
@@ -120,11 +148,15 @@ impl CardsIntent {
         self.deferred_refresh = true;
     }
 
-    fn request_selection(&mut self, key: SessionKey, marked: bool) {
+    fn request_selection(&mut self, key: SessionKey, marked: bool) -> bool {
+        if !self.accepts_leaf_input() {
+            return false;
+        }
         self.pending_selection = Some(key);
         self.pending_selection_deferred = true;
         self.reply_composition_active |= marked;
         self.deferred_refresh = true;
+        true
     }
 
     fn set_resize_frozen(&mut self, frozen: bool) {
@@ -204,20 +236,28 @@ define_class!(
     impl SessionCardsRoot {
         #[unsafe(method(filterChanged:))]
         fn filter_changed(&self, _sender: Option<&AnyObject>) {
+            if !self.ivars().intent.borrow().accepts_leaf_input() {
+                self.restore_popup();
+                return;
+            }
             let index: isize = unsafe { msg_send![&*self.ivars().popup, indexOfSelectedItem] };
             let Some(filter) = SessionFilter::ALL.get(index.max(0) as usize).copied() else {
                 return;
             };
-            let mut intent = self.ivars().intent.borrow_mut();
-            intent.pending_filter = Some(filter);
-            intent.deferred_refresh = true;
-            drop(intent);
+            if !self.ivars().intent.borrow_mut().choose_filter(filter) {
+                self.restore_popup();
+                return;
+            }
             self.restore_popup();
             crate::ui::cards_content_changed();
         }
 
         #[unsafe(method(sortChanged:))]
         fn sort_changed(&self, sender: Option<&AnyObject>) {
+            if !self.ivars().intent.borrow().accepts_leaf_input() {
+                self.restore_options();
+                return;
+            }
             let Some(item) = sender.and_then(|sender| sender.downcast_ref::<NSMenuItem>()) else {
                 return;
             };
@@ -233,16 +273,20 @@ define_class!(
             else {
                 return;
             };
-            let mut intent = self.ivars().intent.borrow_mut();
-            intent.pending_sort = Some(sort);
-            intent.deferred_refresh = true;
-            drop(intent);
+            if !self.ivars().intent.borrow_mut().choose_sort(sort) {
+                self.restore_options();
+                return;
+            }
             self.restore_options();
             crate::ui::cards_options_changed();
         }
 
         #[unsafe(method(runningChanged:))]
         fn running_changed(&self, sender: Option<&AnyObject>) {
+            if !self.ivars().intent.borrow().accepts_leaf_input() {
+                self.restore_options();
+                return;
+            }
             let Some(item) = sender.and_then(|sender| sender.downcast_ref::<NSMenuItem>()) else {
                 return;
             };
@@ -253,10 +297,11 @@ define_class!(
             if index != RUNNING_ITEM_INDEX {
                 return;
             }
-            let mut intent = self.ivars().intent.borrow_mut();
-            intent.toggle_running_first(self.ivars().applied_options.get());
-            intent.deferred_refresh = true;
-            drop(intent);
+            if !self.ivars().intent.borrow_mut()
+                .toggle_running_first(self.ivars().applied_options.get()) {
+                self.restore_options();
+                return;
+            }
             self.restore_options();
             crate::ui::cards_options_changed();
         }
@@ -284,6 +329,9 @@ define_class!(
             _editor: &AnyObject,
             command: objc2::runtime::Sel,
         ) -> bool {
+            if !self.ivars().intent.borrow().accepts_leaf_input() {
+                return true.into();
+            }
             if command == sel!(insertNewline:) || command == sel!(insertNewlineIgnoringFieldEditor:) {
                 return true.into();
             }
@@ -319,6 +367,10 @@ impl SessionCardsRoot {
         let Some(menu) = self.ivars().sort_popup.menu() else {
             return;
         };
+        let selected: isize = unsafe { msg_send![&*self.ivars().sort_popup, indexOfSelectedItem] };
+        if selected != 0 {
+            let _: () = unsafe { msg_send![&*self.ivars().sort_popup, selectItemAtIndex: 0isize] };
+        }
         for (index, sort) in SESSION_SORTS.into_iter().enumerate() {
             if let Some(item) = menu.itemAtIndex(SORT_ITEM_START + index as isize) {
                 let state = if sort == options.sort {
@@ -365,6 +417,23 @@ impl SessionCardsRoot {
     }
 
     fn search_text_changed(&self) {
+        if !self.ivars().intent.borrow().accepts_leaf_input() {
+            let query = self
+                .ivars()
+                .inner
+                .upgrade()
+                .map(|inner| inner.borrow().query.clone());
+            if let Some(query) = query {
+                let value = NSString::from_str(&query);
+                self.ivars().search.setStringValue(&value);
+                let editor: Option<&AnyObject> =
+                    unsafe { msg_send![&*self.ivars().search, currentEditor] };
+                if let Some(editor) = editor {
+                    let _: () = unsafe { msg_send![editor, setString: &*value] };
+                }
+            }
+            return;
+        }
         let value = self.ivars().search.stringValue();
         let marked = self.search_marked();
         let mut intent = self.ivars().intent.borrow_mut();
@@ -386,6 +455,9 @@ impl SessionCardsRoot {
     }
 
     fn search_escape(&self) {
+        if !self.ivars().intent.borrow().accepts_leaf_input() {
+            return;
+        }
         if self.search_marked() {
             let editor: Option<&AnyObject> =
                 unsafe { msg_send![&*self.ivars().search, currentEditor] };
@@ -482,8 +554,7 @@ define_class!(
 
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press(&self) -> bool {
-            self.select();
-            true
+            self.select()
         }
 
         #[unsafe(method_id(accessibilityRole))]
@@ -500,18 +571,25 @@ define_class!(
 );
 
 impl SessionCardView {
-    fn select(&self) {
+    fn select(&self) -> bool {
+        if !self.ivars().intent.borrow().accepts_leaf_input() {
+            return false;
+        }
         let marked = crate::ui::composer_is_composing()
             || self.ivars().intent.borrow().search_composition_active;
         let Some(inner) = self.ivars().inner.upgrade() else {
-            return;
+            return false;
         };
+        if !self
+            .ivars()
+            .intent
+            .borrow_mut()
+            .request_selection(self.ivars().key.clone(), marked)
         {
-            let mut intent = self.ivars().intent.borrow_mut();
-            intent.request_selection(self.ivars().key.clone(), marked);
+            return false;
         }
         if marked || self.ivars().intent.borrow().resize_frozen {
-            return;
+            return true;
         }
         let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
             if !self.ivars().intent.borrow().composing()
@@ -530,6 +608,7 @@ impl SessionCardView {
         } else {
             crate::ui::wake();
         }
+        true
     }
 }
 
@@ -1452,10 +1531,59 @@ fn selection_visible(snapshot: &SessionSnapshot, key: &SessionKey) -> bool {
     snapshot.rows.iter().any(|row| &row.key == key)
 }
 
+struct FrozenMenuState {
+    autoenables_items: bool,
+    item_enabled: Vec<Option<bool>>,
+}
+
+impl FrozenMenuState {
+    fn disable(popup: &NSPopUpButton) -> Option<Self> {
+        let menu = popup.menu()?;
+        let autoenables_items: bool = unsafe { msg_send![&*menu, autoenablesItems] };
+        let count: isize = unsafe { msg_send![&*menu, numberOfItems] };
+        let mut item_enabled = Vec::with_capacity(count.max(0) as usize);
+        for index in 0..count {
+            item_enabled.push(menu.itemAtIndex(index).map(|item| item.isEnabled()));
+        }
+        let _: () = unsafe { msg_send![&*menu, setAutoenablesItems: false] };
+        for index in 0..count {
+            if let Some(item) = menu.itemAtIndex(index) {
+                item.setEnabled(false);
+            }
+        }
+        Some(Self {
+            autoenables_items,
+            item_enabled,
+        })
+    }
+
+    fn restore(self, popup: &NSPopUpButton) {
+        if let Some(menu) = popup.menu() {
+            for (index, enabled) in self.item_enabled.into_iter().enumerate() {
+                if let (Some(item), Some(enabled)) = (menu.itemAtIndex(index as isize), enabled) {
+                    item.setEnabled(enabled);
+                }
+            }
+            let _: () = unsafe { msg_send![&*menu, setAutoenablesItems: self.autoenables_items] };
+        }
+    }
+}
+
+struct FrozenCardsControls {
+    search_enabled: bool,
+    search_editable: bool,
+    editor: Option<(Retained<AnyObject>, bool)>,
+    filter_enabled: bool,
+    sort_enabled: bool,
+    filter_menu: Option<FrozenMenuState>,
+    sort_menu: Option<FrozenMenuState>,
+}
+
 pub(crate) struct SessionCards {
     inner: Rc<RefCell<SessionCardsInner>>,
     intent: Rc<RefCell<CardsIntent>>,
     root: Retained<SessionCardsRoot>,
+    update_frozen_previous: RefCell<Option<FrozenCardsControls>>,
 }
 
 impl SessionCards {
@@ -1619,6 +1747,7 @@ impl SessionCards {
             inner,
             intent,
             root,
+            update_frozen_previous: RefCell::new(None),
         };
         cards.set_frame(default_frame);
         cards.refresh();
@@ -1700,6 +1829,88 @@ impl SessionCards {
 
     pub(crate) fn is_composing(&self) -> bool {
         self.intent.borrow().composing()
+    }
+    /// Read the live search control, not only the last reduced Rust query:
+    /// AppKit can hold uncommitted field-editor text while an IME is active.
+    pub(crate) fn has_pending_update_intent(&self) -> bool {
+        let intent = self.intent.borrow();
+        let search = &self.root.ivars().search;
+        let editor: Option<&AnyObject> = unsafe { msg_send![&*search, currentEditor] };
+        let native_text_pending = editor
+            .and_then(|editor| editor.downcast_ref::<NSTextView>())
+            .is_some_and(|editor| editor.string().length() > 0);
+        intent.composing()
+            || self.root.search_marked()
+            || search.stringValue().length() > 0
+            || native_text_pending
+            || intent.pending_selection.is_some()
+            || intent.pending_selection_deferred
+            || intent.pending_filter.is_some()
+            || intent.pending_query.is_some()
+            || intent.pending_query_native.is_some()
+            || intent.pending_sort.is_some()
+            || intent.pending_running_first.is_some()
+            || intent.resize_frozen
+            || intent.deferred_selection_applied
+    }
+
+    /// Disable each actual native input as well as guarding its AX/action
+    /// callback. A cancelled Prepare restores the exact pre-freeze states.
+    pub(crate) fn set_update_frozen(&self, frozen: bool) {
+        let ivars = self.root.ivars();
+        let search = &ivars.search;
+        let mut previous = self.update_frozen_previous.borrow_mut();
+        if frozen {
+            if previous.is_some() {
+                return;
+            }
+            let editor: Option<&AnyObject> = unsafe { msg_send![&**search, currentEditor] };
+            let editor =
+                editor.map(|editor| (editor.retain(), unsafe { msg_send![editor, isEditable] }));
+            let search_enabled = search.isEnabled();
+            let search_editable = search.isEditable();
+            let filter_enabled = ivars.popup.isEnabled();
+            let sort_enabled = ivars.sort_popup.isEnabled();
+            self.intent.borrow_mut().update_frozen = true;
+            let filter_menu = FrozenMenuState::disable(&ivars.popup);
+            let sort_menu = FrozenMenuState::disable(&ivars.sort_popup);
+            *previous = Some(FrozenCardsControls {
+                search_enabled,
+                search_editable,
+                editor,
+                filter_enabled,
+                sort_enabled,
+                filter_menu,
+                sort_menu,
+            });
+            if let Some((editor, _)) = previous.as_ref().and_then(|prior| prior.editor.as_ref()) {
+                let _: () = unsafe { msg_send![&**editor, setEditable: false] };
+            }
+            search.setEditable(false);
+            search.setEnabled(false);
+            ivars.popup.setEnabled(false);
+            ivars.sort_popup.setEnabled(false);
+        } else if let Some(previous) = previous.take() {
+            search.setEditable(previous.search_editable);
+            search.setEnabled(previous.search_enabled);
+            if let Some((editor, editable)) = previous.editor {
+                // AppKit shares field editors between controls. Only restore
+                // this editor while it still belongs to our search field.
+                let current: Option<&AnyObject> = unsafe { msg_send![&**search, currentEditor] };
+                if current.is_some_and(|current| std::ptr::eq(current, &*editor)) {
+                    let _: () = unsafe { msg_send![&*editor, setEditable: editable] };
+                }
+            }
+            if let Some(menu) = previous.filter_menu {
+                menu.restore(&ivars.popup);
+            }
+            if let Some(menu) = previous.sort_menu {
+                menu.restore(&ivars.sort_popup);
+            }
+            ivars.popup.setEnabled(previous.filter_enabled);
+            ivars.sort_popup.setEnabled(previous.sort_enabled);
+            self.intent.borrow_mut().update_frozen = false;
+        }
     }
 
     pub(crate) fn search_has_focus(&self) -> bool {
@@ -2189,6 +2400,51 @@ mod tests {
         intent.set_resize_frozen(false);
         assert!(intent.reply_composition_active);
         assert!(intent.composing());
+    }
+
+    #[test]
+    fn frozen_leaf_options_and_selection_do_not_record_unsaved_preferences() {
+        let selected = SessionKey {
+            source_id: 7,
+            generation: 2,
+            terminal_id: "first".into(),
+        };
+        let other = SessionKey {
+            terminal_id: "other".into(),
+            ..selected.clone()
+        };
+        let applied = SessionListPreferences::default();
+        let mut intent = CardsIntent::default();
+        assert!(intent.choose_filter(SessionFilter::Working));
+        assert!(intent.request_selection(selected.clone(), false));
+        // Simulate the committed UI state after its internal refresh.
+        intent.pending_filter = None;
+        intent.pending_selection = None;
+        intent.pending_selection_deferred = false;
+        intent.deferred_refresh = false;
+        intent.update_frozen = true;
+        assert!(!intent.choose_filter(SessionFilter::Offline));
+        assert!(!intent.choose_sort(SessionSort::TitleAsc));
+        assert!(!intent.toggle_running_first(applied));
+        assert!(!intent.request_selection(other.clone(), false));
+        assert_eq!(intent.pending_filter, None);
+        assert_eq!(intent.pending_selection, None);
+        assert_eq!(intent.pending_preferences(applied), None);
+        assert!(!intent.deferred_refresh);
+        // Internal refresh must not thaw leaf input; only cancel does.
+        assert!(!intent.choose_sort(SessionSort::SourceAsc));
+        intent.update_frozen = false;
+        assert!(intent.choose_sort(SessionSort::TitleAsc));
+        assert!(intent.toggle_running_first(applied));
+        assert!(intent.request_selection(other.clone(), false));
+        assert_eq!(intent.pending_selection, Some(other));
+        assert_eq!(
+            intent.pending_preferences(applied),
+            Some(SessionListPreferences {
+                sort: SessionSort::TitleAsc,
+                running_first: !applied.running_first,
+            })
+        );
     }
 
     #[test]

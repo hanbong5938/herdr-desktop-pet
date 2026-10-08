@@ -6,7 +6,7 @@
   "description": "Native desktop character companion for Herdr",
   "scripts": {
     "check": "tsc --noEmit",
-    "build:native": "cargo build --release --manifest-path native/Cargo.toml",
+    "build:native": "set --; if [ -n \"${HERDR_PET_CARGO_TARGET:-}\" ]; then set -- --target \"$HERDR_PET_CARGO_TARGET\"; fi; cargo build --release --locked --target-dir native/target \"$@\" --manifest-path native/Cargo.toml && cargo build --release --locked --target-dir native/target \"$@\" --manifest-path native/update-coordinator/Cargo.toml",
     "test:native": "cargo test --manifest-path native/Cargo.toml",
     "package:native": "bun scripts/package-native.ts",
     "install:local": "bash scripts/install.sh --local-build"

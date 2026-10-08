@@ -18,7 +18,9 @@ use objc2_app_kit::{
     NSFont, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton, NSScrollView, NSTextDelegate,
     NSTextField, NSTextView, NSTextViewDelegate, NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUndoManager};
+use objc2_foundation::{
+    NSArray, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSUndoManager, NSValue,
+};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -611,6 +613,14 @@ impl Model {
             }
         })
     }
+    fn restart_draft_keys(&self) -> BTreeSet<Key> {
+        self.drafts
+            .keys()
+            .chain(self.pre_metadata_edits.iter())
+            .filter(|key| self.dirty(key) || self.pre_metadata_edits.contains(*key))
+            .cloned()
+            .collect()
+    }
 
     fn capture(&mut self, value: String) {
         if let Some(key) = self.key() {
@@ -674,6 +684,21 @@ fn normalized(value: &str) -> &str {
     }
 }
 
+struct FrozenEditorControls {
+    editable: bool,
+    selectable: bool,
+    target: bool,
+    language: bool,
+    slots: [bool; 8],
+    original_button: bool,
+    save: bool,
+    reset: bool,
+    reset_entry: bool,
+    reset_all: bool,
+    reload_saved: bool,
+    rebase: bool,
+}
+
 struct Feedback {
     model: Rc<RefCell<Model>>,
     count: Retained<NSTextField>,
@@ -686,6 +711,8 @@ struct Feedback {
     rebase: Retained<NSButton>,
     undo: Retained<NSUndoManager>,
     ui_locale: UiLocale,
+    update_frozen: bool,
+    frozen_value: Option<String>,
     replacing: bool,
 }
 
@@ -713,15 +740,89 @@ define_class!(
         #[unsafe(method(didChangeText))]
         fn did_change_text(&self) {
             let _: () = unsafe { msg_send![super(self), didChangeText] };
-            if let Some(feedback) = self.ivars().borrow().as_ref() {
-                if !feedback.replacing {
-                    feedback
-                        .model
-                        .borrow_mut()
-                        .record_edit(self.string().to_string());
+            let restore = {
+                let feedback = self.ivars().borrow();
+                match feedback.as_ref() {
+                    Some(feedback) if feedback.update_frozen && !feedback.replacing => {
+                        feedback.frozen_value.clone()
+                    }
+                    Some(feedback) if !feedback.replacing => {
+                        feedback.model.borrow_mut().record_edit(self.string().to_string());
+                        None
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(value) = restore {
+                if self.string().to_string() != value {
+                    self.replace_saved_text(&value);
+                    return;
                 }
             }
             self.refresh_feedback();
+        }
+        #[unsafe(method(shouldChangeTextInRange:replacementString:))]
+        fn should_change_text(&self, range: NSRange, replacement: Option<&NSString>) -> bool {
+            if self.update_frozen() {
+                return false.into();
+            }
+            unsafe { msg_send![super(self), shouldChangeTextInRange: range, replacementString: replacement] }
+        }
+        #[unsafe(method(shouldChangeTextInRanges:replacementStrings:))]
+        fn should_change_ranges(
+            &self,
+            ranges: &NSArray<NSValue>,
+            replacements: Option<&NSArray<NSString>>,
+        ) -> bool {
+            if self.update_frozen() {
+                return false.into();
+            }
+            unsafe { msg_send![super(self), shouldChangeTextInRanges: ranges, replacementStrings: replacements] }
+        }
+        #[unsafe(method(insertText:))]
+        fn insert_text(&self, text: &AnyObject) {
+            if !self.update_frozen() {
+                let _: () = unsafe { msg_send![super(self), insertText: text] };
+            }
+        }
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text_replacement_range(&self, text: &AnyObject, range: NSRange) {
+            if !self.update_frozen() {
+                let _: () = unsafe { msg_send![super(self), insertText: text, replacementRange: range] };
+            }
+        }
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(
+            &self,
+            text: &AnyObject,
+            selected: NSRange,
+            replacement: NSRange,
+        ) {
+            if !self.update_frozen() {
+                let _: () = unsafe {
+                    msg_send![super(self), setMarkedText: text, selectedRange: selected, replacementRange: replacement]
+                };
+            }
+        }
+        #[unsafe(method(undo:))]
+        fn undo_action(&self, _sender: Option<&AnyObject>) {
+            self.invoke_undo(false);
+        }
+        #[unsafe(method(redo:))]
+        fn redo_action(&self, _sender: Option<&AnyObject>) {
+            self.invoke_undo(true);
+        }
+        #[unsafe(method(cut:))]
+        fn cut_action(&self, sender: Option<&AnyObject>) {
+            if !self.update_frozen() {
+                let _: () = unsafe { msg_send![super(self), cut: sender] };
+            }
+        }
+        #[unsafe(method(paste:))]
+        fn paste_action(&self, sender: Option<&AnyObject>) {
+            if !self.update_frozen() {
+                let _: () = unsafe { msg_send![super(self), paste: sender] };
+            }
         }
         #[unsafe(method(performKeyEquivalent:))]
         fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
@@ -760,6 +861,33 @@ impl EditorTextView {
         let this = Self::alloc(mtm).set_ivars(RefCell::new(None));
         unsafe { msg_send![super(this), initWithFrame: NSRect::default()] }
     }
+    fn update_frozen(&self) -> bool {
+        self.ivars()
+            .borrow()
+            .as_ref()
+            .is_some_and(|feedback| feedback.update_frozen)
+    }
+
+    fn invoke_undo(&self, redo: bool) {
+        if self.update_frozen() {
+            return;
+        }
+        // Undo calls didChangeText; do not hold the feedback borrow.
+        let undo = self
+            .ivars()
+            .borrow()
+            .as_ref()
+            .map(|state| state.undo.retain());
+        if let Some(undo) = undo {
+            if redo {
+                if undo.canRedo() {
+                    undo.redo();
+                }
+            } else if undo.canUndo() {
+                undo.undo();
+            }
+        }
+    }
 
     fn handle_edit_shortcut(&self, event: &NSEvent) -> bool {
         let modifiers = event.modifierFlags()
@@ -771,7 +899,7 @@ impl EditorTextView {
             return false;
         }
         let marked: bool = unsafe { msg_send![self, hasMarkedText] };
-        if marked {
+        if marked && !self.update_frozen() {
             return false;
         }
         let Some(key) = event.charactersIgnoringModifiers() else {
@@ -788,21 +916,7 @@ impl EditorTextView {
                 if flags == NSEventModifierFlags::Command
                     || flags == (NSEventModifierFlags::Command | NSEventModifierFlags::Shift) =>
             {
-                // Release the feedback borrow before undo invokes didChangeText.
-                let undo = self
-                    .ivars()
-                    .borrow()
-                    .as_ref()
-                    .map(|state| state.undo.retain());
-                if let Some(undo) = undo {
-                    if flags.contains(NSEventModifierFlags::Shift) {
-                        if undo.canRedo() {
-                            undo.redo();
-                        }
-                    } else if undo.canUndo() {
-                        undo.undo();
-                    }
-                }
+                self.invoke_undo(flags.contains(NSEventModifierFlags::Shift));
                 true
             }
             (b'a', flags) if flags == NSEventModifierFlags::Command => {
@@ -814,11 +928,15 @@ impl EditorTextView {
                 true
             }
             (b'x', flags) if flags == NSEventModifierFlags::Command => {
-                unsafe { self.cut(None) };
+                if !self.update_frozen() {
+                    unsafe { self.cut(None) };
+                }
                 true
             }
             (b'v', flags) if flags == NSEventModifierFlags::Command => {
-                unsafe { self.paste(None) };
+                if !self.update_frozen() {
+                    unsafe { self.paste(None) };
+                }
                 true
             }
             _ => false,
@@ -837,6 +955,9 @@ impl EditorTextView {
         self.breakUndoCoalescing();
         if let Some(feedback) = self.ivars().borrow_mut().as_mut() {
             feedback.replacing = true;
+            if feedback.update_frozen {
+                feedback.frozen_value = Some(value.to_owned());
+            }
         }
         self.setString(&NSString::from_str(value));
         if let Some(feedback) = self.ivars().borrow_mut().as_mut() {
@@ -893,34 +1014,36 @@ impl EditorTextView {
             .error
             .setToolTip((!error.is_empty()).then_some(&*error_text));
         ax(&feedback.error, error);
-        feedback
-            .save
-            .setEnabled(valid && !conflict && !marked && dirty && bytes <= MAX_BYTES);
-        feedback.reset_entry.setEnabled(
-            valid
-                && !conflict
-                && !marked
-                && (dirty
-                    || key
-                        .as_ref()
-                        .is_some_and(|key| model.overrides.entry(&key.0, key.1, key.2).is_some())),
-        );
-        feedback.reset_all.setEnabled(
-            valid
-                && !conflict
-                && !marked
-                && model.selected.as_ref().is_some_and(|choice| {
-                    model.overrides.locales(&choice.target).is_some()
-                        || model
-                            .drafts
-                            .keys()
-                            .any(|(target, _, _)| target == &choice.target)
-                }),
-        );
-        feedback
-            .reload_saved
-            .setEnabled(valid && conflict && !marked);
-        feedback.rebase.setEnabled(valid && conflict && !marked);
+        if !feedback.update_frozen {
+            feedback
+                .save
+                .setEnabled(valid && !conflict && !marked && dirty && bytes <= MAX_BYTES);
+            feedback.reset_entry.setEnabled(
+                valid
+                    && !conflict
+                    && !marked
+                    && (dirty
+                        || key.as_ref().is_some_and(|key| {
+                            model.overrides.entry(&key.0, key.1, key.2).is_some()
+                        })),
+            );
+            feedback.reset_all.setEnabled(
+                valid
+                    && !conflict
+                    && !marked
+                    && model.selected.as_ref().is_some_and(|choice| {
+                        model.overrides.locales(&choice.target).is_some()
+                            || model
+                                .drafts
+                                .keys()
+                                .any(|(target, _, _)| target == &choice.target)
+                    }),
+            );
+            feedback
+                .reload_saved
+                .setEnabled(valid && conflict && !marked);
+            feedback.rebase.setEnabled(valid && conflict && !marked);
+        }
         for (index, button) in feedback.slots.iter().enumerate() {
             let slot = DialogueSlot::ALL[index];
             let label = text(locale, dialogue_slot_message(slot));
@@ -942,7 +1065,9 @@ impl EditorTextView {
                 label.to_owned()
             };
             ax(button, &accessible);
-            button.setEnabled(model.selected.is_some());
+            if !feedback.update_frozen {
+                button.setEnabled(model.selected.is_some());
+            }
         }
     }
 }
@@ -1343,6 +1468,7 @@ pub(crate) struct DialogueEditor {
     input: Retained<EditorTextView>,
     model: Rc<RefCell<Model>>,
     ui_locale: UiLocale,
+    update_frozen_previous: RefCell<Option<FrozenEditorControls>>,
 }
 
 impl DialogueEditor {
@@ -1511,6 +1637,8 @@ impl DialogueEditor {
             slots: slots.clone(),
             undo: NSUndoManager::new(mtm),
             ui_locale: locale,
+            update_frozen: false,
+            frozen_value: None,
             replacing: false,
         });
 
@@ -1574,6 +1702,7 @@ impl DialogueEditor {
             input,
             model,
             ui_locale: locale,
+            update_frozen_previous: RefCell::new(None),
         };
         editor.set_locale(locale);
         editor.refresh();
@@ -1741,6 +1870,105 @@ impl DialogueEditor {
     pub(crate) fn is_dirty(&self) -> bool {
         let model = self.model.borrow();
         model.key().is_some_and(|key| model.dirty(&key))
+    }
+    pub(crate) fn restart_draft_keys(&self) -> Vec<String> {
+        let model = self.model.borrow();
+        let mut keys = model.restart_draft_keys();
+        if let Some(key) = model.key() {
+            let current = self.input.string().to_string();
+            if model.pre_metadata_edits.contains(&key)
+                || model.baselines.get(&key).map_or_else(
+                    || normalized(&current) != normalized(&model.baseline(&key)),
+                    |baseline| normalized(&current) != normalized(baseline.saved_text()),
+                )
+            {
+                keys.insert(key);
+            }
+        }
+        keys.into_iter()
+            .map(|key| format!("{:?} / {} / {:?}", key.0, key.1, key.2))
+            .collect()
+    }
+
+    pub(crate) fn set_update_frozen(&self, frozen: bool) {
+        let layout = self.root.ivars().borrow();
+        let view = layout.as_ref().expect("editor layout");
+        let mut previous = self.update_frozen_previous.borrow_mut();
+        if frozen {
+            if previous.is_some() {
+                return;
+            }
+            *previous = Some(FrozenEditorControls {
+                editable: self.input.isEditable(),
+                selectable: self.input.isSelectable(),
+                target: view.target.isEnabled(),
+                language: view.language.isEnabled(),
+                slots: std::array::from_fn(|index| view.slots[index].isEnabled()),
+                original_button: view.original_button.isEnabled(),
+                save: view.save.isEnabled(),
+                reset: view.reset.isEnabled(),
+                reset_entry: self
+                    .input
+                    .ivars()
+                    .borrow()
+                    .as_ref()
+                    .expect("feedback")
+                    .reset_entry
+                    .isEnabled(),
+                reset_all: self
+                    .input
+                    .ivars()
+                    .borrow()
+                    .as_ref()
+                    .expect("feedback")
+                    .reset_all
+                    .isEnabled(),
+                reload_saved: view.reload_saved.isEnabled(),
+                rebase: view.rebase.isEnabled(),
+            });
+            let frozen_value = self.input.string().to_string();
+            {
+                let mut feedback = self.input.ivars().borrow_mut();
+                let feedback = feedback.as_mut().expect("feedback");
+                feedback.frozen_value = Some(frozen_value);
+                feedback.update_frozen = true;
+            }
+            self.input.setEditable(false);
+            self.input.setSelectable(false);
+            view.target.setEnabled(false);
+            view.language.setEnabled(false);
+            for button in &view.slots {
+                button.setEnabled(false);
+            }
+            view.original_button.setEnabled(false);
+            view.save.setEnabled(false);
+            view.reset.setEnabled(false);
+            view.reload_saved.setEnabled(false);
+            view.rebase.setEnabled(false);
+            let feedback = self.input.ivars().borrow();
+            let feedback = feedback.as_ref().expect("feedback");
+            feedback.reset_entry.setEnabled(false);
+            feedback.reset_all.setEnabled(false);
+        } else if let Some(previous) = previous.take() {
+            self.input.setEditable(previous.editable);
+            self.input.setSelectable(previous.selectable);
+            view.target.setEnabled(previous.target);
+            view.language.setEnabled(previous.language);
+            for (button, enabled) in view.slots.iter().zip(previous.slots) {
+                button.setEnabled(enabled);
+            }
+            view.original_button.setEnabled(previous.original_button);
+            view.save.setEnabled(previous.save);
+            view.reset.setEnabled(previous.reset);
+            view.reload_saved.setEnabled(previous.reload_saved);
+            view.rebase.setEnabled(previous.rebase);
+            let mut feedback = self.input.ivars().borrow_mut();
+            let feedback = feedback.as_mut().expect("feedback");
+            feedback.reset_entry.setEnabled(previous.reset_entry);
+            feedback.reset_all.setEnabled(previous.reset_all);
+            feedback.update_frozen = false;
+            feedback.frozen_value = None;
+        }
     }
     pub(crate) fn mutation_baseline(&self) -> Option<DialogueDraftBaseline> {
         self.model.borrow().mutation_baseline()
@@ -2035,6 +2263,21 @@ mod tests {
             slot: Some(DialogueSlot::Idle),
             ..Model::default()
         }
+    }
+    #[test]
+    fn restart_snapshot_keeps_offscreen_draft_and_raw_pre_metadata_edit() {
+        let mut model = selectable_model();
+        model.ready = true;
+        let offscreen = model.key().unwrap();
+        model.record_edit("unsaved idle".into());
+        model.slot = Some(DialogueSlot::Running);
+        model.ready = false;
+        let unfinished = model.key().unwrap();
+        model.record_edit("  ".into());
+        model.slot = Some(DialogueSlot::Idle);
+        let keys = model.restart_draft_keys();
+        assert!(keys.contains(&offscreen));
+        assert!(keys.contains(&unfinished));
     }
 
     #[test]

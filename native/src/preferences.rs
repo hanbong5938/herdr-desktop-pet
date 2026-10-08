@@ -1,7 +1,6 @@
 use crate::bubble::{BubblePlacement, BubbleSize};
 use crate::dialogue::{DialogueOverrides, DialogueSlot, DialogueTarget};
 use crate::i18n::LanguagePreference;
-use crate::lifecycle::config_directory;
 use crate::session_view::SessionSort;
 use crate::sources::ObservationPreferences;
 use crate::state::{normalize_scale, DEFAULT_SCALE};
@@ -464,6 +463,8 @@ pub struct Preferences {
     alpha_passthrough: bool,
     bubble_visible: bool,
     show_status_indicators: bool,
+    auto_update_check: bool,
+    last_update_check: Option<u64>,
     menu_bar_mode: MenuBarMode,
     menu_bar_icon: Option<MenuBarIconPreference>,
     bubble_placement: BubblePlacement,
@@ -492,6 +493,10 @@ struct DiskPreferences {
     bubble_visible: bool,
     #[serde(default = "default_show_status_indicators")]
     show_status_indicators: bool,
+    #[serde(default = "default_auto_update_check")]
+    auto_update_check: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_update_check: Option<u64>,
     #[serde(default)]
     menu_bar_mode: MenuBarMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -528,6 +533,10 @@ fn default_show_status_indicators() -> bool {
     true
 }
 
+fn default_auto_update_check() -> bool {
+    true
+}
+
 impl Default for Preferences {
     fn default() -> Self {
         Self {
@@ -536,6 +545,8 @@ impl Default for Preferences {
             alpha_passthrough: false,
             bubble_visible: true,
             show_status_indicators: true,
+            auto_update_check: true,
+            last_update_check: None,
             menu_bar_mode: MenuBarMode::default(),
             menu_bar_icon: None,
             bubble_placement: BubblePlacement::default(),
@@ -557,18 +568,16 @@ impl Default for Preferences {
 impl Preferences {
     /// Strict load for read-only consumers: an unusable file is reported as an
     /// error and left untouched.
-    pub fn load() -> Result<Self, String> {
-        let directory = preferences_directory()?;
-        Self::load_in_directory(&directory, legacy_preferences_path().as_deref(), false)
+    pub fn load(directory: &Path) -> Result<Self, String> {
+        Self::load_in_directory(directory, legacy_preferences_path().as_deref(), false)
     }
 
     /// Daemon startup load: an unusable file is moved aside to
     /// `preferences.json.invalid-<unix_nanos>` and defaults are used, so the
     /// daemon neither refuses to start nor later overwrites the original bytes.
     /// Fails only when the file cannot be moved aside.
-    pub(crate) fn load_for_daemon() -> Result<Self, String> {
-        let directory = preferences_directory()?;
-        Self::load_in_directory(&directory, legacy_preferences_path().as_deref(), true)
+    pub(crate) fn load_for_daemon(directory: &Path) -> Result<Self, String> {
+        Self::load_in_directory(directory, legacy_preferences_path().as_deref(), true)
     }
 
     fn load_in_directory(
@@ -635,6 +644,8 @@ impl Preferences {
             alpha_passthrough: disk.alpha_passthrough,
             bubble_visible: disk.bubble_visible,
             show_status_indicators: disk.show_status_indicators,
+            auto_update_check: disk.auto_update_check,
+            last_update_check: disk.last_update_check,
             menu_bar_mode: disk.menu_bar_mode,
             menu_bar_icon: disk.menu_bar_icon,
             bubble_placement: disk.bubble_placement,
@@ -663,7 +674,7 @@ impl Preferences {
 
     /// Clone the owner's committed state before staging presentation or geometry.
     /// For example: `let mut next = prefs.candidate(); next.set_visible(false);
-    /// prefs.save_candidate(next)?;` Never mutate `prefs` before a runtime-first
+    /// prefs.save_candidate(next, directory)?;` Never mutate `prefs` before a runtime-first
     /// presentation attempt; a failed save must not leak into later transactions.
     pub(crate) fn candidate(&self) -> Self {
         self.clone()
@@ -671,9 +682,12 @@ impl Preferences {
 
     /// Save the complete candidate once, then replace the owner's state only
     /// after the atomic writer succeeds. No live preferences are read from disk.
-    pub(crate) fn save_candidate(&mut self, candidate: Self) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_candidate_in_directory(candidate, &directory)
+    pub(crate) fn save_candidate(
+        &mut self,
+        candidate: Self,
+        directory: &Path,
+    ) -> Result<(), String> {
+        self.save_candidate_in_directory(candidate, directory)
     }
 
     fn save_candidate_in_directory(
@@ -704,9 +718,9 @@ impl Preferences {
     pub(crate) fn apply_patch(
         &mut self,
         patch: PreferencePatch,
+        directory: &Path,
     ) -> Result<PreferenceSnapshot, String> {
-        let directory = preferences_directory()?;
-        self.apply_patch_in_directory(patch, &directory)
+        self.apply_patch_in_directory(patch, directory)
     }
 
     pub(crate) fn apply_patch_in_directory(
@@ -781,9 +795,9 @@ impl Preferences {
         locale: &str,
         slot: DialogueSlot,
         value: Option<String>,
+        directory: &Path,
     ) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_dialogue_entry_in_directory(target, locale, slot, value, &directory)
+        self.save_dialogue_entry_in_directory(target, locale, slot, value, directory)
     }
 
     fn save_dialogue_entry_in_directory(
@@ -804,9 +818,9 @@ impl Preferences {
     pub(crate) fn reset_character_dialogue(
         &mut self,
         target: &DialogueTarget,
+        directory: &Path,
     ) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.reset_character_dialogue_in_directory(target, &directory)
+        self.reset_character_dialogue_in_directory(target, directory)
     }
 
     fn reset_character_dialogue_in_directory(
@@ -822,9 +836,9 @@ impl Preferences {
     pub(crate) fn save_menu_bar_icon(
         &mut self,
         preference: Option<MenuBarIconPreference>,
+        directory: &Path,
     ) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_menu_bar_icon_in_directory(preference, &directory)
+        self.save_menu_bar_icon_in_directory(preference, directory)
     }
 
     pub(crate) fn observation(&self) -> &ObservationPreferences {
@@ -838,9 +852,9 @@ impl Preferences {
     pub(crate) fn save_session_list(
         &mut self,
         preference: SessionListPreferences,
+        directory: &Path,
     ) -> Result<(), String> {
-        let directory = preferences_directory()?;
-        self.save_session_list_in_directory(preference, &directory)
+        self.save_session_list_in_directory(preference, directory)
     }
 
     fn save_session_list_in_directory(
@@ -898,6 +912,8 @@ impl Preferences {
             alpha_passthrough: self.alpha_passthrough,
             bubble_visible: self.bubble_visible,
             show_status_indicators: self.show_status_indicators,
+            auto_update_check: self.auto_update_check,
+            last_update_check: self.last_update_check,
             menu_bar_mode: self.menu_bar_mode,
             menu_bar_icon: self.menu_bar_icon.clone(),
             bubble_placement: self.bubble_placement,
@@ -974,6 +990,14 @@ impl Preferences {
         self.show_status_indicators
     }
 
+    pub fn auto_update_check(&self) -> bool {
+        self.auto_update_check
+    }
+
+    pub fn last_update_check(&self) -> Option<u64> {
+        self.last_update_check
+    }
+
     pub(crate) fn menu_bar_mode(&self) -> MenuBarMode {
         self.menu_bar_mode
     }
@@ -1036,6 +1060,14 @@ impl Preferences {
         self.bubble_visible = bubble_visible;
     }
 
+    pub fn set_auto_update_check(&mut self, enabled: bool) {
+        self.auto_update_check = enabled;
+    }
+
+    pub fn set_last_update_check(&mut self, checked_at: Option<u64>) {
+        self.last_update_check = checked_at;
+    }
+
     pub fn set_bubble_placement(&mut self, bubble_placement: BubblePlacement) {
         self.bubble_placement = bubble_placement;
     }
@@ -1069,10 +1101,6 @@ impl Preferences {
         self.bubble_sizes.sanitize();
         self.observation.sanitize();
     }
-}
-
-fn preferences_directory() -> Result<PathBuf, String> {
-    config_directory()
 }
 
 fn legacy_preferences_path() -> Option<PathBuf> {
@@ -1144,6 +1172,250 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn explicit_profile_load_writes_and_failed_candidate_preserve_other_profile() {
+        let root = isolated_preferences_directory();
+        let selected = root.join("profile-a");
+        let default = root.join("default");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&default).unwrap();
+        let sentinel =
+            br#"{"visible":false,"passthrough":false,"scale":0.75,"future_default":"untouched"}"#;
+        fs::write(default.join(PREFERENCES_FILE), sentinel).unwrap();
+        Preferences::default().save_in_directory(&selected).unwrap();
+
+        let mut owner = Preferences::load_for_daemon(&selected).unwrap();
+        assert!(owner.visible());
+        owner
+            .apply_patch(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &selected,
+            )
+            .unwrap();
+        let mut candidate = owner.candidate();
+        candidate.set_auto_update_check(false);
+        owner.save_candidate(candidate, &selected).unwrap();
+        assert!(!Preferences::load(&selected).unwrap().auto_update_check());
+        assert_eq!(
+            Preferences::load(&selected).unwrap().language(),
+            LanguagePreference::En
+        );
+
+        let blocked = root.join("blocked");
+        fs::write(&blocked, b"not a directory").unwrap();
+        let saved = fs::read(selected.join(PREFERENCES_FILE)).unwrap();
+        let mut candidate = owner.candidate();
+        candidate.set_visible(false);
+        owner.save_candidate(candidate, &blocked).unwrap_err();
+        assert!(owner.visible());
+        assert_eq!(fs::read(selected.join(PREFERENCES_FILE)).unwrap(), saved);
+        assert_eq!(fs::read(default.join(PREFERENCES_FILE)).unwrap(), sentinel);
+        assert!(!Preferences::load(&default).unwrap().visible());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn daemon_quarantine_and_legacy_import_write_only_selected_destination() {
+        let root = isolated_preferences_directory();
+        let selected = root.join("profile-a");
+        let other = root.join("default");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&other).unwrap();
+        let sentinel =
+            br#"{"visible":false,"passthrough":false,"scale":0.75,"future_default":"untouched"}"#;
+        fs::write(other.join(PREFERENCES_FILE), sentinel).unwrap();
+        let invalid = b"{bad json";
+        fs::write(selected.join(PREFERENCES_FILE), invalid).unwrap();
+
+        Preferences::load(&selected).unwrap_err();
+        assert_eq!(fs::read(selected.join(PREFERENCES_FILE)).unwrap(), invalid);
+        let loaded = Preferences::load_for_daemon(&selected).unwrap();
+        assert!(loaded.visible());
+        assert!(!selected.join(PREFERENCES_FILE).exists());
+        let backups: Vec<_> = fs::read_dir(&selected)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), invalid);
+
+        let legacy = root.join("legacy.json");
+        let legacy_bytes =
+            br#"{"visible":false,"passthrough":false,"scale":0.875,"future_legacy":{"kept":true}}"#;
+        fs::write(&legacy, legacy_bytes).unwrap();
+        let migrated = Preferences::load_in_directory(&selected, Some(&legacy), false).unwrap();
+        assert!(!migrated.visible());
+        assert_eq!(migrated.scale(), 0.875);
+        assert_eq!(
+            Preferences::load(&selected).unwrap().extra["future_legacy"]["kept"],
+            true
+        );
+        assert_eq!(fs::read(&legacy).unwrap(), legacy_bytes);
+        assert_eq!(fs::read(other.join(PREFERENCES_FILE)).unwrap(), sentinel);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn convenience_writers_keep_assets_and_preferences_in_selected_profile() {
+        let root = isolated_preferences_directory();
+        let selected = root.join("profile-a");
+        let other = root.join("default");
+        let selected_icons = selected.join("menu-bar-icons");
+        let other_icons = other.join("menu-bar-icons");
+        fs::create_dir_all(&selected_icons).unwrap();
+        fs::create_dir_all(&other_icons).unwrap();
+        fs::set_permissions(&selected_icons, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&other_icons, fs::Permissions::from_mode(0o700)).unwrap();
+        let (icon, selected_icon, bytes) = private_png_asset(&selected_icons, [200, 20, 30, 255]);
+        let other_icon = other_icons.join(&icon.asset);
+        fs::write(&other_icon, &bytes).unwrap();
+        fs::set_permissions(&other_icon, fs::Permissions::from_mode(0o600)).unwrap();
+        let sentinel =
+            br#"{"visible":false,"passthrough":false,"scale":0.75,"future_default":"untouched"}"#;
+        fs::write(other.join(PREFERENCES_FILE), sentinel).unwrap();
+        let target = DialogueTarget::Character("forest".to_owned());
+        let mut owner = Preferences::default();
+        owner
+            .save_menu_bar_icon(Some(icon.clone()), &selected)
+            .unwrap();
+        owner
+            .save_dialogue_entry(
+                &target,
+                "en",
+                DialogueSlot::Idle,
+                Some("Selected greeting".to_owned()),
+                &selected,
+            )
+            .unwrap();
+        let list = SessionListPreferences {
+            sort: SessionSort::TitleAsc,
+            running_first: true,
+        };
+        owner.save_session_list(list, &selected).unwrap();
+        assert_eq!(Preferences::load(&selected).unwrap().session_list(), list);
+        assert_eq!(
+            Preferences::load(&selected)
+                .unwrap()
+                .dialogue_overrides()
+                .entry(&target, "en", DialogueSlot::Idle),
+            Some("Selected greeting")
+        );
+        owner.reset_character_dialogue(&target, &selected).unwrap();
+        owner.save_menu_bar_icon(None, &selected).unwrap();
+        assert!(!selected_icon.exists());
+        assert!(Preferences::load(&selected)
+            .unwrap()
+            .dialogue_overrides()
+            .locales(&target)
+            .is_none());
+        assert_eq!(fs::read(&other_icon).unwrap(), bytes);
+        assert_eq!(fs::read(other.join(PREFERENCES_FILE)).unwrap(), sentinel);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn partial_preference_writes_keep_update_settings_and_future_fields() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        preferences.extra.insert(
+            "future_setting".to_owned(),
+            serde_json::json!({"nested": [1, 2]}),
+        );
+        let mut candidate = preferences.candidate();
+        candidate.set_auto_update_check(false);
+        candidate.set_last_update_check(Some(1_738_000_000));
+        preferences
+            .save_candidate_in_directory(candidate, &directory)
+            .unwrap();
+        let mut reloaded = Preferences::load_path(&path).unwrap();
+        reloaded
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .unwrap();
+        let mut candidate = reloaded.candidate();
+        candidate.set_visible(false);
+        reloaded
+            .save_candidate_in_directory(candidate, &directory)
+            .unwrap();
+        let saved = Preferences::load_path(&path).unwrap();
+        assert!(!saved.auto_update_check());
+        assert_eq!(saved.last_update_check(), Some(1_738_000_000));
+        assert!(!saved.visible());
+        assert_eq!(saved.language(), LanguagePreference::En);
+        assert_eq!(
+            saved.extra["future_setting"],
+            serde_json::json!({"nested": [1, 2]})
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_update_setting_candidate_does_not_change_owner_or_saved_preferences() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let blocked = directory.join("not-a-directory");
+        let mut preferences = Preferences::default();
+        preferences.set_last_update_check(Some(42));
+        preferences.save_in_directory(&directory).unwrap();
+        let before = fs::read(&path).unwrap();
+        fs::write(&blocked, b"sentinel").unwrap();
+        let mut candidate = preferences.candidate();
+        candidate.set_auto_update_check(false);
+        candidate.set_last_update_check(Some(43));
+        preferences
+            .save_candidate_in_directory(candidate, &blocked)
+            .expect_err("unwritable candidate must not commit");
+        assert!(preferences.auto_update_check());
+        assert_eq!(preferences.last_update_check(), Some(42));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        preferences
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .unwrap();
+        let saved = Preferences::load_path(&path).unwrap();
+        assert!(saved.auto_update_check());
+        assert_eq!(saved.last_update_check(), Some(42));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn malformed_update_fields_reject_file_like_other_typed_settings() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        Preferences::default()
+            .save_in_directory(&directory)
+            .unwrap();
+        let valid: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for (field, malformed) in [
+            ("auto_update_check", serde_json::json!("yes")),
+            ("last_update_check", serde_json::json!(-1)),
+            ("last_update_check", serde_json::json!("yesterday")),
+        ] {
+            let mut disk = valid.clone();
+            disk[field] = malformed;
+            fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+            assert!(
+                Preferences::load_path(&path).is_err(),
+                "{field} must reject malformed data"
+            );
+        }
+        let _ = fs::remove_dir_all(directory);
+    }
 
     #[test]
     fn bubble_sizes_roundtrip_independently_and_reset_without_moving_bubble() {
@@ -1459,6 +1731,8 @@ mod tests {
             alpha_passthrough: false,
             bubble_visible: true,
             show_status_indicators: true,
+            auto_update_check: true,
+            last_update_check: None,
             menu_bar_mode: MenuBarMode::default(),
             bubble_placement: BubblePlacement::Above,
             scale: f64::NAN,
@@ -2563,6 +2837,8 @@ mod tests {
             alpha_passthrough: valid.alpha_passthrough,
             bubble_visible: valid.bubble_visible,
             show_status_indicators: valid.show_status_indicators,
+            auto_update_check: valid.auto_update_check,
+            last_update_check: valid.last_update_check,
             menu_bar_mode: valid.menu_bar_mode,
             menu_bar_icon: valid.menu_bar_icon.clone(),
             bubble_placement: valid.bubble_placement,

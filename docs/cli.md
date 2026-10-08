@@ -14,6 +14,21 @@ Default mutation wait is 15 seconds. `--no-wait` acknowledges accepted/pending w
 
 Domain mutations print `{"ok":boolean,"operation":{"instance_id":string,"operation_id":string,"kind":string,"state":string,"committed":boolean,"native_applied":boolean,"result":object|null,"error_code":string|null,"error":string|null}}`. `state` can be `accepted`, `pending`, `applied`, `agent_prompted`, `failed`, `unknown_delivery`, `superseded`, or `shutdown`; `agent_prompted` means the prompt delivery was acknowledged, **not** that the model completed it. Domain status uses the same wrapper; failed terminal states return an error. A rejected request may not have an operation result. No-wait `ok:true` can describe a still-pending operation. Read-only session/dialogue/worktree commands below print their result object directly, not this wrapper. Values may be null until observed.
 
+### App update status and recovery
+
+```text
+herdr-desktop-pet update-capabilities
+herdr-desktop-pet update-status [OPID] --state-dir PATH
+```
+
+These read-only commands work without a running daemon. This checkout's `update-capabilities` prints `{"protocol":2}`; updater IDs are exactly 32 lowercase hexadecimal characters, distinct from domain-family operation IDs. With no ID, `update-status` selects the active reservation before the last outcome. A protocol-2 plan and journal both require `version:2`; the journal requires `execution_fence` (`no_spawn`, `manager_intent`, or `manager_exited`). `no_spawn` means no manager was launched only when corroborated by absent manager artifacts; `manager_intent` is durable before spawning and a missing PID/exit still means **unknown**, not safe-to-retry; `manager_exited` requires exit and drained output evidence. The phase, fence, `installed`, and `applied` are distinct facts. Offline `update-status` reports durable history, plan/error, and exact retained-helper argv when available; it does not inspect current processes, run the helper, or verify its signature. A `Failed` outcome can remain in history even after safe reconciliation; a failure exit code does not imply the reservation is still held.
+
+Verify the private retained helper's code signature before using its `status --state-dir PATH --operation-id OPID` to inspect current helper/manager/candidate evidence. Its explicit `recover --state-dir PATH --operation-id OPID [--start]` holds a per-operation lease: recovery is rejected while the original helper owns that lease. It reconciles without reinstalling. With proved `no_spawn`, absent manager artifacts and the exact original ready PID/instance/image/source/profile, recovery can record `Failed` with `installed:false`, `applied:false` and release the reservation; if the unchanged original is stopped it can settle without starting it. A restored, *fresh* original instance is checked for readiness before stopped-original logic and remains `Failed`, not an upgrade. Only explicit `--start` may start a verified installed candidate or restore a verified original; an installed candidate need not have been applied. Partial marker release is recovered idempotently; an incomplete/ambiguous release, active or unproven manager/group/output, missing evidence, different profile, conflicting live installation user, or newer user stop keeps safety ahead of startup. `Unknown` retains the reservation and never replays installation. Do not delete markers or blindly retry; after a safely settled failure, a **new** check and explicit user consent are a separate operation, not replay of the old one. `run` is the application's signed-helper handoff, not a general-purpose install CLI.
+
+A retained operation's `run` rejects an existing journal before changing any execution fence or lifecycle evidence. Use `recover`, never rerun installation. A verified externally installed candidate can remain `Failed` with `installed:true`, `applied:false` and a retained reservation until explicit `recover --start` or a superseding user Stop; an unread accepted Stop reply is not evidence that the server's reply write failed.
+
+Protocol-1 plans, journals and reservation markers are blocked and preserved, not migrated, defaulted, aliased or silently deleted. The source/ref and original injected Herdr host plugin config identify the managed checkout separately from its plugin subdirectory, socket and override profile; a Herdr checkout root, local root, or Homebrew formula's physical Cellar root (not the whole Brew prefix) defines installation conflict scope. The selected profile and external assets are retained rather than falling back to defaults. A user Stop always overrides updater restart.
+
 ### Presentation
 
 ```text
@@ -118,6 +133,21 @@ With `--no-wait`, an initial pack reply already in a failed terminal state exits
 기본 대기 시간은 15초입니다. `--no-wait`의 수락/대기 ACK는 저장 또는 네이티브 적용을 뜻하지 않습니다. **이미 종료된 실패**(팩의 `failed`, `canceled`, `durability_unknown`, `committed_pending_apply`, `unknown` 포함)는 `--no-wait`에도 종료 코드가 0이 아니며 팩 `completed`는 성공입니다. `--wait SECONDS`는 유한합니다(presentation 0–86400초, 나머지 도메인 >0–86400초). 도메인 변경·읽기와 팩 폴링은 각 제출 ACK 뒤 절대 대기 기한을 시작합니다. 변경 전 부분 색상 스냅샷 읽기도 읽기 ACK 뒤 별도 기한을 시작하며 그 안에 끝나지 않으면 변경을 제출하지 않습니다. 각 기한은 sleep과 전체 status RPC(조각 응답 포함)에 적용되며 늦게 도착한 종료 결과를 성공으로 보고하지 않습니다. 도메인 **변경** 기한 초과는 마지막 확인된 pending 작업을 담은 `{"ok":false,"deadline_exceeded":true,"operation":…}`와 status 조회 안내 오류를 출력합니다. 도메인 **읽기** 기한 초과는 이 JSON 필드 없이 pending/status 조회 안내 오류를 반환합니다. presentation의 변경/status 봉투에는 `deadline_exceeded`가 있습니다. 기한 전에 발생한 전송/프로토콜 실패는 기한 초과가 아니라 전달 불명으로 보고합니다. 시간 초과는 취소·롤백·재전송하지 않습니다. `state`, `committed`, `native_applied`, `result`를 별도로 해석하십시오. ACK 또는 성공 종료만으로 에이전트 답변, 실제 파일 삭제, AppKit 적용이 인증되지는 않습니다.
 
 도메인 변경 출력은 `{"ok":boolean,"operation":{"instance_id":string,"operation_id":string,"kind":string,"state":string,"committed":boolean,"native_applied":boolean,"result":object|null,"error_code":string|null,"error":string|null}}`입니다. `state`는 `accepted`, `pending`, `applied`, `agent_prompted`, `failed`, `unknown_delivery`, `superseded`, `shutdown` 중 하나이며, `agent_prompted`는 프롬프트 전달 ACK이지 모델 완료가 아닙니다. 계열별 status도 같은 래퍼를 반환하고 실패 종료 상태는 오류를 반환합니다. 거절된 요청에는 작업 객체가 없을 수 있습니다. `--no-wait`의 `ok:true`여도 아직 pending일 수 있습니다. 세션/대화/워크트리 읽기는 래퍼가 아닌 결과 객체를 직접 출력합니다. 관측 전 필드는 null일 수 있습니다.
+
+### 앱 업데이트 상태와 복구
+
+```text
+herdr-desktop-pet update-capabilities
+herdr-desktop-pet update-status [OPID] --state-dir PATH
+```
+
+데몬 없이 가능한 읽기 전용 명령입니다. 이 체크아웃의 `update-capabilities`는 `{"protocol":2}`를 출력합니다. 업데이트 ID는 소문자 16진수 32자리이며 다른 도메인 작업 ID와 다릅니다. ID를 생략하면 마지막 결과보다 진행 중 예약을 먼저 조회합니다. protocol 2의 계획과 저널에는 모두 `version:2`가 필수이고 저널에는 `execution_fence` (`no_spawn`, `manager_intent`, `manager_exited`)가 필수입니다. `no_spawn`은 관리자 흔적이 없다는 증거가 함께 있어야 미실행을 뜻합니다. `manager_intent`는 실행 전에 저장되므로 PID/종료 정보가 없어도 **불명확**한 상태이지 재시도 허가가 아닙니다. `manager_exited`에는 종료와 출력 배출 증거가 필요합니다. phase·fence·`installed`·`applied`는 서로 다른 사실입니다. 오프라인 `update-status`는 저장된 이력·계획/오류와 가능할 때 남은 도우미의 정확한 argv를 보여줄 뿐 현재 프로세스를 확인하거나 도우미를 실행하거나 서명을 검증하지 않습니다. 안전하게 조정된 결과도 이력상 `Failed`일 수 있으며 실패 종료 코드는 예약이 여전히 남았다는 뜻이 아닙니다.
+
+남은 private 도우미의 코드 서명을 검증한 뒤 그 도우미의 `status --state-dir PATH --operation-id OPID`로 현재 도우미·관리자·후보 증거를 확인하세요. 명시적 `recover --state-dir PATH --operation-id OPID [--start]`는 작업별 lease를 유지하며 기존 도우미가 lease를 점유한 동안 복구 요청을 거절합니다. 설치를 반복하지 않고 조정합니다. `no_spawn`과 관리자 흔적 부재, 정확한 기존 PID·인스턴스·이미지·소스·프로필의 준비 완료가 입증되면 예약을 해제하면서 `Failed`, `installed:false`, `applied:false`로 기록할 수 있습니다. 변경 없는 원본이 종료된 경우 시작하지 않고 조정할 수도 있습니다. 새로 준비된 원본 인스턴스는 원본 종료 검사보다 먼저 확인하며 업그레이드가 아니라 `Failed`입니다. 검증된 설치 후보 시작이나 검증된 원본 복원은 명시적 `--start`에서만 허용하며 설치와 적용은 다릅니다. 일부 예약 표식 해제는 반복해도 안전하게 조정합니다. 해제가 불완전/불명확하거나 관리자·그룹·출력·증거를 입증할 수 없거나 다른 프로필·동일 설치 범위의 실행 사용자·더 최신 사용자 Stop이 있으면 안전을 우선합니다. `Unknown`은 예약을 유지하고 설치를 재실행하지 않습니다. 표식을 삭제하거나 원래 설치를 맹목적으로 재시도하지 마세요. 안전하게 정리된 실패 뒤 새 확인과 사용자 동의는 **별개의 새 작업**이지 이전 설치의 재생이 아닙니다. `run`은 앱의 서명된 도우미 인계용이며 범용 설치 CLI가 아닙니다.
+
+기존 작업의 `run`은 실행 fence나 lifecycle 증거를 바꾸기 전에 이미 있는 journal을 거절합니다. 설치 재실행이 아닌 `recover`를 사용하세요. 외부 설치가 검증된 후보도 명시적 `recover --start`나 우선하는 사용자 Stop 전까지 `Failed`, `installed:true`, `applied:false`와 예약이 남을 수 있습니다. 수락된 Stop 응답을 읽지 않았다는 사실만으로 서버의 응답 쓰기 실패를 입증할 수는 없습니다.
+
+protocol 1 계획·저널·예약 표식은 차단하고 보존하며 변환·기본값 대입·별칭 적용·무단 삭제하지 않습니다. 관리형 Herdr의 원본/ref와 처음 주입된 호스트 플러그인 설정 경로는 플러그인 하위 디렉터리, 소켓, 덮어쓴 프로필과 구분합니다. 설치 충돌 범위는 Herdr checkout 루트, 로컬 루트 또는 Homebrew 포뮬러의 실제 Cellar 루트이며 Brew prefix 전체가 아닙니다. 선택된 프로필과 외부 에셋을 기본값으로 바꾸지 않고 유지합니다. 사용자 Stop은 언제나 업데이트 재시작보다 우선합니다.
 
 ### 표시 상태 (presentation)
 

@@ -98,6 +98,9 @@ impl PromptSender {
         }
         let target = {
             let state = self.shared.lock().map_err(|_| PromptError::Offline)?;
+            state
+                .update_mutation_allowed()
+                .map_err(PromptError::Other)?;
             state.prompt_target(&key)?
         };
         #[derive(serde::Serialize)]
@@ -127,6 +130,15 @@ impl PromptSender {
         {
             return Err(PromptError::TooLarge);
         }
+        // Serialize final admission with Prepare's AppState gate. An admitted
+        // worker stays pending until its actual delivery outcome is observed.
+        let state = self.shared.lock().map_err(|_| PromptError::Offline)?;
+        state
+            .update_mutation_allowed()
+            .map_err(PromptError::Other)?;
+        if state.prompt_target(&key)? != target {
+            return Err(PromptError::StaleTarget);
+        }
         let submission = Arc::new(PromptSubmission { key, text, origin });
         let (tx, rx) = mpsc::sync_channel(1);
         let shared = Arc::clone(&self.shared);
@@ -143,6 +155,7 @@ impl PromptSender {
             })
             .map_err(|error| PromptError::Other(error.to_string()))?;
         self.pending = Some((rx, submission));
+        drop(state);
         Ok(())
     }
 
@@ -336,18 +349,28 @@ impl WorktreeRemoveSender {
         &mut self,
         target: WorktreeRemoveTarget,
         origin: RequestOrigin,
-    ) -> Result<(), WorktreeRemoveError> {
+    ) -> Result<u64, WorktreeRemoveError> {
         if self.is_pending() {
             return Err(WorktreeRemoveError::Busy);
         }
-        let current = self
+        // Hold the shared admission gate through worker registration so a
+        // newly queued Prepare cannot overtake an accepted removal.
+        let state = self
             .shared
             .lock()
-            .map_err(|_| WorktreeRemoveError::Offline)?
-            .worktree_remove_target(&target.key)?;
-        if current != target {
+            .map_err(|_| WorktreeRemoveError::Offline)?;
+        state
+            .update_mutation_allowed()
+            .map_err(WorktreeRemoveError::Other)?;
+        if state.worktree_remove_target(&target.key)? != target {
             return Err(WorktreeRemoveError::StaleTarget);
         }
+        // Sample the coherent publication under the same admission lock held
+        // across registration. A snapshot published between a UI preflight
+        // and this handoff must not be mistaken for post-dispatch evidence.
+        let baseline_revision = state
+            .worktree_snapshot_revision(&target)
+            .ok_or(WorktreeRemoveError::Offline)?;
         let (tx, rx) = mpsc::sync_channel(1);
         let shared = Arc::clone(&self.shared);
         let pending_target = target.clone();
@@ -365,7 +388,8 @@ impl WorktreeRemoveSender {
             })
             .map_err(|error| WorktreeRemoveError::Other(error.to_string()))?;
         self.pending = Some((rx, pending_target, pending_origin));
-        Ok(())
+        drop(state);
+        Ok(baseline_revision)
     }
 
     pub(crate) fn try_result(&mut self) -> Option<WorktreeRemoveResult> {
@@ -1827,6 +1851,70 @@ mod tests {
         assert_eq!(result.result, Err(WorktreeRemoveError::UnknownDelivery));
         assert!(!sender.is_pending());
         assert!(sender.try_result().is_none());
+    }
+
+    #[test]
+    fn worktree_sender_uses_registration_snapshot_not_preflight_snapshot() {
+        use crate::session_view::SessionFilter;
+        let source = "/private/worktree-registration.sock";
+        let mut state = AppState::new();
+        let mut row = record("terminal", "pane", AgentStatus::Working);
+        row.metadata.workspace_id = Some("workspace".into());
+        row.metadata.worktree = Some(Arc::new(herdr_protocol::WorkspaceWorktreeInfo {
+            repo_key: "repo".into(),
+            repo_name: "Repo".into(),
+            repo_root: "/repo".into(),
+            checkout_path: "/repo/linked".into(),
+            is_linked_worktree: true,
+            pane_count: 1,
+            tab_count: 1,
+        }));
+        let counts = SourceCounts {
+            sessions: 1,
+            working: 1,
+            ..SourceCounts::default()
+        };
+        assert!(state.begin_source(source.to_owned(), 1));
+        let publish = |state: &mut AppState| {
+            assert!(state.publish_source_snapshot(
+                source,
+                1,
+                [&row],
+                counts,
+                Arc::from(vec!["pane".to_owned()]),
+                &[],
+                Instant::now(),
+            ));
+        };
+        publish(&mut state);
+        let key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
+        let target = state.worktree_remove_target(&key).unwrap();
+        let preflight_revision = state.worktree_snapshot_revision(&target).unwrap();
+        let shared = Arc::new(Mutex::new(state));
+        let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
+
+        // Another full publication can occur after the UI admission check but
+        // before registration; only the locked handoff stamps the dispatch.
+        publish(&mut shared.lock().unwrap());
+        let dispatched_revision = sender.submit(target.clone(), RequestOrigin::Gui).unwrap();
+        assert!(dispatched_revision > preflight_revision);
+        assert_eq!(
+            shared.lock().unwrap().worktree_snapshot_revision(&target),
+            Some(dispatched_revision)
+        );
+        publish(&mut shared.lock().unwrap());
+        assert!(
+            shared
+                .lock()
+                .unwrap()
+                .worktree_snapshot_revision(&target)
+                .unwrap()
+                > dispatched_revision
+        );
     }
 
     fn settings(exit_with_herdr: bool) -> LifecycleSettings {

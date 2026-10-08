@@ -11,8 +11,11 @@ use super::Ui;
 const MAX_AWAITING_OBSERVATIONS: usize = 32;
 
 struct AwaitingObservation {
-    operation_id: String,
+    origin: RequestOrigin,
     target: WorktreeRemoveTarget,
+    baseline_revision: u64,
+    /// None until the worker returns an ACK or an ambiguous transport result.
+    observed_delivery: Option<bool>,
 }
 
 pub(super) struct WorktreeAutomation {
@@ -25,6 +28,56 @@ impl WorktreeAutomation {
         Self {
             confirmations: WorktreeConfirmations::new(),
             awaiting_observation: VecDeque::new(),
+        }
+    }
+    pub(super) fn has_pending_update_work(&self) -> bool {
+        self.confirmations.has_pending() || !self.awaiting_observation.is_empty()
+    }
+
+    fn can_dispatch_remove(&self) -> bool {
+        self.awaiting_observation.len() < MAX_AWAITING_OBSERVATIONS
+    }
+    fn can_dispatch_target(&self, target: &WorktreeRemoveTarget) -> bool {
+        self.can_dispatch_remove()
+            && !self
+                .awaiting_observation
+                .iter()
+                .any(|pending| pending.target == *target)
+    }
+
+    fn retain_dispatch(
+        &mut self,
+        target: WorktreeRemoveTarget,
+        origin: RequestOrigin,
+        baseline_revision: u64,
+    ) {
+        // Admission and dispatch are on the UI thread; no nested event loop
+        // intervenes between the capacity check, sender submission and this insert.
+        assert!(self.can_dispatch_target(&target));
+        self.awaiting_observation.push_back(AwaitingObservation {
+            origin,
+            target,
+            baseline_revision,
+            observed_delivery: None,
+        });
+    }
+
+    fn record_result(&mut self, result: &WorktreeRemoveResult) {
+        let Some(index) = self
+            .awaiting_observation
+            .iter()
+            .position(|pending| pending.origin == result.origin && pending.target == result.target)
+        else {
+            return;
+        };
+        match &result.result {
+            Ok(()) => self.awaiting_observation[index].observed_delivery = Some(true),
+            Err(WorktreeRemoveError::UnknownDelivery) => {
+                self.awaiting_observation[index].observed_delivery = Some(false);
+            }
+            Err(_) => {
+                self.awaiting_observation.remove(index);
+            }
         }
     }
 }
@@ -60,15 +113,23 @@ fn removal_result(target: &WorktreeRemoveTarget, instance_id: &str, acknowledged
     })
 }
 
-// A new generation is valid evidence only after a coherent full snapshot of
-// the same registered source; AppState enforces that provenance. Never infer
-// that a pane has disappeared merely because its agent session has ended.
-fn observation_settles(source_id: u64, generation: u64, observation: &Value) -> bool {
-    observation.get("source_id").and_then(Value::as_u64) == Some(source_id)
+// Require both independent absences from the same authoritative source in a
+// later coherent publication, not merely a newer status or generation.
+fn observation_settles(
+    target: &WorktreeRemoveTarget,
+    baseline_revision: u64,
+    observation: &Value,
+) -> bool {
+    observation.get("source").and_then(Value::as_str) == Some(target.source.as_str())
+        && observation.get("source_id").and_then(Value::as_u64) == Some(target.key.source_id)
         && observation
             .get("generation")
             .and_then(Value::as_u64)
-            .is_some_and(|current| current >= generation)
+            .is_some_and(|current| current >= target.key.generation)
+        && observation
+            .get("snapshot_revision")
+            .and_then(Value::as_u64)
+            .is_some_and(|revision| revision > baseline_revision)
         && observation.get("pane_absent").and_then(Value::as_bool) == Some(true)
         && observation.get("session_absent").and_then(Value::as_bool) == Some(true)
 }
@@ -139,6 +200,25 @@ fn removal_error(error: &WorktreeRemoveError) -> (DomainOperationState, &'static
 }
 
 impl Ui {
+    pub(super) fn gui_worktree_check_capacity(
+        &self,
+        target: &WorktreeRemoveTarget,
+    ) -> Result<(), WorktreeRemoveError> {
+        if !self.worktree_automation.can_dispatch_target(target) {
+            return Err(WorktreeRemoveError::Busy);
+        }
+        Ok(())
+    }
+
+    pub(super) fn retain_gui_worktree_dispatch(
+        &mut self,
+        target: WorktreeRemoveTarget,
+        baseline_revision: u64,
+    ) {
+        self.worktree_automation
+            .retain_dispatch(target, RequestOrigin::Gui, baseline_revision);
+    }
+
     fn finish_worktree_request(
         &self,
         id: &str,
@@ -309,8 +389,7 @@ impl Ui {
                     }
                 }
                 if self.worktree_confirming
-                    || self.worktree_automation.awaiting_observation.len()
-                        >= MAX_AWAITING_OBSERVATIONS
+                    || !self.worktree_automation.can_dispatch_target(&target)
                 {
                     self.finish_worktree_request(
                         &operation_id,
@@ -324,13 +403,13 @@ impl Ui {
                     return;
                 }
                 let summary = removal_result(&target, &instance_id, false);
-                match self.worktree_sender.submit(
-                    target,
-                    RequestOrigin::Cli {
-                        operation_id: operation_id.clone(),
-                    },
-                ) {
-                    Ok(()) => {
+                let origin = RequestOrigin::Cli {
+                    operation_id: operation_id.clone(),
+                };
+                match self.worktree_sender.submit(target.clone(), origin.clone()) {
+                    Ok(baseline_revision) => {
+                        self.worktree_automation
+                            .retain_dispatch(target, origin, baseline_revision);
                         self.finish_worktree_request(
                             &operation_id,
                             DomainOperationState::Pending,
@@ -374,6 +453,9 @@ impl Ui {
         &mut self,
         result: WorktreeRemoveResult,
     ) -> Option<WorktreeRemoveResult> {
+        // A worker completing clears sender.pending; retain ACK or ambiguous
+        // delivery before the UI can overwrite its presentation feedback.
+        self.worktree_automation.record_result(&result);
         let RequestOrigin::Cli { operation_id } = &result.origin else {
             return Some(result);
         };
@@ -392,12 +474,6 @@ impl Ui {
                     None,
                     None,
                 ) {
-                    self.worktree_automation
-                        .awaiting_observation
-                        .push_back(AwaitingObservation {
-                            operation_id,
-                            target: result.target,
-                        });
                     self.worktree_cli_feedback(Message::CliWorktreeAcknowledged);
                 }
             }
@@ -422,49 +498,101 @@ impl Ui {
         None
     }
 
+    /// Poll both GUI and CLI retained dispatches. A sender result and the
+    /// painted feedback are not authority for mutation safety.
     pub(super) fn poll_cli_worktrees(&mut self) {
         let instance_id = lock_automation(&self.automation).instance().to_owned();
         let mut index = 0;
         while index < self.worktree_automation.awaiting_observation.len() {
             let pending = &self.worktree_automation.awaiting_observation[index];
-            let still_pending = lock_automation(&self.automation)
-                .domain_status(&instance_id, &pending.operation_id)
-                .is_ok_and(|status| {
-                    status.state == DomainOperationState::Pending && status.committed
-                });
-            if !still_pending {
-                self.worktree_automation.awaiting_observation.remove(index);
+            let Some(acknowledged) = pending.observed_delivery else {
+                index += 1;
                 continue;
+            };
+            let origin = pending.origin.clone();
+            if let RequestOrigin::Cli { operation_id } = &origin {
+                let expected = if acknowledged {
+                    DomainOperationState::Pending
+                } else {
+                    DomainOperationState::UnknownDelivery
+                };
+                if !lock_automation(&self.automation)
+                    .domain_status(&instance_id, operation_id)
+                    .is_ok_and(|status| {
+                        status.state == expected && status.committed == acknowledged
+                    })
+                {
+                    index += 1;
+                    continue;
+                }
             }
             let observation = self
                 .shared
                 .lock()
                 .ok()
                 .and_then(|state| state.automation_worktree_observation(&pending.target));
-            if let Some(observation) = observation.filter(|value| {
-                observation_settles(
-                    pending.target.key.source_id,
-                    pending.target.key.generation,
-                    value,
-                )
-            }) {
-                let result = json!({
-                    "target": target_summary(&pending.target, &instance_id),
-                    "acknowledged": true,
-                    "final_observed": true,
-                    "observation": observation,
-                });
-                let id = pending.operation_id.clone();
+            let Some(observation) = observation.filter(|value| {
+                observation_settles(&pending.target, pending.baseline_revision, value)
+            }) else {
+                index += 1;
+                continue;
+            };
+            let settled = match &origin {
+                RequestOrigin::Gui => true,
+                RequestOrigin::Cli { operation_id } => {
+                    let result = json!({
+                        "target": target_summary(&pending.target, &instance_id),
+                        "acknowledged": acknowledged,
+                        // Pane/session absence is not disk deletion evidence.
+                        "final_observed": true,
+                        "observation": observation,
+                    });
+                    self.finish_worktree_request(
+                        operation_id,
+                        if acknowledged {
+                            DomainOperationState::Applied
+                        } else {
+                            // Source absence supersedes the request, but does
+                            // not prove the unknown delivery or disk deletion.
+                            DomainOperationState::Superseded
+                        },
+                        acknowledged,
+                        Some(result),
+                        (!acknowledged).then_some("target_absent"),
+                        (!acknowledged).then(|| {
+                            "later coherent pane/session absence; delivery and disk deletion unconfirmed".into()
+                        }),
+                    )
+                }
+            };
+            if settled {
+                let clear_gui_feedback = matches!(&origin, RequestOrigin::Gui)
+                    && self
+                        .worktree_feedback
+                        .as_ref()
+                        .is_some_and(|feedback| match feedback {
+                            super::WorktreeFeedback::Finished(target, Ok(()))
+                            | super::WorktreeFeedback::Finished(
+                                target,
+                                Err(WorktreeRemoveError::UnknownDelivery),
+                            ) => {
+                                target
+                                    == &self.worktree_automation.awaiting_observation[index].target
+                            }
+                            _ => false,
+                        });
                 self.worktree_automation.awaiting_observation.remove(index);
-                if self.finish_worktree_request(
-                    &id,
-                    DomainOperationState::Applied,
-                    true,
-                    Some(result),
-                    None,
-                    None,
-                ) {
-                    self.worktree_cli_feedback(Message::CliWorktreeObserved);
+                if clear_gui_feedback {
+                    self.worktree_feedback = None;
+                    self.bubble_content_dirty = true;
+                    super::wake();
+                }
+                if matches!(&origin, RequestOrigin::Cli { .. }) {
+                    self.worktree_cli_feedback(if acknowledged {
+                        Message::CliWorktreeObserved
+                    } else {
+                        Message::CliWorktreeUncertain
+                    });
                 }
             } else {
                 index += 1;
@@ -476,30 +604,127 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::herdr_protocol::WorkspaceWorktreeInfo;
+    use crate::session_view::SessionKey;
+    use std::sync::Arc;
+
+    fn target() -> WorktreeRemoveTarget {
+        WorktreeRemoveTarget {
+            key: SessionKey {
+                source_id: 4,
+                generation: 7,
+                terminal_id: "terminal".into(),
+            },
+            source: "/tmp/source.sock".into(),
+            pane_id: "pane".into(),
+            workspace_id: "workspace".into(),
+            worktree: Arc::new(WorkspaceWorktreeInfo {
+                repo_key: "repo".into(),
+                repo_name: "Repository".into(),
+                repo_root: "/repo".into(),
+                checkout_path: "/repo/linked".into(),
+                is_linked_worktree: true,
+                pane_count: 1,
+                tab_count: 1,
+            }),
+        }
+    }
 
     #[test]
-    fn final_evidence_requires_both_independent_absences_from_coherent_identity() {
-        for (source, generation, pane, session, settled) in [
-            (4, 7, true, true, true),
-            (4, 8, true, true, true),
-            (4, 7, false, true, false),
-            (4, 7, true, false, false),
-            (5, 8, true, true, false),
-            (4, 6, true, true, false),
+    fn final_evidence_requires_later_coherent_both_absences_and_exact_source_path() {
+        let target = target();
+        let baseline = 12;
+        for (source, path, generation, revision, pane, session, settled) in [
+            (4, "/tmp/source.sock", 7, 13, true, true, true),
+            (4, "/tmp/source.sock", 8, 14, true, true, true),
+            (4, "/tmp/source.sock", 7, 12, true, true, false),
+            (4, "/tmp/source.sock", 8, 11, true, true, false),
+            (4, "/tmp/source.sock", 7, 13, false, true, false),
+            (4, "/tmp/source.sock", 7, 13, true, false, false),
+            (5, "/tmp/source.sock", 8, 13, true, true, false),
+            (4, "/tmp/other.sock", 8, 13, true, true, false),
+            (4, "/tmp/source.sock", 6, 13, true, true, false),
         ] {
             let observation = json!({
+                "source": path,
                 "source_id": source,
                 "generation": generation,
+                "snapshot_revision": revision,
                 "pane_absent": pane,
                 "session_absent": session,
             });
-            assert_eq!(observation_settles(4, 7, &observation), settled);
+            assert_eq!(
+                observation_settles(&target, baseline, &observation),
+                settled
+            );
         }
         assert!(!observation_settles(
-            4,
-            7,
-            &json!({ "source_id": 4, "generation": 7, "pane_absent": true })
+            &target,
+            baseline,
+            &json!({ "source": target.source, "source_id": 4, "generation": 7,
+                "snapshot_revision": 13, "pane_absent": true })
         ));
+    }
+
+    #[test]
+    fn gui_and_cli_uncertainty_share_capacity_after_sender_clears_pending() {
+        let mut owner = WorktreeAutomation::new();
+        let mut rejected_target = None;
+        for index in 0..MAX_AWAITING_OBSERVATIONS {
+            let mut frozen = target();
+            frozen.workspace_id = format!("workspace-{index}");
+            let origin = if index % 2 == 0 {
+                RequestOrigin::Gui
+            } else {
+                RequestOrigin::Cli {
+                    operation_id: format!("remove-{index}"),
+                }
+            };
+            assert!(owner.can_dispatch_target(&frozen));
+            owner.retain_dispatch(frozen.clone(), origin.clone(), 10);
+            assert!(!owner.can_dispatch_target(&frozen));
+            if index + 1 == MAX_AWAITING_OBSERVATIONS {
+                rejected_target = Some((frozen, origin));
+                continue;
+            }
+            let result = WorktreeRemoveResult {
+                target: frozen,
+                origin,
+                result: if index % 3 == 0 {
+                    Ok(())
+                } else {
+                    Err(WorktreeRemoveError::UnknownDelivery)
+                },
+            };
+            owner.record_result(&result);
+            assert!(owner.has_pending_update_work());
+        }
+        assert!(!owner.can_dispatch_target(&target()));
+        let (frozen, origin) = rejected_target.unwrap();
+        owner.record_result(&WorktreeRemoveResult {
+            target: frozen,
+            origin,
+            result: Err(WorktreeRemoveError::Rejected {
+                code: "dirty_worktree".into(),
+                message: "not removed".into(),
+            }),
+        });
+        assert!(owner.can_dispatch_target(&target()));
+        assert!(owner.has_pending_update_work());
+        assert_eq!(
+            owner.awaiting_observation.len(),
+            MAX_AWAITING_OBSERVATIONS - 1
+        );
+        assert!(owner
+            .awaiting_observation
+            .iter()
+            .any(|pending| pending.origin == RequestOrigin::Gui
+                && pending.observed_delivery == Some(false)));
+        assert!(owner.awaiting_observation.iter().any(|pending| matches!(
+            pending.origin,
+            RequestOrigin::Cli { .. }
+        ) && pending.observed_delivery
+            == Some(true)));
     }
 
     #[test]

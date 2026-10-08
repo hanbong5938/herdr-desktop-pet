@@ -25,7 +25,7 @@ use objc2_app_kit::{
     NSSearchField, NSTextField, NSTextView, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -279,6 +279,7 @@ define_class!(
     #[unsafe(super = NSWindow)]
     #[thread_kind = MainThreadOnly]
     #[name = "OMPetCharacterBrowserWindow"]
+    #[ivars = Cell<bool>]
     struct CharacterBrowserWindow;
 
     unsafe impl NSObjectProtocol for CharacterBrowserWindow {}
@@ -286,6 +287,9 @@ define_class!(
     impl CharacterBrowserWindow {
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, _sender: Option<&AnyObject>) {
+            if self.ivars().get() {
+                return;
+            }
             if !self.search_has_marked_text() {
                 self.orderOut(None);
             }
@@ -293,6 +297,9 @@ define_class!(
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            if self.ivars().get() {
+                return;
+            }
             if event.keyCode() == 53 && !self.search_has_marked_text() {
                 self.orderOut(None);
                 return;
@@ -314,7 +321,7 @@ impl CharacterBrowserWindow {
             .unwrap_or(false)
     }
     fn new(frame: NSRect, mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+        let this = Self::alloc(mtm).set_ivars(Cell::new(false));
         unsafe {
             msg_send![super(this),
                 initWithContentRect: frame,
@@ -504,13 +511,17 @@ define_class!(
             let Some(shared_rc) = ivars.as_ref() else { return };
             if let Some(sender) = sender {
                 if let Some(field) = sender.downcast_ref::<NSTextField>() {
-                    let text = field.stringValue().to_string();
-                    let mut shared = shared_rc.borrow_mut();
-                    if shared.query != text {
-                        shared.query = text;
-                        shared.pending_local_reveal = None;
-                        shared.dirty = true;
+                    let shared = shared_rc.borrow();
+                    if shared.update_frozen {
+                        if let Some(original) = shared.frozen_search_value.as_deref() {
+                            if field.stringValue().to_string() != original {
+                                field.setStringValue(&NSString::from_str(original));
+                            }
+                        }
+                        return;
                     }
+                    drop(shared);
+                    shared_rc.borrow_mut().change_query(field.stringValue().to_string());
                 }
             }
         }
@@ -519,33 +530,21 @@ define_class!(
         fn filter_all(&self, _sender: Option<&AnyObject>) {
             let ivars = self.ivars().borrow();
             let Some(shared_rc) = ivars.as_ref() else { return };
-            let mut shared = shared_rc.borrow_mut();
-            if shared.filter != BrowserFilter::All {
-                shared.filter = BrowserFilter::All;
-                shared.dirty = true;
-            }
+            shared_rc.borrow_mut().change_filter(BrowserFilter::All);
         }
 
         #[unsafe(method(filterInstalled:))]
         fn filter_installed(&self, _sender: Option<&AnyObject>) {
             let ivars = self.ivars().borrow();
             let Some(shared_rc) = ivars.as_ref() else { return };
-            let mut shared = shared_rc.borrow_mut();
-            if shared.filter != BrowserFilter::Installed {
-                shared.filter = BrowserFilter::Installed;
-                shared.dirty = true;
-            }
+            shared_rc.borrow_mut().change_filter(BrowserFilter::Installed);
         }
 
         #[unsafe(method(filterOfficial:))]
         fn filter_official(&self, _sender: Option<&AnyObject>) {
             let ivars = self.ivars().borrow();
             let Some(shared_rc) = ivars.as_ref() else { return };
-            let mut shared = shared_rc.borrow_mut();
-            if shared.filter != BrowserFilter::Official {
-                shared.filter = BrowserFilter::Official;
-                shared.dirty = true;
-            }
+            shared_rc.borrow_mut().change_filter(BrowserFilter::Official);
         }
         #[unsafe(method(showInstalledLocal:))]
         fn show_installed_local(&self, sender: Option<&AnyObject>) {
@@ -555,11 +554,7 @@ define_class!(
             };
             let ivars = self.ivars().borrow();
             let Some(shared_rc) = ivars.as_ref() else { return };
-            let mut shared = shared_rc.borrow_mut();
-            shared.filter = BrowserFilter::Installed;
-            shared.pending_local_reveal = Some(id.clone());
-            shared.query = id;
-            shared.dirty = true;
+            shared_rc.borrow_mut().reveal_local(id);
         }
 
     }
@@ -856,6 +851,8 @@ struct BrowserSharedState {
     cards: Vec<CharacterCardHolder>,
     items: Vec<BrowserItem>,
     pending_local_reveal: Option<String>,
+    update_frozen: bool,
+    frozen_search_value: Option<String>,
     dirty: bool,
     // These versions describe items, PackRecord history, and portrait keys
     // installed together by rebuild_index, not the newest incoming input.
@@ -870,6 +867,80 @@ struct BrowserSharedState {
     last_catalog_error: Option<String>,
     last_listing_error: Option<String>,
     last_active_key: Option<PreviewKey>,
+}
+impl BrowserSharedState {
+    fn change_query(&mut self, query: String) {
+        if !self.update_frozen && self.query != query {
+            self.query = query;
+            self.pending_local_reveal = None;
+            self.dirty = true;
+        }
+    }
+
+    fn change_filter(&mut self, filter: BrowserFilter) {
+        if !self.update_frozen && self.filter != filter {
+            self.filter = filter;
+            self.dirty = true;
+        }
+    }
+
+    fn reveal_local(&mut self, id: String) {
+        if !self.update_frozen {
+            self.filter = BrowserFilter::Installed;
+            self.pending_local_reveal = Some(id.clone());
+            self.query = id;
+            self.dirty = true;
+        }
+    }
+}
+
+struct FrozenBrowserMenu {
+    menu: Retained<NSMenu>,
+    autoenables_items: bool,
+    item_enabled: Vec<bool>,
+}
+
+impl FrozenBrowserMenu {
+    fn disable(menu: Retained<NSMenu>) -> Self {
+        let autoenables_items: bool = unsafe { msg_send![&*menu, autoenablesItems] };
+        let items = menu.itemArray();
+        let item_enabled = items.iter().map(|item| item.isEnabled()).collect();
+        let _: () = unsafe { msg_send![&*menu, setAutoenablesItems: false] };
+        for item in items.iter() {
+            item.setEnabled(false);
+        }
+        Self {
+            menu,
+            autoenables_items,
+            item_enabled,
+        }
+    }
+
+    fn restore(self) {
+        for (item, enabled) in self.menu.itemArray().iter().zip(self.item_enabled) {
+            item.setEnabled(enabled);
+        }
+        let _: () = unsafe { msg_send![&*self.menu, setAutoenablesItems: self.autoenables_items] };
+    }
+}
+
+struct FrozenBrowserCard {
+    action_enabled: bool,
+    popup_enabled: bool,
+    menu: Option<FrozenBrowserMenu>,
+}
+
+struct FrozenBrowserControls {
+    search_enabled: bool,
+    search_editable: bool,
+    search_selectable: bool,
+    editor: Option<(Retained<AnyObject>, bool, bool)>,
+    filter_enabled: [bool; 3],
+    import_enabled: bool,
+    cancel_enabled: bool,
+    apply_enabled: bool,
+    cards: Vec<FrozenBrowserCard>,
+    ignores_mouse: bool,
 }
 
 fn observe_input_versions(last: &mut Option<(u64, u64)>, incoming: (u64, u64)) -> bool {
@@ -890,6 +961,7 @@ pub(crate) struct CharacterBrowser {
     shared: Rc<RefCell<BrowserSharedState>>,
     builtin_image: Option<Retained<NSImage>>,
     mtm: MainThreadMarker,
+    update_frozen_previous: RefCell<Option<FrozenBrowserControls>>,
 }
 
 impl CharacterBrowser {
@@ -923,6 +995,8 @@ impl CharacterBrowser {
             cards: Vec::new(),
             items: Vec::new(),
             dirty: true,
+            update_frozen: false,
+            frozen_search_value: None,
             cached_generation: u64::MAX,
             cached_catalog_revision: u64::MAX,
             last_input_versions: None,
@@ -1126,6 +1200,7 @@ impl CharacterBrowser {
             shared,
             builtin_image,
             mtm,
+            update_frozen_previous: RefCell::new(None),
         }
     }
 
@@ -1134,6 +1209,126 @@ impl CharacterBrowser {
         let ivars = self.root.ivars().borrow();
         if let Some(refs) = ivars.as_ref() {
             let _ = self.window.makeFirstResponder(Some(&refs.search_field));
+        }
+    }
+
+    /// Prevent native editing and interactions after Prepare has passed its
+    /// blocker check; restore the original control state if Prepare is aborted.
+    pub(crate) fn set_update_frozen(&self, frozen: bool) {
+        let refs = self.root.ivars().borrow();
+        let Some(refs) = refs.as_ref() else {
+            return;
+        };
+        let mut previous = self.update_frozen_previous.borrow_mut();
+        if frozen {
+            if previous.is_some() {
+                return;
+            }
+            {
+                let mut shared = self.shared.borrow_mut();
+                shared.frozen_search_value = Some(refs.search_field.stringValue().to_string());
+                shared.update_frozen = true;
+            }
+            let editor: Option<&AnyObject> =
+                unsafe { msg_send![&*refs.search_field, currentEditor] };
+            let editor = editor.map(|editor| {
+                let editable: bool = unsafe { msg_send![editor, isEditable] };
+                let selectable: bool = unsafe { msg_send![editor, isSelectable] };
+                (editor.retain(), editable, selectable)
+            });
+            let cards = self.shared.borrow().cards.clone();
+            let cards = cards
+                .iter()
+                .map(|card| {
+                    let state = FrozenBrowserCard {
+                        action_enabled: card.action_button.isEnabled(),
+                        popup_enabled: card.popup_button.isEnabled(),
+                        menu: card.popup_button.menu().map(FrozenBrowserMenu::disable),
+                    };
+                    card.action_button.setEnabled(false);
+                    card.popup_button.setEnabled(false);
+                    state
+                })
+                .collect();
+            *previous = Some(FrozenBrowserControls {
+                search_enabled: refs.search_field.isEnabled(),
+                search_editable: refs.search_field.isEditable(),
+                search_selectable: refs.search_field.isSelectable(),
+                editor,
+                filter_enabled: [
+                    refs.filter_all_button.isEnabled(),
+                    refs.filter_installed_button.isEnabled(),
+                    refs.filter_official_button.isEnabled(),
+                ],
+                import_enabled: refs.import_button.isEnabled(),
+                cancel_enabled: refs.cancel_button.isEnabled(),
+                apply_enabled: refs.apply_button.isEnabled(),
+                cards,
+                ignores_mouse: self.window.ignoresMouseEvents(),
+            });
+            self.window.ivars().set(true);
+            if let Some((editor, _, _)) = previous.as_ref().and_then(|prior| prior.editor.as_ref())
+            {
+                let _: () = unsafe { msg_send![&**editor, setEditable: false] };
+                let _: () = unsafe { msg_send![&**editor, setSelectable: false] };
+            }
+            refs.search_field.setEditable(false);
+            refs.search_field.setSelectable(false);
+            refs.search_field.setEnabled(false);
+            refs.filter_all_button.setEnabled(false);
+            refs.filter_installed_button.setEnabled(false);
+            refs.filter_official_button.setEnabled(false);
+            refs.import_button.setEnabled(false);
+            refs.cancel_button.setEnabled(false);
+            refs.apply_button.setEnabled(false);
+            self.window.setIgnoresMouseEvents(true);
+        } else if let Some(previous) = previous.take() {
+            // AX value setters can bypass isEditable without sending searchChanged:.
+            let original = self.shared.borrow().frozen_search_value.clone();
+            if let Some(original) = original {
+                if refs.search_field.stringValue().to_string() != original {
+                    refs.search_field
+                        .setStringValue(&NSString::from_str(&original));
+                }
+            }
+            refs.search_field.setEditable(previous.search_editable);
+            refs.search_field.setSelectable(previous.search_selectable);
+            refs.search_field.setEnabled(previous.search_enabled);
+            if let Some((editor, editable, selectable)) = previous.editor {
+                // AppKit may share a field editor with another control.
+                let current: Option<&AnyObject> =
+                    unsafe { msg_send![&*refs.search_field, currentEditor] };
+                if current.is_some_and(|current| std::ptr::eq(current, &*editor)) {
+                    let _: () = unsafe { msg_send![&*editor, setEditable: editable] };
+                    let _: () = unsafe { msg_send![&*editor, setSelectable: selectable] };
+                }
+            }
+            for (button, enabled) in [
+                &refs.filter_all_button,
+                &refs.filter_installed_button,
+                &refs.filter_official_button,
+            ]
+            .into_iter()
+            .zip(previous.filter_enabled)
+            {
+                button.setEnabled(enabled);
+            }
+            refs.import_button.setEnabled(previous.import_enabled);
+            refs.cancel_button.setEnabled(previous.cancel_enabled);
+            refs.apply_button.setEnabled(previous.apply_enabled);
+            let cards = self.shared.borrow().cards.clone();
+            for (card, state) in cards.iter().zip(previous.cards) {
+                if let Some(menu) = state.menu {
+                    menu.restore();
+                }
+                card.action_button.setEnabled(state.action_enabled);
+                card.popup_button.setEnabled(state.popup_enabled);
+            }
+            self.window.setIgnoresMouseEvents(previous.ignores_mouse);
+            self.window.ivars().set(false);
+            let mut shared = self.shared.borrow_mut();
+            shared.update_frozen = false;
+            shared.frozen_search_value = None;
         }
     }
 
@@ -1234,6 +1429,24 @@ impl CharacterBrowser {
         false
     }
 
+    /// Use AppKit's live search value: the filtered index can lag field-editor
+    /// edits. A pending local reveal is an unreduced browser selection intent.
+    pub(crate) fn has_pending_update_intent(&self) -> bool {
+        let native_text = {
+            let ivars = self.root.ivars().borrow();
+            let Some(refs) = ivars.as_ref() else {
+                return true;
+            };
+            let editor_text = refs.search_field.currentEditor().is_some_and(|editor| {
+                editor
+                    .downcast_ref::<NSTextView>()
+                    .is_some_and(|text| text.string().length() > 0)
+            });
+            refs.search_field.stringValue().length() > 0 || editor_text
+        };
+        native_text || self.has_marked_text() || self.shared.borrow().pending_local_reveal.is_some()
+    }
+
     pub(crate) fn visible_preview_requests(&self) -> Vec<PreviewKey> {
         if !self.is_visible() {
             return Vec::new();
@@ -1251,6 +1464,10 @@ impl CharacterBrowser {
     }
 
     pub(crate) fn refresh(&mut self, input: BrowserInput<'_>) {
+        // Neither consume reveal intent nor reenable/rebind controls during Prepare.
+        if self.shared.borrow().update_frozen {
+            return;
+        }
         let marked = self.has_marked_text();
         if !marked {
             let query = self.shared.borrow().pending_local_reveal.clone();
@@ -2070,7 +2287,8 @@ fn popup_button(
 
 #[cfg(test)]
 mod tests {
-    use super::observe_input_versions;
+    use super::{observe_input_versions, BrowserFilter, BrowserSharedState};
+    use crate::i18n::UiLocale;
 
     #[test]
     fn marked_index_version_only_changes_refresh_actions_once() {
@@ -2083,5 +2301,47 @@ mod tests {
         assert!(observe_input_versions(&mut observed, (8, 11)));
         assert!(!observe_input_versions(&mut observed, (8, 11)));
         assert_eq!(rendered, (7, 10));
+    }
+
+    #[test]
+    fn frozen_browser_actions_preserve_existing_reveal_and_reject_new_intent() {
+        let mut shared = BrowserSharedState {
+            query: "existing".into(),
+            filter: BrowserFilter::Installed,
+            locale: UiLocale::En,
+            cards: Vec::new(),
+            items: Vec::new(),
+            pending_local_reveal: Some("existing".into()),
+            update_frozen: true,
+            frozen_search_value: Some(String::new()),
+            dirty: false,
+            cached_generation: 0,
+            cached_catalog_revision: 0,
+            last_input_versions: None,
+            last_preview_revision: 0,
+            last_selection: None,
+            last_busy: false,
+            last_progress: None,
+            last_catalog_error: None,
+            last_listing_error: None,
+            last_active_key: None,
+        };
+        shared.change_query("ax search".into());
+        shared.change_filter(BrowserFilter::Official);
+        shared.reveal_local("ax card".into());
+        assert_eq!(shared.query, "existing");
+        assert_eq!(shared.filter, BrowserFilter::Installed);
+        assert_eq!(shared.pending_local_reveal.as_deref(), Some("existing"));
+        assert!(!shared.dirty);
+
+        shared.update_frozen = false;
+        shared.change_query("after thaw".into());
+        assert_eq!(shared.pending_local_reveal, None);
+        shared.change_filter(BrowserFilter::Official);
+        shared.reveal_local("local".into());
+        assert_eq!(shared.query, "local");
+        assert_eq!(shared.filter, BrowserFilter::Installed);
+        assert_eq!(shared.pending_local_reveal.as_deref(), Some("local"));
+        assert!(shared.dirty);
     }
 }

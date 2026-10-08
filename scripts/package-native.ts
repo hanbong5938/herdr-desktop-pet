@@ -8,6 +8,7 @@ const releaseDirectory = cargoTarget
   ? join(root, "native", "target", cargoTarget, "release")
   : join(root, "native", "target", "release");
 const nativeBinary = join(releaseDirectory, "herdr-desktop-pet");
+const helperBinary = join(releaseDirectory, "herdr-update-coordinator");
 const assetsSource = join(root, "assets", "rubelia-default");
 const thumbnailSource = join(root, "assets", "rubelia-thumbnail.png");
 const rigBuild = join(root, "native", "target", "rig-native", "release");
@@ -16,6 +17,7 @@ const appRoot = join(root, "dist", appName);
 const appContents = join(appRoot, "Contents");
 const appBinary = join(appContents, "MacOS", "herdr-desktop-pet");
 const appResources = join(appContents, "Resources");
+const appHelper = join(appContents, "MacOS", "herdr-update-coordinator");
 const appAssets = join(appResources, "default");
 const appFrameworks = join(appContents, "Frameworks");
 const appRigLibrary = join(appFrameworks, "libherdr_rig.dylib");
@@ -67,11 +69,43 @@ async function runTool(command: string[], label: string): Promise<string> {
   return stdout;
 }
 
-async function stripDevelopmentRpaths(binary: string): Promise<void> {
+async function requireProtocolTwo(binary: string, label: string): Promise<void> {
+  const output = await runTool([binary, "update-capabilities"], `${label} update capabilities`);
+  let capabilities: unknown;
+  try {
+    capabilities = JSON.parse(output);
+  } catch {
+    fail(`${label} did not return JSON update capabilities`);
+  }
+  if (typeof capabilities !== "object" || capabilities === null || !("protocol" in capabilities) ||
+      capabilities.protocol !== 2) {
+    fail(`${label} does not support updater protocol 2`);
+  }
+}
+
+async function requireArm64(binary: string, label: string): Promise<void> {
+  const architectures = (await runTool(["lipo", "-archs", binary], `inspecting ${label} architecture`)).trim();
+  if (architectures !== "arm64") fail(`${label} must be arm64-only (got ${architectures})`);
+}
+
+async function validateStandaloneHelper(binary: string): Promise<void> {
+  await requireArm64(binary, "update coordinator");
+  await requireProtocolTwo(binary, "update coordinator");
+  const commands = await runTool(["otool", "-l", binary], "inspecting update coordinator loader paths");
+  if (/\bcmd LC_RPATH\b/.test(commands)) fail("update coordinator must not contain loader search paths");
+  const dependencies = await runTool(["otool", "-L", binary], "inspecting update coordinator dependencies");
+  const libraries = dependencies.split("\n").slice(1).map((line) => line.trim().split(/\s+/)[0]).filter(Boolean);
+  if (!libraries.length || libraries.some((library) =>
+    !library!.startsWith("/usr/lib/") && !library!.startsWith("/System/Library/"))) {
+    fail(`update coordinator must depend only on system libraries: ${libraries.join(", ")}`);
+  }
+}
+
+async function stripDevelopmentRpaths(binary: string, all = false): Promise<void> {
   const commands = await runTool(["otool", "-l", binary], "reading Mach-O load commands");
   for (const match of commands.matchAll(/cmd LC_RPATH\s+cmdsize \d+\s+path (.+?) \(offset \d+\)/g)) {
     const path = match[1]!;
-    if (!path.startsWith("@") && path !== "/usr/lib/swift") {
+    if (all || (!path.startsWith("@") && path !== "/usr/lib/swift")) {
       await runTool(["install_name_tool", "-delete_rpath", path, binary], "removing development loader path");
     }
   }
@@ -90,9 +124,10 @@ async function validateNativePack(binary: string, path: string): Promise<void> {
 }
 
 async function runCodesign(identity: string): Promise<void> {
-  for (const target of [appRigLibrary, appRigWorker, appBinary, appRoot]) {
+  for (const target of [appRigLibrary, appRigWorker, appHelper, appBinary, appRoot]) {
     await runTool(["codesign", "--force", "--timestamp=none", "--sign", identity, target], `signing ${target}`);
   }
+  await runTool(["codesign", "--verify", "--strict", appHelper], "verifying signed update coordinator");
   await runTool(["codesign", "--verify", "--deep", "--strict", appRoot], "verifying packaged signature");
 }
 
@@ -109,6 +144,9 @@ async function main(): Promise<void> {
 
   await requireFile(licenseSource, "license notice");
   await requireFile(nativeBinary, "release native binary");
+  await requireFile(helperBinary, "release update coordinator");
+  await requireArm64(nativeBinary, "release native binary");
+  await requireProtocolTwo(nativeBinary, "release native binary");
   await requireDirectory(assetsSource, "Rubelia rig default");
   await requireFile(thumbnailSource, "Rubelia menu thumbnail");
   await requireFile(join(rigBuild, "libherdr_rig.dylib"), "release native rig library");
@@ -164,6 +202,8 @@ async function main(): Promise<void> {
   await mkdir(appCreator, { recursive: true });
   await cp(nativeBinary, appBinary);
   await chmod(appBinary, 0o755);
+  await cp(helperBinary, appHelper);
+  await chmod(appHelper, 0o755);
   await cp(licenseSource, licenseDestination);
   await cp(assetsSource, appAssets, { recursive: true });
   await cp(thumbnailSource, join(appResources, "default-thumbnail.png"));
@@ -180,6 +220,8 @@ async function main(): Promise<void> {
   for (const binary of [appBinary, appRigLibrary, appRigWorker]) {
     await stripDevelopmentRpaths(binary);
   }
+  await stripDevelopmentRpaths(appHelper, true);
+  await validateStandaloneHelper(appHelper);
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -222,6 +264,8 @@ async function main(): Promise<void> {
     process.env.CODESIGN_IDENTITY?.trim() ||
     "-";
   await runCodesign(identity);
+  await requireProtocolTwo(appBinary, "packaged native binary");
+  await validateStandaloneHelper(appHelper);
   await validateNativePack(appBinary, appAssets);
   if (identity === "-") {
     console.log(`Packaged ${appRoot} with an ad-hoc local signature; no official signing or notarization was performed.`);

@@ -330,7 +330,9 @@ fn save(key: LifecycleSetting) {
 pub(crate) fn run(paths: Paths) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("settings must run on the AppKit main thread")?;
     let settings = control::get_lifecycle_settings(&paths)?;
-    let preference = Preferences::load().unwrap_or_default().language();
+    let preference = Preferences::load(&paths.config_dir)
+        .unwrap_or_default()
+        .language();
     let preferred = NSLocale::preferredLanguages();
     let tags: Vec<_> = preferred.iter().map(|tag| tag.to_string()).collect();
     let tags: Vec<_> = tags.iter().map(String::as_str).collect();

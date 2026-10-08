@@ -1,4 +1,4 @@
-use crate::lifecycle::{config_directory, validate_directory};
+use crate::lifecycle::validate_directory;
 use crate::preferences::MenuBarIconPreference;
 use flate2::{Crc, Decompress, FlushDecompress, Status};
 use objc2::rc::Retained;
@@ -56,9 +56,9 @@ pub(crate) fn default_image(
 pub(crate) fn prepare_source(
     path: &Path,
     mtm: MainThreadMarker,
+    directory: &Path,
 ) -> Result<PreparedMenuBarIcon, String> {
-    let directory = config_directory()?;
-    prepare_source_in_directory(path, mtm, &directory)
+    prepare_source_in_directory(path, mtm, directory)
 }
 
 fn read_source_bytes(path: &Path) -> Result<Vec<u8>, String> {
@@ -105,8 +105,9 @@ fn prepare_source_in_directory(
 pub(crate) fn load_saved(
     preference: &MenuBarIconPreference,
     mtm: MainThreadMarker,
+    directory: &Path,
 ) -> Result<Retained<NSImage>, String> {
-    load_saved_in_directory(preference, mtm, &config_directory()?)
+    load_saved_in_directory(preference, mtm, directory)
 }
 
 fn load_saved_in_directory(
@@ -1482,6 +1483,43 @@ mod tests {
                 .chunks_exact(4)
                 .any(|pixel| pixel[3] > 0));
         }
+    }
+
+    #[test]
+    fn managed_icon_publication_and_lookup_are_confined_to_selected_profile() {
+        let root = isolated_directory();
+        let selected = root.join("profile-a");
+        let other = root.join("default");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&other).unwrap();
+        let bytes = png(
+            2,
+            1,
+            png::ColorType::Rgb,
+            png::BitDepth::Eight,
+            &[3, 20, 70, 80, 50, 1],
+        );
+        let name = name_for_bytes(&bytes);
+        let preference = MenuBarIconPreference {
+            asset: name.clone(),
+        };
+        let other_managed = other.join(ICON_DIRECTORY);
+        fs::create_dir(&other_managed).unwrap();
+        fs::set_permissions(&other_managed, Permissions::from_mode(0o700)).unwrap();
+        let other_asset = other_managed.join(&name);
+        fs::write(&other_asset, b"default sentinel").unwrap();
+        fs::set_permissions(&other_asset, Permissions::from_mode(0o600)).unwrap();
+
+        publish_in_directory(&selected, &name, &bytes).unwrap();
+        assert_eq!(
+            load_bytes_in_directory(&preference, &selected).unwrap(),
+            bytes
+        );
+        assert!(load_bytes_in_directory(&preference, &other).is_err());
+        cleanup_previous_in_directory(&selected, &name);
+        assert!(load_bytes_in_directory(&preference, &selected).is_err());
+        assert_eq!(fs::read(&other_asset).unwrap(), b"default sentinel");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

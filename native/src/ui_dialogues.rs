@@ -67,6 +67,10 @@ impl DialogueAutomation {
             native: Vec::new(),
         }
     }
+
+    pub(super) fn has_pending_update_work(&self) -> bool {
+        !self.metadata.is_empty() || !self.native.is_empty()
+    }
 }
 
 #[derive(Default)]
@@ -255,6 +259,7 @@ impl Ui {
                 selection.locale.tag(),
                 selection.slot,
                 value,
+                &self.lifecycle_paths.config_dir,
             )
             .map_err(|detail| DialogueMutationError::new("persist_failed", detail))?;
         let (active, native_applied) = self.apply_committed_dialogue(&selection.identity);
@@ -309,7 +314,7 @@ impl Ui {
         }
         self.dialogue_choice(identity)?;
         self.prefs
-            .reset_character_dialogue(&identity.target)
+            .reset_character_dialogue(&identity.target, &self.lifecycle_paths.config_dir)
             .map_err(|detail| DialogueMutationError::new("persist_failed", detail))?;
         let (active, native_applied) = self.apply_committed_dialogue(identity);
         let result = json!({

@@ -304,6 +304,17 @@ impl Ui {
         expected_revision: Option<u64>,
         policy: MachineValidationPolicy,
     ) -> Result<PreferenceSnapshot, PreferenceMutationError> {
+        if self.update_frozen.is_some()
+            || self
+                .shared
+                .lock()
+                .map_or(true, |state| state.update_mutation_allowed().is_err())
+        {
+            return Err(PreferenceMutationError::new(
+                "update_preparing",
+                "application update is preparing; retry preference changes after it finishes",
+            ));
+        }
         if expected_revision.is_some_and(|revision| revision != self.preference_revision) {
             return Err(PreferenceMutationError::new(
                 "revision_conflict",
@@ -319,7 +330,7 @@ impl Ui {
         }
         let target = self
             .prefs
-            .apply_patch(patch)
+            .apply_patch(patch, &self.lifecycle_paths.config_dir)
             .map_err(|error| PreferenceMutationError::new("persist_failed", error))?;
         self.preference_revision = self
             .preference_revision
@@ -448,7 +459,31 @@ impl Ui {
                 }))
     }
 
+    pub(super) fn preference_update_pending(&self) -> bool {
+        if !self.pending_preference_operations.is_empty() || self.pending_language.is_some() {
+            return true;
+        }
+        let desired = self.prefs.snapshot();
+        if desired.language != self.effective_language
+            || desired.bubble_appearance != self.native_bubble_appearance
+            || desired.show_status_indicators != self.native_show_status_indicators
+            || desired.menu_bar_mode != self.native_menu_bar_mode
+        {
+            return true;
+        }
+        self.shared.lock().map_or(true, |state| {
+            let actual = state.observation_preferences();
+            desired.observation_local != actual.local
+                || desired.observation_remote != actual.remote
+                || desired.observation_machines != actual.machines
+        })
+    }
     pub(super) fn drain_domain_requests(&mut self) {
+        // Requests remain in the ledger until admitted; a prepared update
+        // cannot silently drain or discard them.
+        if self.update_frozen.is_some() {
+            return;
+        }
         let requests = lock_automation(&self.automation).drain_domain_requests();
         for request in requests {
             let id = request.operation_id.clone();
