@@ -81,20 +81,19 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance,
-    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
-    NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSBezelStyle, NSBezierPath, NSButton, NSButtonCell, NSCell, NSColor,
-    NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition,
-    NSEvent, NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType,
-    NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
-    NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem,
-    NSModalPanelRunLoopMode, NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
-    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
-    NSRunningApplication, NSScreen, NSScrollView, NSScrollerStyle, NSStatusBar, NSStatusItem,
-    NSSwitch, NSTextAlignment, NSTextContainer, NSTextField, NSTextStorage, NSTextView,
-    NSTrackingArea, NSTrackingAreaOptions, NSUserInterfaceItemIdentification,
-    NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
-    NSWindowStyleMask, NSWorkspace,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
+    NSApplicationDelegate, NSAutoresizingMaskOptions, NSBackingStoreType, NSBezelStyle,
+    NSBezierPath, NSButton, NSButtonCell, NSCell, NSColor, NSControlStateValueOn, NSCursor,
+    NSCursorFrameResizeDirections, NSCursorFrameResizePosition, NSEvent, NSEventMask,
+    NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType, NSFloatingWindowLevel, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView,
+    NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem, NSModalPanelRunLoopMode,
+    NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
+    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton, NSScreen,
+    NSScrollView, NSScrollerStyle, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment,
+    NSTextContainer, NSTextField, NSTextStorage, NSTextView, NSTrackingArea, NSTrackingAreaOptions,
+    NSUserInterfaceItemIdentification, NSVariableStatusItemLength, NSView,
+    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate, NSLocale,
@@ -1162,7 +1161,7 @@ struct Ui {
     menu_bar_icon_image: Retained<NSImage>,
     menu_bar_icon_busy: bool,
     status_menu_tracking: bool,
-    context_anchor: Option<NSRect>,
+    context_settings_requested: bool,
     settings_anchor: Option<NSRect>,
     _menu_target: Retained<MenuTarget>,
     _menu_event_monitors: Vec<Retained<AnyObject>>,
@@ -1637,7 +1636,7 @@ impl BubblePanel {
             return false;
         };
         let anchor = NSRect::new(self.convertPointToScreen(location), NSSize::new(1.0, 1.0));
-        with_ui_mut(|ui| ui.context_anchor = Some(anchor));
+        with_ui_mut(|ui| ui.context_settings_requested = false);
         let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
         menu.setAutoenablesItems(false);
         add_context_item(
@@ -1680,7 +1679,7 @@ impl BubblePanel {
             sel!(resetBubbleSize:),
             !composing,
         );
-        if let Some(worktree) = worktree {
+        let worktree_target = worktree.map(|worktree| {
             let title = format!(
                 "{} · {}",
                 text(locale, Message::WorktreeRemove),
@@ -1698,12 +1697,14 @@ impl BubblePanel {
             unsafe { item.setTarget(Some(&*worktree_target)) };
             item.setEnabled(!composing);
             menu.addItem(&item);
-            // NSMenuItem does not own its target; keep it alive through synchronous tracking.
-            NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &root);
-            drop(worktree_target);
-            return true;
-        }
+            worktree_target
+        });
+        // NSMenuItem does not own its target; keep it alive through synchronous tracking.
         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &root);
+        drop(worktree_target);
+        if take_context_settings_request() {
+            present_settings_at(anchor);
+        }
         true
     }
 }
@@ -2172,9 +2173,7 @@ define_class!(
         fn open_context_settings(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| {
                 if !ui.composer_marked() && !ui.cards.is_composing() {
-                    if let Some(anchor) = ui.context_anchor {
-                        ui.open_settings_at(anchor);
-                    }
+                    ui.context_settings_requested = true;
                 }
             });
         }
@@ -2214,11 +2213,7 @@ define_class!(
             };
 
             match action {
-                StatusItemAction::Primary => with_ui_mut(|ui| {
-                    if !ui.composer_marked() && !ui.cards.is_composing() {
-                        ui.open_settings_at(anchor);
-                    }
-                }),
+                StatusItemAction::Primary => present_settings_at(anchor),
                 StatusItemAction::Context => {
                     let Some(event) = event else { return };
                     let mut menu = None;
@@ -2231,19 +2226,24 @@ define_class!(
                         if let Ok(state) = ui.shared.lock() {
                             ui.sync_recover_item(&state.scene());
                         }
-                        ui.context_anchor = Some(anchor);
+                        ui.context_settings_requested = false;
                         ui.status_menu_tracking = true;
                         menu = Some(context_menu);
                     });
                     let Some(menu) = menu else { return };
                     NSMenu::popUpContextMenu_withEvent_forView(&menu, &event, &button);
+                    let mut open_settings = false;
                     with_ui_mut(|ui| {
                         ui.status_menu_tracking = false;
                         ui.refresh();
                         if let Ok(state) = ui.shared.lock() {
                             ui.sync_status_menu(&state.scene());
                         }
+                        open_settings = std::mem::take(&mut ui.context_settings_requested);
                     });
+                    if open_settings {
+                        present_settings_at(anchor);
+                    }
                 }
             }
         }
@@ -2587,7 +2587,7 @@ impl PetView {
         .flatten() else {
             return;
         };
-        with_ui_mut(|ui| ui.context_anchor = Some(anchor));
+        with_ui_mut(|ui| ui.context_settings_requested = false);
         let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
         menu.setAutoenablesItems(false);
         add_context_item(
@@ -2636,6 +2636,9 @@ impl PetView {
             true,
         );
         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+        if take_context_settings_request() {
+            present_settings_at(anchor);
+        }
     }
 
     fn set_gesture_visuals(&self, kind: Option<GestureKind>) {
@@ -3331,6 +3334,45 @@ where
     }
 }
 
+fn take_context_settings_request() -> bool {
+    let mut requested = false;
+    with_ui_mut(|ui| requested = std::mem::take(&mut ui.context_settings_requested));
+    requested
+}
+
+fn present_settings_at(anchor: NSRect) {
+    let mut shown_on = None;
+    with_ui_mut(|ui| {
+        if ui.composer_marked() || ui.cards.is_composing() || ui.menu_bar_icon_shutdown() {
+            return;
+        }
+        ui.settings_anchor = Some(anchor);
+        let was_visible = ui.menu_panel.is_visible();
+        ui.refresh_character_menu();
+        if !was_visible && !ui.last_scene.shutdown {
+            ui.sync_menu_panel_state();
+        }
+        if let Some(frame) = anchor_visible_frame(ui.mtm, anchor) {
+            ui.menu_panel.reanchor_at(anchor, frame);
+            ui.sync_character_menu_frame();
+            ui.menu_panel.show();
+            if ui.menu_panel.is_visible() {
+                ui.menu_panel.refresh_bubble_color_controls();
+                ui.queue_language_apply();
+                shown_on = Some(ui.mtm);
+            }
+        } else {
+            ui.sync_character_menu_frame();
+        }
+    });
+    if let Some(mtm) = shown_on {
+        // Settings is an explicit user request. Cooperative activate() can be
+        // refused while another app is active, leaving this key panel's native
+        // controls drawn inactive; the status-item gesture requires activation.
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+    }
+}
+
 pub(crate) fn composer_is_composing() -> bool {
     UI.with(|cell| match cell.try_borrow() {
         Ok(slot) => slot
@@ -3639,6 +3681,7 @@ fn choose_menu_bar_icon() {
         Ok(None) => None,
         Err(error) => Some(Err((Message::MenuBarIconImportFailure, error))),
     };
+    let mut reopen_anchor = None;
     with_ui_mut(|ui| {
         if !ui.menu_bar_icon_busy {
             return;
@@ -3654,11 +3697,12 @@ fn choose_menu_bar_icon() {
         ui.menu_bar_icon_busy = false;
         ui.menu_panel.set_menu_bar_icon_busy(false);
         if !ui.menu_bar_icon_shutdown() {
-            if let Some(anchor) = anchor {
-                ui.open_settings_at(anchor);
-            }
+            reopen_anchor = anchor;
         }
     });
+    if let Some(anchor) = reopen_anchor {
+        present_settings_at(anchor);
+    }
 }
 
 fn reset_menu_bar_icon() {
@@ -4563,7 +4607,7 @@ impl Ui {
             menu_bar_icon_image,
             menu_bar_icon_busy: false,
             status_menu_tracking: false,
-            context_anchor: None,
+            context_settings_requested: false,
             settings_anchor: None,
             _menu_target: menu_target,
             _menu_event_monitors: Vec::new(),
@@ -9636,37 +9680,6 @@ impl Ui {
     fn bubble_contains_screen(&self, screen: NSPoint) -> bool {
         let local = self.bubble_panel.convertPointFromScreen(screen);
         self.bubble_root.contains_local_point(local)
-    }
-    fn open_settings_at(&mut self, anchor: NSRect) {
-        self.settings_anchor = Some(anchor);
-        if !self.menu_panel.is_visible() {
-            let app = NSApplication::sharedApplication(self.mtm);
-            if !app.isActive() {
-                if app.respondsToSelector(sel!(activate)) {
-                    app.activate();
-                } else {
-                    // macOS 13 predates NSApplication.activate().
-                    let _ = NSRunningApplication::currentApplication()
-                        .activateWithOptions(NSApplicationActivationOptions::empty());
-                }
-            }
-        }
-        let was_visible = self.menu_panel.is_visible();
-        self.refresh_character_menu();
-        if !was_visible && !self.last_scene.shutdown {
-            self.sync_menu_panel_state();
-        }
-        if let Some(frame) = anchor_visible_frame(self.mtm, anchor) {
-            self.menu_panel.reanchor_at(anchor, frame);
-            self.sync_character_menu_frame();
-            self.menu_panel.show();
-            if self.menu_panel.is_visible() {
-                self.menu_panel.refresh_bubble_color_controls();
-                self.queue_language_apply();
-            }
-        } else {
-            self.sync_character_menu_frame();
-        }
     }
 
     fn sync_status_menu(&self, scene: &Scene) {
