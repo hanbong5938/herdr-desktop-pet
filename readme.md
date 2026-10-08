@@ -4,7 +4,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 **English** · [한국어](readme.ko.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **Stable v0.2.0 is the current `main` source and default/prebuilt installation target.** Its native feature groups include independent character/bubble visibility, compact observation settings, standalone/remote-only watcher startup, contextual Settings, configurable menu-bar recovery and image, linked-worktree removal, reply layout and clipboard shortcuts, and malformed-link scanner fixes. The earlier v0.1.11 binary and immutable beta1/beta2/beta3 releases remain historical, separate channels. Consult the [v0.2.0 release notes](docs/releases/v0.2.0.md), [upgrade guide](docs/migrations/v0.1.11-to-v0.2.0.md), and [historical local-preview guide](docs/migrations/unreleased.md). Release-catalog assets, rather than this source guide, establish publication availability.
+> **Stable v0.2.1 is the default/prebuilt installation target for this release checkout.** It patches v0.2.0's reference-only mesh handling so Arin's resolved child artwork no longer retains a link to a removed mesh source; character artwork, rig overrides, and motion are unchanged. See the [v0.2.1 release notes](docs/releases/v0.2.1.md) for patch scope. The v0.2.0 native feature groups remain: independent character/bubble visibility, compact observation settings, standalone/remote-only watcher startup, contextual Settings, configurable menu-bar recovery and image, linked-worktree removal, reply layout and clipboard shortcuts, and malformed-link scanner fixes. The earlier v0.1.11 binary and immutable beta1/beta2/beta3 releases remain historical, separate channels. Consult the [v0.2.0 release notes](docs/releases/v0.2.0.md), [upgrade guide](docs/migrations/v0.1.11-to-v0.2.0.md), and [historical local-preview guide](docs/migrations/unreleased.md). Release-catalog assets, rather than this source guide, establish publication availability.
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
@@ -26,7 +26,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 - Contextual Settings and guarded linked-worktree removal for eligible local worktrees; removal deletes ignored files too.
 - Edit per-character Korean and English dialogue without modifying character packs.
 
-Rubelia is the only bundled character and the default model (`default@0`). Optional characters and wardrobe packs are maintained in the separate [character repository](https://github.com/hanbong5938/herdr-characters) and must be imported. The bubble reports observed Herdr session status; it does not infer provider results. A successful message submission means Herdr acknowledged the prompt, not that the agent finished processing it.
+Rubelia is the only bundled character and the default model (`default@0`). Optional characters and wardrobe pack archives are maintained in the separate [character repository](https://github.com/hanbong5938/herdr-characters) and must be imported separately; they are not included with the app. The bubble reports observed Herdr session status; it does not infer provider results. A successful message submission means Herdr acknowledged the prompt, not that the agent finished processing it.
 
 Session cards use the observed terminal title, then a named tab, then workspace/directory context. Missing names receive an explicit fallback; duplicate names gain a visible discriminator. Hover a card for the full title, working directory, and internal IDs. Renaming a title preserves selection and scroll position; disconnected sessions retain their last observed title with an offline status.
 
@@ -52,7 +52,7 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | Pinned stable v0.2.0 prebuilt (plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
+| App | Pinned stable v0.2.1 prebuilt (plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
 
@@ -65,13 +65,13 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to the manifest `version` (v0.2.0) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl`, not a browser or cask download, it has no quarantine attribute and macOS shows no Gatekeeper prompt. For client-attach auto-start, run these commands against the patched Herdr host described above.
+Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to this checkout's manifest `version` (v0.2.1) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl`, not a browser or cask download, it has no quarantine attribute and macOS shows no Gatekeeper prompt. For client-attach auto-start, run these commands against the patched Herdr host described above.
 
 The repository is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing.
 
 ## Install with Homebrew
 
-Install the stable v0.2.0 prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap) formula; no GitHub login or source-build toolchain is required. Check the [release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.2.0) for published assets before relying on a prebuilt:
+Install the stable v0.2.1 prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap) formula once its v0.2.1 update is available; no GitHub login or source-build toolchain is required. Check the [release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.2.1) for published assets and the tap formula's version before relying on a prebuilt:
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -90,7 +90,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-Confirm `--version` is `0.2.0` and `status` reports `app_version` and the running executable as stable v0.2.0, not the previous binary. If Homebrew refuses to load the formula, scope trust to this formula: `brew trust --formula hanbong5938/tap/herdr-desktop-pet`. The formula installs `HerdrDesktopPet.app` inside Homebrew's prefix, not `/Applications`, and puts the CLI on `PATH`. It installs only the app, not the Herdr plugin or patched host; use plugin installation above for lifecycle hooks, and the host patch for client-attach auto-start. The app is ad-hoc signed, not notarized; formula installation does not quarantine it. `brew uninstall herdr-desktop-pet` keeps character packs, preferences, and lifecycle state. See the [upgrade and rollback guide](docs/migrations/v0.1.11-to-v0.2.0.md).
+Confirm `--version` is `0.2.1` and `status` reports `app_version` and the running executable as stable v0.2.1, not the previous binary. If Homebrew refuses to load the formula, scope trust to this formula: `brew trust --formula hanbong5938/tap/herdr-desktop-pet`. The formula installs `HerdrDesktopPet.app` inside Homebrew's prefix, not `/Applications`, and puts the CLI on `PATH`. It installs only the app, not the Herdr plugin or patched host; use plugin installation above for lifecycle hooks, and the host patch for client-attach auto-start. The app is ad-hoc signed, not notarized; formula installation does not quarantine it. `brew uninstall herdr-desktop-pet` keeps character packs, preferences, and lifecycle state. See the [upgrade and rollback guide](docs/migrations/v0.1.11-to-v0.2.0.md).
 
 Earlier versions shipped a Homebrew cask that copied the app to `/Applications`. To migrate a previous cask install, remove it and install the formula (your data is kept):
 
@@ -117,7 +117,7 @@ If the stable formula is already installed, stop that daemon too and use `brew u
 
 ## Install this checkout from source
 
-For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. Current public `main` includes the native stable v0.2.0 feature groups described below; `--source` builds your actual checkout, not a different release. For client-attach auto-start, run the patched Herdr host in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
+For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. This v0.2.1 release checkout includes the stable v0.2.0 native feature groups described below and the reference-only mesh patch; `--source` builds your actual checkout, not a different release. For client-attach auto-start, run the patched Herdr host in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
 
 ```sh
 bash scripts/install.sh --source
@@ -139,7 +139,7 @@ Version-specific changes and historical artwork limitations belong in the [relea
 
 ## Controls
 
-These controls apply to stable v0.2.0 `main` and its native app. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
+These controls apply to stable v0.2.1 and its native app. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
 
 | Interaction | Effect |
 | --- | --- |

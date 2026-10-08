@@ -4,7 +4,7 @@
 
 [English](readme.md) · **한국어** · [버전 문서](docs/releases/README.ko.md) · [릴리스](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **안정판 v0.2.0은 현재 `main` 소스와 기본/사전 빌드 설치 대상입니다.** 네이티브 기능에는 캐릭터·말풍선 독립 표시, 간결한 관찰 설정, 단독·원격 전용 watcher 시작, 문맥 설정, 선택 가능한 메뉴 막대 표시·이미지, 연결 워크트리 삭제, 답장 배치·클립보드 및 잘못된 링크 스캐너 수정이 포함됩니다. 이전 v0.1.11 바이너리와 변경 불가한 beta1/2/3 릴리스는 별도의 과거 채널입니다. [v0.2.0 릴리스 기록](docs/releases/v0.2.0.md) · [이전 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어) · [과거 로컬 프리뷰 안내](docs/migrations/unreleased.ko.md)를 참고하세요. 실제 사전 빌드 공개 여부는 이 소스 안내가 아닌 릴리스 목록의 자산으로 확인하세요.
+> **안정판 v0.2.1은 이 릴리스 체크아웃의 기본/사전 빌드 설치 대상입니다.** v0.2.0의 참조 전용 메시 처리 문제를 수정하여 Arin의 자식 그림이 해석된 뒤 제거된 메시 소스를 참조하지 않도록 합니다. 캐릭터 그림·rig 오버라이드·모션은 변경하지 않았습니다. 패치 범위는 [v0.2.1 릴리스 기록](docs/releases/v0.2.1.md)을 참고하세요. v0.2.0의 네이티브 기능인 캐릭터·말풍선 독립 표시, 간결한 관찰 설정, 단독·원격 전용 watcher 시작, 문맥 설정, 선택 가능한 메뉴 막대 표시·이미지, 연결 워크트리 삭제, 답장 배치·클립보드 및 잘못된 링크 스캐너 수정은 유지됩니다. 이전 v0.1.11 바이너리와 변경 불가한 beta1/2/3 릴리스는 별도의 과거 채널입니다. [v0.2.0 릴리스 기록](docs/releases/v0.2.0.md) · [이전 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어) · [과거 로컬 프리뷰 안내](docs/migrations/unreleased.ko.md)를 참고하세요. 실제 사전 빌드 공개 여부는 이 소스 안내가 아닌 릴리스 목록의 자산으로 확인하세요.
 
 <img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">
 
@@ -25,7 +25,7 @@
 - 간결한 로컬·원격 관찰 설정, 명령 복사만 제공하는 재연결 UI와 단독 원격 전용 watcher 시작
 - 문맥 설정과 적격 로컬 연결 워크트리 삭제(무시된 파일도 삭제)
 
-기본 제공 캐릭터는 루벨리아(`default@0`) 하나입니다. 추가 캐릭터와 의상 팩은 [별도 캐릭터 저장소](https://github.com/hanbong5938/herdr-characters)에서 관리하며 직접 가져와야 합니다. 말풍선은 관측된 Herdr 세션 상태를 표시하고, 제공자의 결과를 추측하지 않습니다. 메시지 제출 성공은 Herdr가 요청을 접수했다는 뜻이지 에이전트가 처리를 마쳤다는 뜻이 아닙니다.
+기본 제공 캐릭터는 루벨리아(`default@0`) 하나입니다. 추가 캐릭터·의상 팩 아카이브는 [별도 캐릭터 저장소](https://github.com/hanbong5938/herdr-characters)에서 관리하며 앱에 포함되지 않으므로 별도로 가져와야 합니다. 말풍선은 관측된 Herdr 세션 상태를 표시하고, 제공자의 결과를 추측하지 않습니다. 메시지 제출 성공은 Herdr가 요청을 접수했다는 뜻이지 에이전트가 처리를 마쳤다는 뜻이 아닙니다.
 
 세션 카드는 관측된 터미널 제목, 이름이 지정된 탭, 작업 공간·디렉터리 정보 순서로 이름을 선택합니다. 이름이 없으면 대체 이름을 표시하고, 동명이면 구분자를 추가합니다. 카드에 마우스를 올리면 전체 제목·작업 경로·내부 ID를 확인할 수 있습니다. 제목이 바뀌어도 선택·스크롤은 유지되며, 연결이 끊기면 마지막 제목과 오프라인 상태를 표시합니다.
 
@@ -51,7 +51,7 @@
 | --- | --- |
 | 플랫폼 | Apple Silicon Mac, macOS 13 이상 |
 | 이번 실행 관리 기능의 Herdr | **공식 Herdr 0.9.3 소스에 [제공된 client-attach 패치](integrations/herdr/client-attached.patch)를 적용해 빌드한 호스트** (또는 추후 실제로 이 훅 지원을 명시한 호스트 릴리스) |
-| 앱 | 고정된 안정판 v0.2.0 사전 빌드(플러그인 설치 프로그램 또는 Homebrew, 빌드 도구 불필요) 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
+| 앱 | 고정된 안정판 v0.2.1 사전 빌드(플러그인 설치 프로그램 또는 Homebrew, 빌드 도구 불필요) 또는 이 체크아웃의 소스 빌드: Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools |
 
 **클라이언트 attach 자동 실행에는 제공된 패치가 필수입니다.** 순정 Herdr 0.9.0과 0.9.3에는 `client.attached`가 없습니다. 매니페스트의 최소 버전만으로 훅 지원이 보장되지 않습니다. 공식 0.9.3 소스에 패치를 적용하고 해당 호스트의 빌드 안내에 따라 빌드·실행한 뒤, 플러그인 연결 경고와 `client.attached` 구독 수락 여부를 확인하세요. 알 수 없는 훅 경고는 성공으로 간주하지 마세요. Intel Mac·Windows·Linux용 네이티브 배포는 지원하지 않습니다.
 
@@ -64,13 +64,13 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr는 저장소를 플러그인 디렉터리에 클론하고 매니페스트의 `[[build]]` 단계인 `bash scripts/install.sh`를 실행합니다. 설치 프로그램은 매니페스트 `version`에 고정된 릴리스(v0.2.0)를 `curl`로 HTTPS를 통해 익명으로 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증한 뒤 플러그인 디렉터리의 `dist/`에 설치합니다. 일반적으로 GitHub 로그인이나 빌드 도구가 필요하지 않으며 플러그인 디렉터리 밖에는 설치하지 않습니다. 고정된 사전 빌드를 사용할 수 없거나 검증에 실패하면 안내를 출력하고 소스 빌드로 전환하며 이때는 위의 소스 빌드 도구가 필요합니다. 앱은 **ad-hoc 서명·미공증**이며 브라우저·cask 대신 `curl`로 받으므로 격리 속성이 붙지 않아 macOS Gatekeeper 확인 창이 뜨지 않습니다. 클라이언트 attach 자동 실행에는 위의 패치된 Herdr 호스트로 명령을 실행하세요.
+Herdr는 저장소를 플러그인 디렉터리에 클론하고 매니페스트의 `[[build]]` 단계인 `bash scripts/install.sh`를 실행합니다. 설치 프로그램은 이 체크아웃의 매니페스트 `version`에 고정된 릴리스(v0.2.1)를 `curl`로 HTTPS를 통해 익명으로 내려받아 SHA-256 체크섬·아카이브 경로 및 항목 유형·arm64 아키텍처·코드 서명·기본 캐릭터를 검증한 뒤 플러그인 디렉터리의 `dist/`에 설치합니다. 일반적으로 GitHub 로그인이나 빌드 도구가 필요하지 않으며 플러그인 디렉터리 밖에는 설치하지 않습니다. 고정된 사전 빌드를 사용할 수 없거나 검증에 실패하면 안내를 출력하고 소스 빌드로 전환하며 이때는 위의 소스 빌드 도구가 필요합니다. 앱은 **ad-hoc 서명·미공증**이며 브라우저·cask 대신 `curl`로 받으므로 격리 속성이 붙지 않아 macOS Gatekeeper 확인 창이 뜨지 않습니다. 클라이언트 attach 자동 실행에는 위의 패치된 Herdr 호스트로 명령을 실행하세요.
 
 저장소에 `herdr-plugin` 토픽을 지정해 [Herdr 마켓](https://herdr.dev/plugins/) 자동 수집 대상으로 등록했습니다. 인덱스는 30분마다 갱신되며 Herdr의 심사를 거친 목록은 아닙니다.
 
 ## Homebrew로 설치
 
-[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 안정판 v0.2.0 포뮬러로 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. 사전 빌드 사용 전 [릴리스 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.2.0)에서 자산 공개 여부를 확인하세요.
+[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 포뮬러가 v0.2.1로 업데이트된 후 안정판 사전 빌드 앱과 `herdr-desktop-pet` CLI를 설치합니다. GitHub 로그인이나 소스 빌드 도구는 필요하지 않습니다. 사전 빌드 사용 전 [릴리스 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.2.1)에서 자산 공개 여부와 tap 포뮬러의 버전을 확인하세요.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -89,7 +89,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-`--version`이 `0.2.0`이고 `status`의 `app_version` 및 실행 파일이 이전 바이너리가 아닌 안정판 v0.2.0인지 확인하세요. Homebrew에서 포뮬러 로딩을 거부할 때만 `brew trust --formula hanbong5938/tap/herdr-desktop-pet`으로 해당 포뮬러에만 신뢰를 부여하세요. 포뮬러는 `HerdrDesktopPet.app`을 `/Applications`가 아닌 Homebrew 접두 경로에 두고 CLI를 `PATH`에 추가합니다. 앱만 설치하고 Herdr 플러그인이나 패치된 호스트는 설치하지 않습니다. 시작 훅에는 위 플러그인 설치, client-attach 자동 실행에는 호스트 패치가 필요합니다. 앱은 ad-hoc 서명·미공증이며 포뮬러 설치에는 격리 속성이 붙지 않습니다. `brew uninstall herdr-desktop-pet`은 캐릭터 팩·설정·실행 관리 상태를 보존합니다. [이전·되돌리기 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어)를 참고하세요.
+`--version`이 `0.2.1`이고 `status`의 `app_version` 및 실행 파일이 이전 바이너리가 아닌 안정판 v0.2.1인지 확인하세요. Homebrew에서 포뮬러 로딩을 거부할 때만 `brew trust --formula hanbong5938/tap/herdr-desktop-pet`으로 해당 포뮬러에만 신뢰를 부여하세요. 포뮬러는 `HerdrDesktopPet.app`을 `/Applications`가 아닌 Homebrew 접두 경로에 두고 CLI를 `PATH`에 추가합니다. 앱만 설치하고 Herdr 플러그인이나 패치된 호스트는 설치하지 않습니다. 시작 훅에는 위 플러그인 설치, client-attach 자동 실행에는 호스트 패치가 필요합니다. 앱은 ad-hoc 서명·미공증이며 포뮬러 설치에는 격리 속성이 붙지 않습니다. `brew uninstall herdr-desktop-pet`은 캐릭터 팩·설정·실행 관리 상태를 보존합니다. [이전·되돌리기 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어)를 참고하세요.
 
 이전 버전은 앱을 `/Applications`에 복사하는 Homebrew cask로 배포했습니다. 기존 cask 설치는 제거한 뒤 포뮬러를 설치해 옮기세요(데이터는 유지됩니다).
 
@@ -116,7 +116,7 @@ herdr-desktop-pet status
 
 ## 이 체크아웃 설치: 소스 빌드
 
-개발 체크아웃에서는 `plugin link`가 매니페스트 `[[build]]`를 실행하지 않으므로 직접 빌드해야 합니다. 현재 공개 `main`은 아래 안정판 v0.2.0 네이티브 기능을 포함하며 `--source`는 다른 릴리스가 아닌 실제 체크아웃을 빌드합니다. 클라이언트 attach 자동 실행은 [패치된 호스트의 격리된 XDG 프로필 안내](integrations/herdr/README.md)에 따라 실행하고 `PATH`의 순정 `herdr` 대신 안내의 `PATCHED_HERDR` 바이너리를 명시적으로 사용하세요.
+개발 체크아웃에서는 `plugin link`가 매니페스트 `[[build]]`를 실행하지 않으므로 직접 빌드해야 합니다. 이 v0.2.1 릴리스 체크아웃에는 아래 안정판 v0.2.0 네이티브 기능과 참조 전용 메시 수정이 포함되며 `--source`는 다른 릴리스가 아닌 실제 체크아웃을 빌드합니다. 클라이언트 attach 자동 실행은 [패치된 호스트의 격리된 XDG 프로필 안내](integrations/herdr/README.md)에 따라 실행하고 `PATH`의 순정 `herdr` 대신 안내의 `PATCHED_HERDR` 바이너리를 명시적으로 사용하세요.
 
 ```sh
 bash scripts/install.sh --source
@@ -138,7 +138,7 @@ bash scripts/install.sh --source
 
 ## 조작
 
-아래 조작은 안정판 v0.2.0 `main`과 네이티브 앱에 적용됩니다. 인라인 답장은 v0.1.6에 처음 배포되었습니다. **대화창 닫기**는 말풍선만 숨기고 현재 실행의 선택·초안을 유지하며 입력기 조합 중에는 비활성화하고 선택 시에도 다시 확인합니다. 캐릭터·말풍선 표시는 독립적이므로 캐릭터를 숨겨도 단독 말풍선이 남을 수 있습니다.
+아래 조작은 안정판 v0.2.1과 네이티브 앱에 적용됩니다. 인라인 답장은 v0.1.6에 처음 배포되었습니다. **대화창 닫기**는 말풍선만 숨기고 현재 실행의 선택·초안을 유지하며 입력기 조합 중에는 비활성화하고 선택 시에도 다시 확인합니다. 캐릭터·말풍선 표시는 독립적이므로 캐릭터를 숨겨도 단독 말풍선이 남을 수 있습니다.
 
 | 조작 | 동작 |
 | --- | --- |
