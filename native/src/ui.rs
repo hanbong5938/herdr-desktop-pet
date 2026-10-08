@@ -8,6 +8,7 @@ mod automation_sessions;
 mod automation_worktrees;
 
 use crate::animation::{phase_index, FrameId, Playback};
+use crate::app_update::{self, AppUpdateService};
 use crate::assets::CharacterMetadata;
 use crate::assets::{AssetPack, ValidatedCharacter};
 use crate::automation::{
@@ -95,10 +96,10 @@ use objc2_app_kit::{
     NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate, NSLocale,
-    NSMutableAttributedString, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol,
-    NSPoint, NSProcessInfo, NSRange, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString,
-    NSTimer,
+    NSArray, NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate,
+    NSDefaultRunLoopMode, NSLocale, NSMutableAttributedString, NSNotification,
+    NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSRect,
+    NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -108,6 +109,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 static NEXT_UI_OPERATION: AtomicU64 = AtomicU64::new(1);
+static UI_USER_STOP_RECORDED: AtomicBool = AtomicBool::new(false);
 
 enum PendingNative {
     Preparing {
@@ -813,6 +815,7 @@ struct AppDelegateIvars {
     shared: Arc<Mutex<AppState>>,
     assets: PathBuf,
     packs: Arc<PackService>,
+    paths: Paths,
     prefs: RefCell<Option<Preferences>>,
 }
 
@@ -978,7 +981,7 @@ impl WorktreeFeedback {
     fn compact_summary(&self, locale: UiLocale) -> &'static str {
         let message = match self {
             Self::Pending(_) => Message::WorktreeRemoving,
-            Self::Finished(_, Ok(())) => Message::WorktreeRemoved,
+            Self::Finished(_, Ok(())) => Message::CliWorktreeAcknowledged,
             Self::Finished(_, Err(WorktreeRemoveError::UnknownDelivery)) => {
                 Message::WorktreeCompactUnknownDelivery
             }
@@ -994,9 +997,10 @@ impl WorktreeFeedback {
     fn full_text(&self, locale: UiLocale) -> String {
         let (target, message) = match self {
             Self::Pending(target) => (target, text(locale, Message::WorktreeRemoving).to_owned()),
-            Self::Finished(target, Ok(())) => {
-                (target, text(locale, Message::WorktreeRemoved).to_owned())
-            }
+            Self::Finished(target, Ok(())) => (
+                target,
+                text(locale, Message::CliWorktreeAcknowledged).to_owned(),
+            ),
             Self::Finished(target, Err(error)) => (target, worktree_error_text(locale, error)),
         };
         format!(
@@ -1172,6 +1176,12 @@ struct Ui {
     prepare_timer_operation: Option<String>,
     language_timer: Option<Retained<NSTimer>>,
     timer_target: Retained<TimerTarget>,
+    update_timer: Option<Retained<NSTimer>>,
+    app_update: AppUpdateService,
+    painted_app_update: Option<(u64, UiLocale, bool)>,
+    update_frozen: Option<String>,
+    update_composer_editable: Option<bool>,
+    update_composer_send_enabled: Option<bool>,
     presentation: Presentation,
     status_text: String,
     status_summary: SessionStatusSummary,
@@ -1273,20 +1283,25 @@ define_class!(
     impl TimerTarget {
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: &NSTimer) {
-            with_ui_mut(|ui| ui.frame_tick());
+            with_ui_internal(|ui| ui.frame_tick());
         }
 
         #[unsafe(method(prepareTick:))]
         fn prepare_tick(&self, _timer: &NSTimer) {
-            with_ui_mut(|ui| ui.prepare_tick());
+            with_ui_internal(|ui| ui.prepare_tick());
         }
         #[unsafe(method(browserTick:))]
         fn browser_tick(&self, _timer: &NSTimer) {
-            with_ui_mut(|ui| ui.browser_tick());
+            with_ui_internal(|ui| ui.browser_tick());
         }
+        #[unsafe(method(updateTick:))]
+        fn update_tick(&self, _timer: &NSTimer) {
+            with_ui_internal(|ui| ui.update_tick());
+        }
+
         #[unsafe(method(pointerTick:))]
         fn pointer_tick(&self, _timer: &NSTimer) {
-            with_ui_mut(|ui| ui.pointer_tick());
+            with_ui_internal(|ui| ui.pointer_tick());
         }
         #[unsafe(method(languageTick:))]
         fn language_tick(&self, _timer: &NSTimer) {
@@ -2073,6 +2088,22 @@ define_class!(
         fn toggle_lifecycle_auto_start(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| ui.save_lifecycle_setting(LifecycleSetting::AutoStart));
         }
+        #[unsafe(method(toggleUpdateAutoCheck:))]
+        fn toggle_update_auto_check(&self, sender: Option<&AnyObject>) {
+            let Some(toggle) = sender.and_then(|sender| sender.downcast_ref::<NSSwitch>()) else { return };
+            let enabled = toggle.state() == NSControlStateValueOn;
+            with_ui_update_action(move |ui| ui.set_update_auto_check(enabled));
+        }
+
+        #[unsafe(method(checkAppUpdate:))]
+        fn check_app_update(&self, _sender: Option<&AnyObject>) {
+            with_ui_update_action(|ui| ui.check_app_update());
+        }
+
+        #[unsafe(method(applyAppUpdate:))]
+        fn apply_app_update(&self, _sender: Option<&AnyObject>) {
+            schedule_app_update_confirmation();
+        }
 
         #[unsafe(method(toggleLifecycleExit:))]
         fn toggle_lifecycle_exit(&self, _sender: Option<&AnyObject>) {
@@ -2465,7 +2496,7 @@ define_class!(
 
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: Option<&AnyObject>) {
-            with_ui_mut(|ui| ui.quit());
+            with_ui_internal(|ui| ui.quit());
         }
     }
 );
@@ -2518,7 +2549,14 @@ define_class!(
             let Some(prefs) = self.ivars().prefs.take() else {
                 return;
             };
-            if let Err(error) = launch_ui(shared.clone(), &assets, packs, prefs, self.mtm()) {
+            if let Err(error) = launch_ui(
+                shared.clone(),
+                &assets,
+                packs,
+                prefs,
+                self.ivars().paths.clone(),
+                self.mtm(),
+            ) {
                 STARTUP_ERROR.with(|slot| *slot.borrow_mut() = Some(error));
                 if let Ok(mut state) = shared.lock() {
                     state.request_shutdown();
@@ -2538,7 +2576,20 @@ define_class!(
 
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _notification: &NSNotification) {
-            with_ui_mut(|ui| ui.shutdown());
+            let app_termination_is_user_stop = self
+                .ivars()
+                .shared
+                .lock()
+                .is_ok_and(|state| state.is_ui_ready() && !state.updater_stopping())
+                && !UI_USER_STOP_RECORDED.load(Ordering::Acquire);
+            if app_termination_is_user_stop {
+                if let Err(error) = herdr_update_coordinator::protocol::record_user_stop(
+                    &self.ivars().paths.state_dir,
+                ) {
+                    eprintln!("desktop-pet: cannot record AppKit user termination: {error}");
+                }
+            }
+            with_ui_internal(|ui| ui.shutdown());
             if let Ok(mut state) = self.ivars().shared.lock() {
                 state.request_shutdown();
             }
@@ -2908,12 +2959,14 @@ impl AppDelegate {
         assets: PathBuf,
         packs: Arc<PackService>,
         prefs: Preferences,
+        paths: Paths,
         mtm: MainThreadMarker,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(AppDelegateIvars {
             shared,
             assets,
             packs,
+            paths,
             prefs: RefCell::new(Some(prefs)),
         });
         // SAFETY: NSObject's init has the expected signature.
@@ -2926,13 +2979,14 @@ pub fn run(
     assets: &Path,
     packs: Arc<PackService>,
     prefs: Preferences,
+    paths: Paths,
 ) -> Result<(), String> {
     let mtm = MainThreadMarker::new()
         .ok_or_else(|| "native UI must run on the AppKit main thread".to_string())?;
     STARTUP_ERROR.with(|slot| slot.borrow_mut().take());
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    let delegate = AppDelegate::new(shared, assets.to_path_buf(), packs, prefs, mtm);
+    let delegate = AppDelegate::new(shared, assets.to_path_buf(), packs, prefs, paths, mtm);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.run();
     UI.with(|cell| {
@@ -2986,7 +3040,8 @@ pub fn wake() {
     }
     DispatchQueue::main().exec_async(|| {
         WAKE_PENDING.store(false, Ordering::Release);
-        with_ui_mut(|ui| {
+        with_ui_internal(|ui| {
+            ui.process_update_prepare();
             if SCREEN_CHANGE_PENDING.with(|pending| pending.replace(false)) {
                 ui.handle_screen_change();
             }
@@ -3139,6 +3194,7 @@ fn launch_ui(
     assets_path: &Path,
     packs: Arc<PackService>,
     prefs: Preferences,
+    paths: Paths,
     mtm: MainThreadMarker,
 ) -> Result<(), String> {
     let selection = choose_startup_selection(&packs, assets_path, mtm)?;
@@ -3151,6 +3207,7 @@ fn launch_ui(
         selection.prepared,
         prefs,
         override_active,
+        paths,
         mtm,
     )?;
     UI.with(|cell| {
@@ -3233,7 +3290,7 @@ fn choose_startup_selection(
         error: (!errors.is_empty()).then(|| errors.join("; ")),
     })
 }
-fn current_ui_locale(preference: LanguagePreference) -> UiLocale {
+pub(crate) fn current_ui_locale(preference: LanguagePreference) -> UiLocale {
     let preferred = NSLocale::preferredLanguages();
     let tags = preferred
         .iter()
@@ -3392,6 +3449,17 @@ fn with_ui_mut<F>(f: F)
 where
     F: FnOnce(&mut Ui),
 {
+    with_ui_internal(|ui| {
+        if ui.update_frozen.is_none() {
+            f(ui);
+        }
+    });
+}
+
+fn with_ui_internal<F>(f: F)
+where
+    F: FnOnce(&mut Ui),
+{
     let mut deferred = false;
     UI.with(|cell| match cell.try_borrow_mut() {
         Ok(mut slot) => {
@@ -3404,6 +3472,28 @@ where
     drain_deferred_bridges();
     if deferred {
         wake();
+    }
+}
+
+fn with_ui_update_action<F>(f: F)
+where
+    F: FnOnce(&mut Ui) + Send + 'static,
+{
+    let mut f = Some(f);
+    let deferred = UI.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut slot) => {
+            if let Some(ui) = slot.as_mut() {
+                if ui.update_frozen.is_none() {
+                    f.take().expect("update action once")(ui);
+                }
+            }
+            false
+        }
+        Err(_) => true,
+    });
+    if deferred {
+        let f = f.expect("deferred update action");
+        DispatchQueue::main().exec_async(move || with_ui_update_action(f));
     }
 }
 
@@ -3456,6 +3546,154 @@ pub(crate) fn composer_is_composing() -> bool {
             true
         }
     })
+}
+
+fn schedule_app_update_confirmation() {
+    let modes = NSArray::from_slice(&[unsafe { NSDefaultRunLoopMode }]);
+    let block = RcBlock::new(confirm_app_update);
+    // Button tracking can spin a nested run loop and execute main-queue work
+    // before performClick returns. Confirmation belongs to the default mode.
+    unsafe { NSRunLoop::mainRunLoop().performInModes_block(&modes, &block) };
+}
+
+fn confirm_app_update() {
+    // Default-mode scheduling leaves native button tracking first; NSAlert
+    // must also never hold UI's RefCell borrow while spinning its modal loop.
+    let preflight = with_ui_read(|ui| {
+        let plan = ui
+            .app_update
+            .plan()
+            .cloned()
+            .ok_or("Check the running installation again before applying")?;
+        if matches!(
+            &plan.action,
+            herdr_update_coordinator::UpdateAction::ApplyInstalled
+        ) && plan.candidate.is_none()
+        {
+            return Err("Installed candidate identity is unavailable".into());
+        }
+        ui.shared
+            .lock()
+            .map_err(|_| "native state lock is poisoned")?
+            .update_mutation_allowed()?;
+        if plan.context
+            != *ui
+                .shared
+                .lock()
+                .map_err(|_| "native state lock is poisoned")?
+                .update_context()
+                .ok_or("running update context unavailable")?
+        {
+            return Err("running instance or profile changed".into());
+        }
+        let blockers = ui.restart_blockers_snapshot();
+        if !blockers.is_empty() {
+            return Err(blockers.join("; "));
+        }
+        Ok((ui.mtm, ui.locale, plan))
+    });
+    let Some(preflight) = preflight else {
+        schedule_app_update_confirmation();
+        return;
+    };
+    let (mtm, locale, plan) = match preflight {
+        Ok(preflight) => preflight,
+        Err(error) => {
+            with_ui_update_action(move |ui| {
+                ui.app_update.set_problem(error);
+                ui.refresh_app_update();
+            });
+            return;
+        }
+    };
+    let source = app_update::source_description(&plan.origin);
+    let ref_note = match (&plan.origin, locale) {
+        (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::Ko) =>
+            format!("저장된 ref '{reference}'를 다시 설치합니다. 고정 ref는 최신 릴리스를 보장하지 않습니다."),
+        (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::En) =>
+            format!("Reinstalls recorded ref '{reference}'; a pinned ref does not guarantee the latest release."),
+        (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::Ko) =>
+            "현재 체크아웃만 빌드합니다. git pull 또는 ref 변경은 하지 않습니다.".into(),
+        (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::En) =>
+            "Builds the current checkout only. No git pull or ref change.".into(),
+        _ => String::new(),
+    };
+    let action_note = match (&plan.action, locale) {
+        (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::Ko) => {
+            let candidate = plan.candidate.as_ref().expect("verified installed candidate");
+            format!("설치 명령 없이 검증된 교체본만 적용합니다: {} · SHA-256 {}",
+                candidate.path.display(), candidate.sha256)
+        }
+        (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::En) => {
+            let candidate = plan.candidate.as_ref().expect("verified installed candidate");
+            format!("Applies only this verified installed image without an installer command: {} · SHA-256 {}",
+                candidate.path.display(), candidate.sha256)
+        }
+        (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::Ko) =>
+            "동의하면 이 formula에 대해서만 Homebrew 메타데이터 갱신 및 업그레이드를 실행할 수 있습니다.".into(),
+        (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::En) =>
+            "Only after this consent may Homebrew refresh metadata and upgrade this same formula.".into(),
+        (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::Ko) =>
+            "현재 디스크의 소스와 빌드 스크립트를 신뢰해야 합니다. 코드를 받거나 ref를 변경하지 않습니다.".into(),
+        (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::En) =>
+            "Trust the on-disk source and build scripts. No code is fetched or ref changed.".into(),
+        (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::Ko) =>
+            "등록된 Herdr 관리자와 소스의 빌드 스크립트를 실행합니다. 사전 빌드 파일 설치 실패 후에도 소스 빌드로 전환될 수 있습니다.".into(),
+        (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::En) =>
+            "Runs the registered Herdr manager and source build scripts. Source fallback may follow even a failed prebuilt replacement.".into(),
+    };
+    let detail = format!(
+        "{}\n\n{}: {}\n{}\n{}\n\n{}\n{}",
+        text(locale, Message::AppUpdateConfirmBody),
+        text(locale, Message::AppUpdateSource),
+        source,
+        ref_note,
+        action_note,
+        plan.context.executable.display(),
+        plan.context.state_dir.display(),
+    );
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(text(
+        locale,
+        Message::AppUpdateConfirmTitle,
+    )));
+    alert.setInformativeText(&NSString::from_str(&detail));
+    alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::AppUpdateLater)));
+    let action = match &plan.action {
+        herdr_update_coordinator::UpdateAction::LocalRebuild => Message::AppUpdateRebuild,
+        herdr_update_coordinator::UpdateAction::ApplyInstalled => Message::AppUpdateApply,
+        _ => Message::AppUpdateInstall,
+    };
+    alert.addButtonWithTitle(&NSString::from_str(text(locale, action)));
+    if alert.runModal() != NSAlertSecondButtonReturn {
+        return;
+    }
+    with_ui_update_action(move |ui| {
+        let rechecked = (|| -> Result<(), String> {
+            if ui.app_update.plan() != Some(&plan) {
+                return Err("Checked source or installed candidate changed; check again".into());
+            }
+            let state = ui
+                .shared
+                .lock()
+                .map_err(|_| "native state lock is poisoned")?;
+            state.update_mutation_allowed()?;
+            if state.update_context() != Some(&plan.context) {
+                return Err("running executable, instance or profile changed".into());
+            }
+            drop(state);
+            let blocked = ui.restart_blockers_snapshot();
+            if !blocked.is_empty() {
+                return Err(blocked.join("; "));
+            }
+            ui.app_update.launch(plan)?;
+            Ok(())
+        })();
+        if let Err(error) = rechecked {
+            ui.app_update.set_problem(error);
+        }
+        ui.refresh_app_update();
+    });
 }
 
 pub(crate) fn cards_content_changed() {
@@ -3603,6 +3841,10 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
             ));
             return;
         }
+        if let Err(error) = ui.gui_worktree_check_capacity(&target) {
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(target.clone(), Err(error)));
+            return;
+        }
         ui.worktree_confirming = true;
         reserved = true;
     });
@@ -3692,11 +3934,18 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
             ));
             return;
         }
+        if let Err(error) = ui.gui_worktree_check_capacity(&target) {
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(target, Err(error)));
+            return;
+        }
         let feedback = match ui
             .worktree_sender
             .submit(target.clone(), RequestOrigin::Gui)
         {
-            Ok(()) => WorktreeFeedback::Pending(target),
+            Ok(dispatch_revision) => {
+                ui.retain_gui_worktree_dispatch(target.clone(), dispatch_revision);
+                WorktreeFeedback::Pending(target)
+            }
             Err(error) => WorktreeFeedback::Finished(target, Err(error)),
         };
         ui.set_worktree_feedback(feedback);
@@ -3705,7 +3954,7 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
 
 fn begin_menu_bar_icon_operation(
     hide_settings: bool,
-) -> Option<(MainThreadMarker, UiLocale, Option<NSRect>)> {
+) -> Option<(MainThreadMarker, UiLocale, Option<NSRect>, PathBuf)> {
     let mut started = None;
     with_ui_mut(|ui| {
         if ui.menu_bar_icon_busy
@@ -3724,13 +3973,18 @@ fn begin_menu_bar_icon_operation(
         if hide_settings {
             ui.menu_panel.hide();
         }
-        started = Some((ui.mtm, ui.locale, anchor));
+        started = Some((
+            ui.mtm,
+            ui.locale,
+            anchor,
+            ui.lifecycle_paths.config_dir.clone(),
+        ));
     });
     started
 }
 
 fn choose_menu_bar_icon() {
-    let Some((mtm, locale, anchor)) = begin_menu_bar_icon_operation(true) else {
+    let Some((mtm, locale, anchor, config_dir)) = begin_menu_bar_icon_operation(true) else {
         return;
     };
     // No UI RefCell borrow is held across the modal loop or image decoding/publishing.
@@ -3742,7 +3996,7 @@ fn choose_menu_bar_icon() {
                 None
             } else {
                 Some(
-                    menu_bar_icon::prepare_source(&path, mtm)
+                    menu_bar_icon::prepare_source(&path, mtm, &config_dir)
                         .and_then(|prepared| {
                             prepared.publish()?;
                             Ok((prepared.preference, prepared.image))
@@ -3779,7 +4033,7 @@ fn choose_menu_bar_icon() {
 }
 
 fn reset_menu_bar_icon() {
-    let Some((mtm, locale, _)) = begin_menu_bar_icon_operation(false) else {
+    let Some((mtm, locale, _, _)) = begin_menu_bar_icon_operation(false) else {
         return;
     };
     let image = menu_bar_icon::default_image(mtm, text(locale, Message::MenuBarMenuTitle));
@@ -4116,13 +4370,14 @@ impl Ui {
         prepared: PreparedCharacter,
         prefs: Preferences,
         dialogue_override_active: bool,
+        lifecycle_paths: Paths,
         mtm: MainThreadMarker,
     ) -> Result<Self, String> {
-        let lifecycle_paths = Paths::resolve(None, None)?;
         let state = shared
             .lock()
             .map_err(|_| "native state lock is poisoned".to_owned())?;
         let scene = state.scene();
+        let update_context = state.update_context().cloned();
         let automation = state
             .automation()
             .ok_or("presentation automation was not initialized")?;
@@ -4458,10 +4713,12 @@ impl Ui {
         let default_icon =
             menu_bar_icon::default_image(mtm, text(locale, Message::MenuBarMenuTitle))?;
         let (menu_bar_icon_image, icon_load_error) = match prefs.menu_bar_icon() {
-            Some(preference) => match menu_bar_icon::load_saved(preference, mtm) {
-                Ok(image) => (image, None),
-                Err(error) => (default_icon, Some(error)),
-            },
+            Some(preference) => {
+                match menu_bar_icon::load_saved(preference, mtm, &lifecycle_paths.config_dir) {
+                    Ok(image) => (image, None),
+                    Err(error) => (default_icon, Some(error)),
+                }
+            }
             None => (default_icon, None),
         };
         menu_panel.set_menu_bar_icon(
@@ -4537,6 +4794,11 @@ impl Ui {
         let native_show_status_indicators = prefs.show_status_indicators();
         let native_menu_bar_mode = prefs.menu_bar_mode();
         let bubble_sizes = prefs.bubble_sizes();
+        let app_update = AppUpdateService::new(
+            update_context,
+            prefs.auto_update_check(),
+            prefs.last_update_check(),
+        );
         let mut ui = Self {
             mtm,
             shared,
@@ -4645,6 +4907,12 @@ impl Ui {
             prepare_timer_operation: None,
             language_timer: None,
             timer_target: TimerTarget::new(mtm),
+            update_timer: None,
+            app_update,
+            painted_app_update: None,
+            update_frozen: None,
+            update_composer_editable: None,
+            update_composer_send_enabled: None,
             presentation: Presentation {
                 offset_x: 0.0,
                 offset_y: 0.0,
@@ -4704,6 +4972,7 @@ impl Ui {
         ui.update_bubble_frame();
         ui.prepare_initial_rig_surface()?;
         ui.refresh();
+        ui.start_update_timer();
         Ok(ui)
     }
     fn menu_bar_icon_shutdown(&self) -> bool {
@@ -4742,7 +5011,10 @@ impl Ui {
         image: Retained<NSImage>,
     ) {
         let changed = self.prefs.menu_bar_icon() != Some(&preference);
-        if let Err(error) = self.prefs.save_menu_bar_icon(Some(preference)) {
+        if let Err(error) = self
+            .prefs
+            .save_menu_bar_icon(Some(preference), &self.lifecycle_paths.config_dir)
+        {
             self.show_menu_bar_icon_error(Message::MenuBarIconSaveFailure, &error);
             return;
         }
@@ -4758,7 +5030,10 @@ impl Ui {
 
     fn commit_default_menu_bar_icon(&mut self, image: Retained<NSImage>) {
         let changed = self.prefs.menu_bar_icon().is_some();
-        if let Err(error) = self.prefs.save_menu_bar_icon(None) {
+        if let Err(error) = self
+            .prefs
+            .save_menu_bar_icon(None, &self.lifecycle_paths.config_dir)
+        {
             self.show_menu_bar_icon_error(Message::MenuBarIconSaveFailure, &error);
             return;
         }
@@ -5058,6 +5333,7 @@ impl Ui {
             }
         }
         self.menu_panel.set_locale(locale);
+        self.refresh_app_update();
         self.cards.set_composition_active(self.composer_marked());
         self.cards.set_locale(locale);
         self.character_menu.set_locale(locale);
@@ -5383,7 +5659,7 @@ impl Ui {
                 );
                 self.set_content_frame(frame, scene.scale, false);
                 self.clamp_panel_origin();
-                self.save_position_only(None);
+                let _ = self.save_position_only(None);
                 self.cached_anchor = None;
                 self.visual_anchor = None;
                 self.displayed_frame = None;
@@ -6027,7 +6303,10 @@ impl Ui {
             }
             return;
         }
-        match self.prefs.save_session_list(candidate) {
+        match self
+            .prefs
+            .save_session_list(candidate, &self.lifecycle_paths.config_dir)
+        {
             Ok(()) => {
                 if !self.resize_frozen || self.resize_staging {
                     self.cards.commit_options(candidate);
@@ -6508,7 +6787,10 @@ impl Ui {
             let origin = self.panel.frame().origin;
             candidate.set_position(Some((origin.x, origin.y)));
         }
-        match self.prefs.save_candidate(candidate) {
+        match self
+            .prefs
+            .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+        {
             Ok(()) => {
                 self.saved_presentation = saved;
                 self.checkpoint_save = Some(Ok(saved));
@@ -6524,7 +6806,7 @@ impl Ui {
         }
     }
 
-    fn save_position_only(&mut self, standalone: Option<Option<(f64, f64)>>) {
+    fn save_position_only(&mut self, standalone: Option<Option<(f64, f64)>>) -> Result<(), String> {
         let mut candidate = self.prefs.candidate();
         if let Some(position) = standalone {
             candidate.set_standalone_bubble_position(position);
@@ -6532,15 +6814,22 @@ impl Ui {
             let origin = self.panel.frame().origin;
             candidate.set_position(Some((origin.x, origin.y)));
         }
-        match self.prefs.save_candidate(candidate) {
+        match self
+            .prefs
+            .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+        {
             Ok(()) => {
                 if standalone.is_some() {
                     self.standalone_position_unsaved = false;
                     self.standalone_reset_pending = false;
                     self.pending_standalone_body_origin = None;
                 }
+                Ok(())
             }
-            Err(error) => self.menu_panel.set_presentation_error(Some(&error)),
+            Err(error) => {
+                self.menu_panel.set_presentation_error(Some(&error));
+                Err(error)
+            }
         }
     }
 
@@ -6908,7 +7197,345 @@ impl Ui {
         self.update_pointer_policy(scene);
     }
 
+    fn refresh_app_update(&mut self) {
+        let painted = (
+            self.app_update.revision(),
+            self.locale,
+            self.update_frozen.is_some(),
+        );
+        if self.painted_app_update == Some(painted) {
+            return;
+        }
+        self.menu_panel
+            .refresh_app_update(&self.app_update.model(self.locale));
+        self.painted_app_update = Some(painted);
+    }
+
+    fn start_update_timer(&mut self) {
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                1.0,
+                &self.timer_target,
+                sel!(updateTick:),
+                None,
+                true,
+            )
+        };
+        let run_loop = NSRunLoop::currentRunLoop();
+        unsafe {
+            run_loop.addTimer_forMode(&timer, NSRunLoopCommonModes);
+            run_loop.addTimer_forMode(&timer, NSModalPanelRunLoopMode);
+            run_loop.addTimer_forMode(&timer, NSEventTrackingRunLoopMode);
+        }
+        self.update_timer = Some(timer);
+        self.refresh_app_update();
+    }
+
+    fn update_tick(&mut self) {
+        self.process_update_prepare();
+        self.app_update.check_due();
+        self.app_update.poll_operation();
+        while let Some(event) = self.app_update.next_event() {
+            match event {
+                app_update::Event::Checked { result, settled } => {
+                    let prior = self.prefs.last_update_check();
+                    if let Some(checked_at) = self.app_update.checked(result, settled) {
+                        let mut candidate = self.prefs.candidate();
+                        candidate.set_last_update_check(Some(checked_at));
+                        if let Err(error) = self
+                            .prefs
+                            .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+                        {
+                            self.app_update.saved_check_failure(prior, error);
+                        }
+                    }
+                }
+                app_update::Event::Launched {
+                    operation_id,
+                    result,
+                } => {
+                    let ownership_ack = self.app_update.launch_result(&operation_id, result);
+                    let (prepared, updater_stopping) =
+                        self.shared.lock().map_or((false, false), |state| {
+                            (state.update_prepared(), state.updater_stopping())
+                        });
+                    if ownership_ack
+                        && !updater_stopping
+                        && (!prepared || self.update_frozen.as_deref() != Some(&operation_id))
+                    {
+                        self.app_update.abort_launch(
+                            &operation_id,
+                            "Coordinator confirmed ownership after preparation expired; do not assume the installation was applied".into(),
+                        );
+                    }
+                    if !prepared && !updater_stopping {
+                        self.cancel_update_prepare(&operation_id);
+                    }
+                    self.app_update.reload_journal(operation_id);
+                }
+                app_update::Event::Journal {
+                    operation_id,
+                    result,
+                    prepared_recovery,
+                } => {
+                    let reconciled =
+                        self.app_update
+                            .journal(&operation_id, result, prepared_recovery);
+                    if let Some(context) = reconciled {
+                        if self.update_frozen.as_deref() == Some(operation_id.as_str())
+                            && self.shared.lock().is_ok_and(|mut state| {
+                                state.reconcile_update_prepare(&operation_id, &context)
+                            })
+                        {
+                            self.cancel_update_prepare(&operation_id);
+                        }
+                    }
+                }
+                app_update::Event::LatestJournal(result) => self.app_update.latest_journal(result),
+            }
+        }
+        self.refresh_app_update();
+    }
+
+    fn process_update_prepare(&mut self) {
+        loop {
+            let cancellation = self
+                .shared
+                .lock()
+                .ok()
+                .and_then(|mut state| state.take_cancelled_update_prepare());
+            let Some(operation_id) = cancellation else {
+                break;
+            };
+            self.cancel_update_prepare(&operation_id);
+        }
+        let prepare = self
+            .shared
+            .lock()
+            .ok()
+            .and_then(|mut state| state.take_update_prepare());
+        if let Some(prepare) = prepare {
+            let result = self.prepare_update(&prepare.operation_id, &prepare.token);
+            let froze = result.is_ok();
+            let accepted = self.shared.lock().is_ok_and(|mut state| {
+                state.finish_update_prepare(&prepare.operation_id, &prepare.token, result)
+            });
+            if froze && !accepted {
+                self.cancel_update_prepare(&prepare.operation_id);
+            }
+        }
+    }
+
+    fn restart_blockers_snapshot(&self) -> Vec<String> {
+        let mut blocked = Vec::new();
+        if self
+            .composer_drafts
+            .iter()
+            .any(|(_, text)| !text.is_empty())
+            || !self.composer_text().is_empty()
+        {
+            blocked.push("unsent session reply draft".into());
+        }
+        if self.composer_marked() {
+            blocked.push("reply IME composition".into());
+        }
+        for key in self.dialogue_editor.restart_draft_keys() {
+            blocked.push(format!("unsaved dialogue draft: {key}"));
+        }
+        if self.dialogue_editor.has_marked_text() {
+            blocked.push("dialogue IME composition".into());
+        }
+        if self.dialogue_editor.has_conflict() {
+            blocked.push("dialogue conflict".into());
+        }
+        if self.dialogue_editor.is_visible()
+            && (!self.editor_ready || self.dialogue_editor.needs_initial_hydration())
+        {
+            blocked.push("dialogue metadata hydration".into());
+        }
+        if self
+            .menu_panel
+            .bubble_restart_draft(self.prefs.bubble_appearance())
+        {
+            blocked.push("bubble palette draft, invalid color, conflict or IME".into());
+        }
+        if self.cards.has_pending_update_intent() {
+            blocked.push("session search, reply or deferred selection".into());
+        }
+        if self.character_browser.has_pending_update_intent() {
+            blocked.push("character search or IME".into());
+        }
+        if self.prompt_sender.is_pending()
+            || self.composer_pending_key.is_some()
+            || !self.queued_composer_results.is_empty()
+            || !self.composer_results.is_empty()
+        {
+            blocked.push("session prompt still pending".into());
+        }
+        if self.worktree_confirming
+            || self.worktree_sender.is_pending()
+            || self.worktree_automation.has_pending_update_work()
+        {
+            blocked.push("worktree removal or unknown delivery still pending".into());
+        }
+        if self.dialogue_automation.has_pending_update_work() {
+            blocked.push("dialogue metadata/native write pending".into());
+        }
+        if self.packs.has_pending_update_work() {
+            blocked.push("character pack write or native preparation pending".into());
+        }
+        if self.character_selection.is_busy() || self.character_selection.candidate().is_some() {
+            blocked.push("character selection or pack commit pending".into());
+        }
+        if self.pending_native.is_some() || self.prepare_timer_operation.is_some() {
+            blocked.push("native character preparation pending".into());
+        }
+        if self.preference_update_pending() {
+            blocked.push("preference or native presentation pending".into());
+        }
+        if self.presentation_patch.is_some()
+            || self.presentation_reset
+            || self.presentation_operation.is_some()
+        {
+            blocked.push("presentation checkpoint pending".into());
+        }
+        if self.pending_language.is_some()
+            || self.pending_bubble_scene.is_some()
+            || self.pending_bubble_content
+            || self.resize_frozen
+            || self.resize_staging
+            || self.pending_bubble_resize.is_some()
+            || self.standalone_reset_pending
+            || (self.pending_standalone_body_origin.is_some() && !self.standalone_position_unsaved)
+        {
+            blocked.push("layout, language or window resize pending".into());
+        }
+        if self.status_menu_tracking
+            || appkit_event_tracking_active()
+            || NSEvent::pressedMouseButtons() != 0
+            || self.explicit_gesture_active()
+            || self.pointer_press.is_some()
+            || self.pointer_event_started_at.is_some()
+        {
+            blocked.push("menu, pointer or gesture tracking active".into());
+        }
+        if NSApplication::sharedApplication(self.mtm)
+            .modalWindow()
+            .is_some()
+        {
+            blocked.push("modal window active".into());
+        }
+        if self.menu_bar_icon_busy {
+            blocked.push("menu bar icon write pending".into());
+        }
+        if let Some(Err((_, error))) = self.checkpoint_save.as_ref() {
+            blocked.push(format!("presentation settings failed to save: {error}"));
+        }
+        if lock_automation(&self.automation).has_pending_update_operations() {
+            blocked.push("automation, domain or pending delivery operation".into());
+        }
+        blocked
+    }
+
+    fn prepare_update(&mut self, operation_id: &str, _token: &str) -> Result<(), String> {
+        if self.update_frozen.is_some() {
+            return Err("another update is already prepared".into());
+        }
+        let plan = self
+            .app_update
+            .preparing_plan(operation_id)
+            .ok_or("update plan or operation changed; check again")?;
+        let current = self
+            .shared
+            .lock()
+            .map_err(|_| "native state lock is poisoned")?
+            .update_context()
+            .cloned()
+            .ok_or("running update context unavailable")?;
+        if plan.context != current || plan.running != current.running {
+            return Err("running executable, instance or profile changed".into());
+        }
+        let blockers = self.restart_blockers_snapshot();
+        if !blockers.is_empty() {
+            return Err(blockers.join("; "));
+        }
+        if self.last_scene.visible != self.saved_presentation.visible
+            || self.last_scene.passthrough != self.saved_presentation.passthrough
+            || self.last_scene.alpha_passthrough != self.saved_presentation.alpha_passthrough
+            || self.last_scene.bubble_visible != self.saved_presentation.bubble_visible
+            || self.last_scene.bubble_placement != self.saved_presentation.bubble_placement
+            || (self.last_scene.scale - self.saved_presentation.scale).abs() > f64::EPSILON
+            || self.last_scene.reset_position_revision
+                != self.saved_presentation.reset_position_revision
+        {
+            return Err("native presentation has not been saved".into());
+        }
+        if self.standalone_position_unsaved {
+            let position = self
+                .pending_standalone_body_origin
+                .ok_or("standalone bubble position has no confirmed checkpoint")?;
+            self.save_position_only(Some(Some(position)))?;
+        }
+        self.save_position_only(None)?;
+        self.update_composer_editable = Some(self.composer_view.isEditable());
+        self.update_composer_send_enabled = Some(self.composer_send.isEnabled());
+        self.composer_view.setEditable(false);
+        self.composer_send.setEnabled(false);
+        self.menu_panel.set_update_frozen(true);
+        self.dialogue_editor.set_update_frozen(true);
+        self.character_browser.set_update_frozen(true);
+        self.cards.set_update_frozen(true);
+        self.panel.setIgnoresMouseEvents(true);
+        self.bubble_panel.setIgnoresMouseEvents(true);
+        self.update_frozen = Some(operation_id.to_owned());
+        Ok(())
+    }
+
+    fn cancel_update_prepare(&mut self, operation_id: &str) {
+        if self.update_frozen.as_deref() != Some(operation_id) {
+            return;
+        }
+        self.update_frozen = None;
+        self.composer_view
+            .setEditable(self.update_composer_editable.take().unwrap_or(true));
+        self.composer_send
+            .setEnabled(self.update_composer_send_enabled.take().unwrap_or(false));
+        self.menu_panel.set_update_frozen(false);
+        self.dialogue_editor.set_update_frozen(false);
+        self.character_browser.set_update_frozen(false);
+        self.cards.set_update_frozen(false);
+        // refresh recomputes the intended passthrough/hit-testing policy;
+        // do not briefly enable click ingress for an intentionally passive pet.
+        self.refresh();
+    }
+
+    fn set_update_auto_check(&mut self, enabled: bool) {
+        let mut candidate = self.prefs.candidate();
+        candidate.set_auto_update_check(enabled);
+        match self
+            .prefs
+            .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+        {
+            Ok(()) => self.app_update.set_auto_check(enabled),
+            Err(error) => {
+                self.app_update
+                    .set_problem(format!("Could not save automatic check setting: {error}"));
+                // NSSwitch changes state before this callback. An identical
+                // failure leaves the service revision unchanged, but still
+                // requires repainting the committed preference.
+                self.painted_app_update = None;
+            }
+        }
+        self.refresh_app_update();
+    }
+
+    fn check_app_update(&mut self) {
+        self.app_update.check_now();
+        self.refresh_app_update();
+    }
+
     fn frame_tick(&mut self) {
+        self.process_update_prepare();
         self.poll_composer();
         self.poll_worktree();
         self.poll_cli_dialogues();
@@ -6964,6 +7591,11 @@ impl Ui {
     }
 
     fn update_pointer_timer(&mut self, scene: &Scene) {
+        if self.update_frozen.is_some() {
+            self.panel.setIgnoresMouseEvents(true);
+            self.bubble_panel.setIgnoresMouseEvents(true);
+            return;
+        }
         let needed = self.bubble_fade.is_some()
             || (!scene.shutdown
                 && !scene.passthrough
@@ -7103,6 +7735,11 @@ impl Ui {
     }
 
     fn update_pointer_policy(&mut self, scene: &Scene) {
+        if self.update_frozen.is_some() {
+            self.panel.setIgnoresMouseEvents(true);
+            self.bubble_panel.setIgnoresMouseEvents(true);
+            return;
+        }
         if scene.shutdown {
             self.panel.setIgnoresMouseEvents(true);
             self.bubble_panel.setIgnoresMouseEvents(true);
@@ -7571,6 +8208,9 @@ impl Ui {
         self.stop_prepare_timer();
         self.stop_language_timer();
         self.stop_browser_timer();
+        if let Some(timer) = self.update_timer.take() {
+            timer.invalidate();
+        }
         self.cancel_pending_native();
         self.character_previews.shutdown();
         self.character_browser.shutdown();
@@ -7938,7 +8578,7 @@ impl Ui {
         self.set_hover(false, false);
         // Refresh above reconciles unseen source changes before clamping.
         self.clamp_panel();
-        self.save_position_only(None);
+        let _ = self.save_position_only(None);
         if self.last_scene.bubble_visible {
             let scene = self.last_scene.clone();
             self.bubble_content_dirty = true;
@@ -8265,7 +8905,10 @@ impl Ui {
             if !payload.attached {
                 candidate.set_standalone_bubble_position(Some(final_origin));
             }
-            match self.prefs.save_candidate(candidate) {
+            match self
+                .prefs
+                .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+            {
                 Ok(()) => {
                     if !payload.attached {
                         self.pending_standalone_body_origin = None;
@@ -8325,7 +8968,7 @@ impl Ui {
                 let origin = (frame.origin.x + body.body.x, frame.origin.y + body.body.y);
                 self.pending_standalone_body_origin = Some(origin);
                 self.standalone_position_unsaved = true;
-                self.save_position_only(Some(Some(origin)));
+                let _ = self.save_position_only(Some(Some(origin)));
             }
         } else if resized {
             self.save_presentation(
@@ -8338,7 +8981,7 @@ impl Ui {
                 false,
             );
         } else {
-            self.save_position_only(None);
+            let _ = self.save_position_only(None);
         }
     }
 
@@ -8394,7 +9037,10 @@ impl Ui {
         }
         let mut candidate = self.prefs.candidate();
         candidate.set_bubble_sizes(BubbleSizes::default());
-        match self.prefs.save_candidate(candidate) {
+        match self
+            .prefs
+            .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+        {
             Ok(()) => {
                 self.bubble_sizes = BubbleSizes::default();
                 self.bubble_content_dirty = true;
@@ -8660,7 +9306,7 @@ impl Ui {
             {
                 self.pending_standalone_body_origin = Some(body_origin);
                 self.standalone_position_unsaved = true;
-                self.save_position_only(Some(Some(body_origin)));
+                let _ = self.save_position_only(Some(Some(body_origin)));
             }
             if !self.standalone_position_unsaved {
                 self.pending_standalone_body_origin = None;
@@ -10454,6 +11100,17 @@ impl Ui {
     }
 
     fn quit(&mut self) {
+        // User stop must outlive both this UI and an in-flight helper reservation.
+        if let Err(error) =
+            herdr_update_coordinator::protocol::record_user_stop(&self.lifecycle_paths.state_dir)
+        {
+            self.app_update.set_problem(format!(
+                "Cannot record user stop; application remains open: {error}"
+            ));
+            self.refresh_app_update();
+            return;
+        }
+        UI_USER_STOP_RECORDED.store(true, Ordering::Release);
         self.cancel_gesture(false);
         self.pending_standalone_body_origin = None;
         self.cancel_pointer_state();

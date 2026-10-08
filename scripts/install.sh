@@ -158,7 +158,7 @@ validate_native_pack() {
 
 
 validate_app() {
-  local app="$1" archs binary
+  local app="$1" allow_legacy="${2:-0}" archs binary helper main_capabilities helper_capabilities commands dependencies library line
   [[ -d "$app" ]] || fail "packaged app is missing: $app"
   binary="$app/Contents/MacOS/herdr-desktop-pet"
   [[ -x "$binary" ]] ||
@@ -166,6 +166,45 @@ validate_app() {
   archs="$(lipo -archs "$binary" 2>/dev/null)" ||
     fail "unable to inspect packaged app architecture"
   [[ "$archs" == "arm64" ]] || fail "packaged app is not an arm64-only binary (got $archs)"
+  command -v codesign >/dev/null 2>&1 || fail "packaged app validation requires codesign"
+  codesign --verify --deep --strict "$app" >/dev/null 2>&1 ||
+    fail "packaged app has an invalid or missing code signature"
+  if main_capabilities="$("$binary" update-capabilities 2>/dev/null)"; then
+    [[ "$main_capabilities" == '{"protocol":2}' ]] ||
+      fail "packaged app does not advertise updater protocol 2"
+    helper="$app/Contents/MacOS/herdr-update-coordinator"
+    [[ -x "$helper" && -f "$helper" && ! -L "$helper" ]] ||
+      fail "updater-capable app is missing its standalone executable update coordinator"
+    archs="$(lipo -archs "$helper" 2>/dev/null)" ||
+      fail "unable to inspect packaged update coordinator architecture"
+    [[ "$archs" == "arm64" ]] ||
+      fail "packaged update coordinator is not arm64-only (got $archs)"
+    codesign --verify --strict "$helper" >/dev/null 2>&1 ||
+      fail "packaged update coordinator has an invalid or missing code signature"
+    helper_capabilities="$("$helper" update-capabilities 2>/dev/null)" ||
+      fail "packaged update coordinator cannot advertise updater capabilities"
+    [[ "$helper_capabilities" == '{"protocol":2}' ]] ||
+      fail "packaged update coordinator does not advertise updater protocol 2"
+    commands="$(otool -l "$helper")" ||
+      fail "unable to inspect packaged update coordinator loader paths"
+    [[ "$commands" != *"cmd LC_RPATH"* ]] ||
+      fail "packaged update coordinator contains loader search paths"
+    dependencies="$(otool -L "$helper")" ||
+      fail "unable to inspect packaged update coordinator dependencies"
+    dependencies="${dependencies#*$'\n'}"
+    [[ -n "$dependencies" ]] || fail "packaged update coordinator has no system dependencies"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      read -r library _ <<< "$line"
+      case "$library" in
+        /usr/lib/*|/System/Library/*) ;;
+        *) fail "packaged update coordinator has a non-system dependency: $library" ;;
+      esac
+    done <<< "$dependencies"
+  elif [[ "$allow_legacy" != 1 || "$("$binary" --version 2>/dev/null)" != "herdr-desktop-pet 0.2.0" ||
+    "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist" 2>/dev/null)" != "0.2.0" ]]; then
+    fail "packaged app does not support updater protocol 2"
+  fi
   [[ -f "$app/Contents/Info.plist" ]] || fail "packaged app is missing Contents/Info.plist"
   [[ -f "$app/Contents/Resources/default/manifest.json" ]] ||
     fail "packaged app is missing the default asset manifest"
@@ -179,10 +218,6 @@ validate_app() {
     fail "packaged app is missing the executable native rig decode worker"
   [[ -f "$app/Contents/Resources/rig/decoder.js" ]] ||
     fail "packaged app is missing the bundled native rig decoder"
-
-  command -v codesign >/dev/null 2>&1 || fail "packaged app validation requires codesign"
-  codesign --verify --deep --strict "$app" >/dev/null 2>&1 ||
-    fail "packaged app has an invalid or missing code signature"
 
   validate_native_pack "$binary" "$app/Contents/Resources/default" "the default Rubelia rig pack" "rig"
 }
@@ -205,12 +240,14 @@ source_build() {
   printf 'Installing pinned web/rig authoring and build dependencies...\n'
   (cd "$ROOT_DIR/web/rig" && npm ci --no-audit --no-fund)
 
-  cargo_args=(build --release --manifest-path native/Cargo.toml)
+  cargo_args=(build --release --locked --target-dir native/target)
   if [[ -n "${HERDR_PET_CARGO_TARGET:-}" ]]; then
     cargo_args+=(--target "$HERDR_PET_CARGO_TARGET")
   fi
   printf 'Building Herdr Desktop Pet from local Rust sources...\n'
-  (cd "$ROOT_DIR" && cargo "${cargo_args[@]}")
+  (cd "$ROOT_DIR" && cargo "${cargo_args[@]}" --manifest-path native/Cargo.toml)
+  printf 'Building standalone update coordinator from local Rust sources...\n'
+  (cd "$ROOT_DIR" && cargo "${cargo_args[@]}" --manifest-path native/update-coordinator/Cargo.toml)
   (cd "$ROOT_DIR" && HERDR_PET_APP_NAME=HerdrDesktopPet.app bun "$ROOT_DIR/scripts/package-native.ts")
   validate_app "$APP_ROOT"
 }
@@ -218,7 +255,7 @@ source_build() {
 prebuilt_install() {
   local repository version manifest_version release_tag asset_name release_url checksum_url
   local temp_dir archive checksum_file expected expected_candidate name actual
-  local archive_list archive_details extract_dir staging entry has_app
+  local archive_list archive_details extract_dir staging entry has_app allow_legacy
 
   infer_github_repository
   repository="${HERDR_PET_REPOSITORY:-${INFERRED_REPOSITORY:-$DEFAULT_REPOSITORY}}"
@@ -297,6 +334,13 @@ prebuilt_install() {
     fail "unable to compute the SHA-256 of $asset_name"
   [[ "$actual" == "$expected" ]] ||
     fail "checksum mismatch for $asset_name (expected $expected, got $actual)"
+  # Only the already-published v0.2.0 archive predates the update protocol.
+  # A new source build (even at 0.2.0) must include the coordinator.
+  allow_legacy=0
+  if [[ "$version" == 0.2.0 &&
+    "$actual" == 871096fc0993ac68d6afa9cce54198c033cae07db28202156b57f4fd23032cdf ]]; then
+    allow_legacy=1
+  fi
 
   archive_list="$temp_dir/archive.list"
   tar -tzf "$archive" > "$archive_list" || fail "release asset is not a readable gzip tar archive"
@@ -324,7 +368,7 @@ prebuilt_install() {
   extract_dir="$temp_dir/extract"
   mkdir -p "$extract_dir" || fail "unable to create the extraction directory"
   tar -xzf "$archive" -C "$extract_dir" || fail "unable to extract verified release asset"
-  validate_app "$extract_dir/HerdrDesktopPet.app"
+  validate_app "$extract_dir/HerdrDesktopPet.app" "$allow_legacy"
 
   mkdir -p "$ROOT_DIR/dist" || fail "unable to create $ROOT_DIR/dist"
   staging="$ROOT_DIR/dist/.HerdrDesktopPet.install.$$.app"
@@ -332,11 +376,11 @@ prebuilt_install() {
   rm -rf "$staging" || fail "unable to clear the staging directory $staging"
   cp -R "$extract_dir/HerdrDesktopPet.app" "$staging" ||
     fail "unable to stage the verified app bundle"
-  validate_app "$staging"
+  validate_app "$staging" "$allow_legacy"
   rm -rf "$APP_ROOT" || fail "unable to remove the previous app at $APP_ROOT"
   mv "$staging" "$APP_ROOT" || fail "unable to move the verified app into $APP_ROOT"
   STAGING_DIR=""
-  validate_app "$APP_ROOT"
+  validate_app "$APP_ROOT" "$allow_legacy"
   printf 'Installed Herdr Desktop Pet at %s\n' "$APP_ROOT"
 }
 

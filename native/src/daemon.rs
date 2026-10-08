@@ -8,6 +8,10 @@ use crate::remote::RemoteWatchers;
 use crate::socket;
 use crate::state::AppState;
 use crate::ui;
+use herdr_update_coordinator::protocol::{register_active, start_allowed, unregister_active};
+use herdr_update_coordinator::{detect_origin, executable_identity, InstallOrigin, UpdateContext};
+use std::collections::BTreeMap;
+use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -20,6 +24,7 @@ pub struct DaemonConfig {
     pub herdr_socket: PathBuf,
     pub startup_token: Option<String>,
     pub automatic_start: bool,
+    pub host_plugin_config_dir: Option<PathBuf>,
 }
 
 impl DaemonConfig {
@@ -30,6 +35,7 @@ impl DaemonConfig {
         startup_token: Option<String>,
         assets_override: bool,
         automatic_start: bool,
+        host_plugin_config_dir: Option<PathBuf>,
     ) -> Self {
         Self {
             paths,
@@ -38,6 +44,7 @@ impl DaemonConfig {
             herdr_socket,
             startup_token,
             automatic_start,
+            host_plugin_config_dir,
         }
     }
 }
@@ -50,6 +57,67 @@ impl Drop for PackWorkerGuard {
     }
 }
 
+struct ActiveUpdateGuard {
+    origin: InstallOrigin,
+    state_dir: PathBuf,
+    instance_id: String,
+}
+
+impl Drop for ActiveUpdateGuard {
+    fn drop(&mut self) {
+        if let Err(error) = unregister_active(
+            &self.origin,
+            &self.state_dir,
+            std::process::id(),
+            &self.instance_id,
+        ) {
+            eprintln!("desktop-pet: cannot unregister active installation: {error}");
+        }
+    }
+}
+
+fn update_context(
+    config: &DaemonConfig,
+    instance_id: String,
+    executable: PathBuf,
+    prefs: &Preferences,
+) -> Result<UpdateContext, String> {
+    let environment = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "HERDR_BIN_PATH",
+        "HERDR_PLUGIN_ID",
+        "HERDR_ENV",
+        "HERDR_PLUGIN_CONFIG_DIR",
+        "HERDR_PLUGIN_STATE_DIR",
+        "HERDR_SOCKET_PATH",
+    ]
+    .into_iter()
+    .filter_map(|key| env::var(key).ok().map(|value| (key.to_owned(), value)))
+    .collect::<BTreeMap<_, _>>();
+    let locale = ui::current_ui_locale(prefs.language()).tag();
+    let mut context = UpdateContext {
+        running: executable_identity(&executable)?,
+        executable,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        instance_id,
+        config_dir: config.paths.config_dir.clone(),
+        host_plugin_config_dir: config.host_plugin_config_dir.clone(),
+        state_dir: config.paths.state_dir.clone(),
+        herdr_socket: config.herdr_socket.clone(),
+        running_origin: None,
+        assets_override: config.assets_override.then(|| config.assets.clone()),
+        environment,
+        locale: locale.to_owned(),
+    };
+    context.running_origin =
+        Some(Box::new(detect_origin(&context).unwrap_or_else(|error| {
+            InstallOrigin::Unknown { reason: error }
+        })));
+    Ok(context)
+}
+
 /// Run the sole native daemon instance in the foreground of its detached child.
 ///
 /// The lifecycle lock belongs to the daemon for its entire lifetime.  Control
@@ -58,6 +126,18 @@ impl Drop for PackWorkerGuard {
 pub fn run(config: DaemonConfig) -> Result<(), String> {
     let _lock = crate::acquire_lock_until(&config.paths, Instant::now() + crate::STARTUP_TIMEOUT)?;
     let settings = lifecycle::read_settings(&config.paths.config_dir)?;
+    let updater_generation = env::var("HERDR_DESKTOP_PET_UPDATER_GENERATION")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| "invalid updater generation".to_owned())
+        })
+        .transpose()?;
+    let updater_token = env::var("HERDR_DESKTOP_PET_UPDATER_TOKEN").ok();
+    if updater_token.is_some() != updater_generation.is_some() {
+        return Err("updater startup requires both token and generation".into());
+    }
     if let Some(token) = config.startup_token.as_deref() {
         lifecycle::claim_startup(&config.paths.config_dir, token)?;
     }
@@ -86,12 +166,48 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
 
     let mut initial_state = AppState::new();
     initial_state.set_lifecycle_settings(settings);
-    let prefs = Preferences::load_for_daemon()?;
+    let prefs = Preferences::load_for_daemon(&config.paths.config_dir)?;
     initial_state.apply_observation_preferences(prefs.observation().clone());
     initial_state.set_preferences(&prefs);
     let automation =
         new_automation(PresentationTarget::from_scene(&initial_state.scene()), None)
             .map_err(|error| format!("cannot initialize presentation automation: {error}"))?;
+    let instance_id = crate::automation::lock_automation(&automation)
+        .instance()
+        .to_owned();
+    let executable = crate::bundle::executable()
+        .map_err(|error| format!("cannot resolve desktop-pet executable path: {error}"))?;
+    let context = update_context(&config, instance_id.clone(), executable, &prefs)?;
+    let origin = context
+        .running_origin
+        .as_deref()
+        .expect("origin captured")
+        .clone();
+    start_allowed(
+        &origin,
+        &config.paths.state_dir,
+        updater_generation,
+        updater_token.as_deref(),
+    )?;
+    let _active = if matches!(origin, InstallOrigin::Unknown { .. }) {
+        None
+    } else {
+        register_active(
+            &origin,
+            &config.paths.state_dir,
+            std::process::id(),
+            &instance_id,
+            updater_generation,
+            updater_token.as_deref(),
+        )?;
+        Some(ActiveUpdateGuard {
+            origin: origin.clone(),
+            state_dir: config.paths.state_dir.clone(),
+            instance_id,
+        })
+    };
+    let executable = context.running.path.clone();
+    initial_state.set_update_context(context);
     initial_state.set_automation(automation.clone());
     let shared = Arc::new(Mutex::new(initial_state));
     let watchers = Arc::new(Mutex::new(Watchers::new(Arc::clone(&shared))));
@@ -122,8 +238,6 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
         }
     }
 
-    let executable = crate::bundle::executable()
-        .map_err(|error| format!("cannot resolve desktop-pet executable path: {error}"))?;
     let mut control = match ControlServer::bind(
         Arc::clone(&shared),
         Arc::clone(&watchers),
@@ -146,6 +260,12 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
             );
         }
     }
+    start_allowed(
+        &origin,
+        &config.paths.state_dir,
+        updater_generation,
+        updater_token.as_deref(),
+    )?;
     if let Err(error) = control.start() {
         packs.shutdown();
         return Err(error);
@@ -157,12 +277,25 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
             return Err(error);
         }
     }
+    if updater_generation.is_some() {
+        if let Err(error) = start_allowed(
+            &origin,
+            &config.paths.state_dir,
+            updater_generation,
+            updater_token.as_deref(),
+        ) {
+            control.shutdown();
+            packs.shutdown();
+            return Err(error);
+        }
+    }
 
     let ui_result = ui::run(
         Arc::clone(&shared),
         &config.assets,
         Arc::clone(&packs),
         prefs,
+        config.paths.clone(),
     );
     crate::automation::lock_automation(&automation).shutdown();
     if ui_result.is_err() {

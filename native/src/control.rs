@@ -12,6 +12,11 @@ use crate::session_view::{SessionCursor, SessionFilter, SessionPageCursor, Sessi
 use crate::socket;
 use crate::state::AppState;
 use crate::ui;
+use herdr_update_coordinator::protocol::{
+    record_user_stop, start_allowed, stop_generation, verify_control, UpdateCommand,
+    UpdateControlReply, UpdateControlRequest, UPDATER_PROTOCOL,
+};
+use herdr_update_coordinator::{read_plan, InstallOrigin, UpdateContext, UpdatePlan};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -24,6 +29,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -578,6 +584,12 @@ pub struct ControlResponse {
     pub auto_start: bool,
     pub exit_with_herdr: bool,
     pub pid: u32,
+    #[serde(default)]
+    pub instance_id: String,
+    #[serde(default)]
+    pub running_sha256: String,
+    #[serde(default)]
+    pub assets_override: Option<String>,
     pub executable_path: String,
     pub config_dir: String,
     pub state_dir: String,
@@ -592,6 +604,16 @@ impl ControlResponse {
     fn status(command: impl Into<String>, inner: &ControlInner) -> Self {
         let command = command.into();
         let state = lock_unpoisoned(&inner.shared);
+        let context = state.update_context();
+        let instance_id = context
+            .map(|value| value.instance_id.clone())
+            .unwrap_or_default();
+        let running_sha256 = context
+            .map(|value| value.running.sha256.clone())
+            .unwrap_or_default();
+        let assets_override = context
+            .and_then(|value| value.assets_override.as_ref())
+            .map(|value| value.display().to_string());
         let ui_ready = state.is_ui_ready();
         let scene = state.scene();
         let settings = state.lifecycle_settings();
@@ -637,6 +659,9 @@ impl ControlResponse {
             shutdown: scene.shutdown,
             auto_start: settings.auto_start,
             exit_with_herdr: settings.exit_with_herdr,
+            instance_id,
+            running_sha256,
+            assets_override,
             pid: inner.pid,
             executable_path: inner.executable_path.display().to_string(),
             config_dir: inner.paths.config_dir.display().to_string(),
@@ -654,6 +679,13 @@ impl ControlResponse {
         response.r#type = "error".to_owned();
         response.ok = false;
         response.error = Some(message.into());
+        response
+    }
+
+    fn endpoint_error(command: &str, inner: &ControlInner, message: impl Into<String>) -> Self {
+        let mut response = Self::error(command, inner, message);
+        response.registration_accepted = false;
+        response.ready = false;
         response
     }
 }
@@ -970,6 +1002,78 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
             return;
         }
     };
+    if frame_kind.kind.as_deref() == Some("updater") {
+        let updater_deadline = Instant::now() + Duration::from_secs(15);
+        // Lock order: lifecycle_writes -> durable generation gate -> AppState.
+        // Neither a state lock nor lifecycle_writes is retained across socket IO.
+        let (response, claimed_stop) = if frame.len() > MAX_FRAME_BYTES
+            || !verify_peer_uid(&stream)
+            || reject_duplicate_json_keys(&frame).is_err()
+        {
+            (
+                update_error("", "", "invalid or unauthorized updater request".into()),
+                None,
+            )
+        } else {
+            match serde_json::from_slice::<UpdateControlRequest>(&frame) {
+                Ok(request) => {
+                    let result = dispatch_update(&inner, &request, updater_deadline);
+                    let accepted_generation = result.as_ref().ok().copied();
+                    let reply = match result {
+                        Ok(_) => update_reply(&request, true, "accepted".into()),
+                        Err(error) => update_reply(&request, false, error),
+                    };
+                    // Prepare also thaws on a failed reply write, but Stop must
+                    // additionally defer actual shutdown until the complete write.
+                    (
+                        reply,
+                        accepted_generation.map(|generation| (request, generation)),
+                    )
+                }
+                Err(error) => (
+                    update_error("", "", format!("invalid updater request: {error}")),
+                    None,
+                ),
+            }
+        };
+        let written = serde_json::to_vec(&response)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            .and_then(|mut bytes| {
+                bytes.push(b'\n');
+                if bytes.len() > MAX_FRAME_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "updater reply exceeds frame limit",
+                    ));
+                }
+                write_frame(&mut stream, &bytes, updater_deadline)
+            })
+            .is_ok();
+        if let Some((request, generation)) = claimed_stop {
+            if !written {
+                lock_unpoisoned(&inner.shared)
+                    .cancel_update_prepare(&request.operation_id, &request.token);
+                ui::wake();
+            } else if let Some(generation) = generation {
+                let _lifecycle = lock_unpoisoned(&inner.lifecycle_writes);
+                let current = stop_generation(&inner.paths.state_dir);
+                let mut state = lock_unpoisoned(&inner.shared);
+                if current.is_ok_and(|now| now == generation)
+                    && state
+                        .commit_update_stop(&request.operation_id, &request.token)
+                        .is_ok()
+                {
+                    drop(state);
+                    ui::wake();
+                } else {
+                    state.cancel_update_prepare(&request.operation_id, &request.token);
+                    drop(state);
+                    ui::wake();
+                }
+            }
+        }
+        return;
+    }
     if frame_kind.kind.as_deref() == Some("presentation") {
         if frame.len() > MAX_FRAME_BYTES {
             return;
@@ -1058,6 +1162,7 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
                     return Ok(lock_unpoisoned(&inner.shared).lifecycle_settings());
                 }
                 let _guard = lock_unpoisoned(&inner.lifecycle_writes);
+                mutation_admission(&inner)?;
                 let key = request
                     .key
                     .ok_or_else(|| "missing lifecycle key".to_owned())?;
@@ -1105,6 +1210,143 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
     let _ = write_response(&mut stream, &response, deadline);
 }
 
+fn update_error(instance_id: &str, operation_id: &str, detail: String) -> UpdateControlReply {
+    UpdateControlReply {
+        version: UPDATER_PROTOCOL,
+        instance_id: instance_id.to_owned(),
+        operation_id: operation_id.to_owned(),
+        accepted: false,
+        detail,
+    }
+}
+
+fn update_reply(
+    request: &UpdateControlRequest,
+    accepted: bool,
+    detail: String,
+) -> UpdateControlReply {
+    UpdateControlReply {
+        version: UPDATER_PROTOCOL,
+        instance_id: request.instance_id.clone(),
+        operation_id: request.operation_id.clone(),
+        accepted,
+        detail,
+    }
+}
+fn verify_running_plan(plan: &UpdatePlan, context: &UpdateContext) -> Result<(), String> {
+    if plan.version != UPDATER_PROTOCOL {
+        return Err("unsupported updater plan protocol".into());
+    }
+    if plan.context != *context
+        || plan.origin
+            != *context
+                .running_origin
+                .as_deref()
+                .ok_or("missing startup origin")?
+        || plan.running != context.running
+    {
+        return Err("updater plan does not match running executable, origin and profile".into());
+    }
+    Ok(())
+}
+
+fn dispatch_update(
+    inner: &ControlInner,
+    request: &UpdateControlRequest,
+    deadline: Instant,
+) -> Result<Option<u64>, String> {
+    if request.version != UPDATER_PROTOCOL
+        || request.kind != "updater"
+        || inner.stopping.load(Ordering::Acquire)
+    {
+        return Err("unsupported updater protocol or daemon stopping".into());
+    }
+    let context = {
+        let state = lock_unpoisoned(&inner.shared);
+        let context = state
+            .update_context()
+            .ok_or("updater context unavailable")?;
+        if request.instance_id != context.instance_id
+            || !state.is_ui_ready()
+            || state.scene().shutdown
+        {
+            return Err("updater daemon instance is not ready or changed".into());
+        }
+        context.clone()
+    };
+    let origin = context
+        .running_origin
+        .as_deref()
+        .ok_or("running installation origin unavailable")?;
+    if matches!(origin, InstallOrigin::Unknown { .. }) {
+        return Err("unknown installation cannot be reserved for update".into());
+    }
+    verify_control(
+        origin,
+        &context.state_dir,
+        &request.operation_id,
+        &request.token,
+    )?;
+    let plan = read_plan(&context.state_dir, &request.operation_id)?;
+    verify_running_plan(&plan, &context)?;
+    match request.command {
+        UpdateCommand::Prepare => {
+            let (sender, receiver) = mpsc::channel();
+            {
+                let _lifecycle = lock_unpoisoned(&inner.lifecycle_writes);
+                let mut state = lock_unpoisoned(&inner.shared);
+                if !state.is_ui_ready() || state.scene().shutdown {
+                    return Err("desktop pet stopped during updater preparation".into());
+                }
+                state.queue_update_prepare(
+                    request.operation_id.clone(),
+                    request.token.clone(),
+                    sender,
+                )?;
+            }
+            ui::wake();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match receiver.recv_timeout(remaining) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    lock_unpoisoned(&inner.shared)
+                        .cancel_update_prepare(&request.operation_id, &request.token);
+                    ui::wake();
+                    return Err("main-thread update preparation timed out".into());
+                }
+            }
+            if let Err(error) = verify_control(
+                origin,
+                &context.state_dir,
+                &request.operation_id,
+                &request.token,
+            ) {
+                lock_unpoisoned(&inner.shared)
+                    .cancel_update_prepare(&request.operation_id, &request.token);
+                ui::wake();
+                return Err(error);
+            }
+            Ok(None)
+        }
+        UpdateCommand::Stop => {
+            let _lifecycle = lock_unpoisoned(&inner.lifecycle_writes);
+            // Verify and read the durable generation before taking AppState;
+            // ordinary control Stop writes it under the same lifecycle lock.
+            verify_control(
+                origin,
+                &context.state_dir,
+                &request.operation_id,
+                &request.token,
+            )?;
+            let generation = stop_generation(&context.state_dir)?;
+            lock_unpoisoned(&inner.shared)
+                .claim_update_stop(&request.operation_id, &request.token)?;
+            Ok(Some(generation))
+        }
+    }
+}
+
 fn presentation_admission(
     state: &AppState,
     stopping: bool,
@@ -1112,6 +1354,9 @@ fn presentation_admission(
 ) -> Result<SharedAutomation, String> {
     if !state.is_ui_ready() {
         return Err("desktop pet UI is not ready".to_owned());
+    }
+    if mutation {
+        state.update_mutation_allowed()?;
     }
     let handle = state
         .automation()
@@ -1126,8 +1371,11 @@ fn dispatch_presentation(
     inner: &ControlInner,
     request: PresentationRequestEnvelope,
 ) -> Result<PresentationReplyEnvelope, String> {
-    let state = lock_unpoisoned(&inner.shared);
     let mutation = matches!(request.command.as_str(), "set" | "reset");
+    if mutation {
+        mutation_admission(inner)?;
+    }
+    let state = lock_unpoisoned(&inner.shared);
     let handle = presentation_admission(&state, inner.stopping.load(Ordering::Acquire), mutation)?;
     let mut ledger = lock_automation(&handle);
     let reply = presentation_ledger_reply(&mut ledger, request)?;
@@ -1207,8 +1455,11 @@ fn dispatch_automation(
     inner: &ControlInner,
     envelope: AutomationRequestEnvelope,
 ) -> Result<AutomationReplyEnvelope, String> {
-    let state = lock_unpoisoned(&inner.shared);
     let mutation = envelope.command == "request";
+    if mutation {
+        mutation_admission(inner)?;
+    }
+    let state = lock_unpoisoned(&inner.shared);
     let handle = presentation_admission(&state, inner.stopping.load(Ordering::Acquire), mutation)?;
     let mut ledger = lock_automation(&handle);
     let operation = if let Some(request) = envelope.request {
@@ -1523,6 +1774,29 @@ pub(crate) fn validate_pack_request(request: &PackRequest) -> Result<(), String>
     }
 }
 
+fn mutation_admission(inner: &ControlInner) -> Result<(), String> {
+    let scope = {
+        let state = lock_unpoisoned(&inner.shared);
+        state.update_mutation_allowed()?;
+        state.update_context().map(|context| {
+            (
+                context
+                    .running_origin
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(InstallOrigin::Unknown {
+                        reason: "running origin unavailable".into(),
+                    }),
+                context.state_dir.clone(),
+            )
+        })
+    };
+    if let Some((origin, state_dir)) = scope {
+        start_allowed(&origin, &state_dir, None, None)?;
+    }
+    lock_unpoisoned(&inner.shared).update_mutation_allowed()
+}
+
 fn dispatch_pack(inner: &ControlInner, request: PackRequestEnvelope) -> PackReplyEnvelope {
     if inner.stopping.load(Ordering::Acquire) {
         return pack_error(&request.command, "desktop pet is stopping".to_owned());
@@ -1570,7 +1844,16 @@ fn dispatch_pack(inner: &ControlInner, request: PackRequestEnvelope) -> PackRepl
             if let Err(error) = validate_pack_request(&request) {
                 return pack_error("submit", error);
             }
-            match inner.packs.submit(request) {
+            if let Err(error) = mutation_admission(inner) {
+                return pack_error("submit", error);
+            }
+            let state = lock_unpoisoned(&inner.shared);
+            if let Err(error) = state.update_mutation_allowed() {
+                return pack_error("submit", error);
+            }
+            let submission = inner.packs.submit(request);
+            drop(state);
+            match submission {
                 Ok(operation) => PackReplyEnvelope {
                     version: PACK_PROTOCOL_VERSION,
                     kind: "pack".to_owned(),
@@ -1624,10 +1907,22 @@ fn dispatch(inner: &ControlInner, command: &str, endpoint: Option<PathBuf>) -> C
     if inner.stopping.load(Ordering::Acquire) && command != "status" {
         return ControlResponse::error(command, inner, "desktop pet is stopping");
     }
+    if !matches!(
+        command,
+        "status" | "ping" | "ready" | "stop" | "shutdown" | "register" | "ensure"
+    ) {
+        if let Err(error) = mutation_admission(inner) {
+            return ControlResponse::error(command, inner, error);
+        }
+    }
     match command {
         "register" => {
             let Some(endpoint) = endpoint.or_else(|| inner.endpoint.clone()) else {
-                return ControlResponse::error(command, inner, "Herdr socket path is unavailable");
+                return ControlResponse::endpoint_error(
+                    command,
+                    inner,
+                    "Herdr socket path is unavailable",
+                );
             };
             match register_endpoint(inner, endpoint.clone()) {
                 Ok(()) => {
@@ -1638,15 +1933,19 @@ fn dispatch(inner: &ControlInner, command: &str, endpoint: Option<PathBuf>) -> C
                     }
                     response
                 }
-                Err(error) => ControlResponse::error(command, inner, error),
+                Err(error) => ControlResponse::endpoint_error(command, inner, error),
             }
         }
         "ensure" => {
             let Some(target) = endpoint.or_else(|| inner.endpoint.clone()) else {
-                return ControlResponse::error(command, inner, "Herdr socket path is unavailable");
+                return ControlResponse::endpoint_error(
+                    command,
+                    inner,
+                    "Herdr socket path is unavailable",
+                );
             };
             if let Err(error) = register_endpoint(inner, target.clone()) {
-                return ControlResponse::error(command, inner, error);
+                return ControlResponse::endpoint_error(command, inner, error);
             }
             let mut response = ControlResponse::status(command, inner);
             if let Ok(target) = socket::canonical_endpoint(&target) {
@@ -1662,10 +1961,12 @@ fn dispatch(inner: &ControlInner, command: &str, endpoint: Option<PathBuf>) -> C
         "ready" => {
             let mut response = ControlResponse::status(command, inner);
             if let Some(target) = endpoint {
-                if let Ok(target) = socket::canonical_endpoint(&target) {
-                    response.registration_accepted =
-                        lock_unpoisoned(&inner.registered).contains(&target);
-                }
+                let target = match socket::canonical_endpoint(&target) {
+                    Ok(target) => target,
+                    Err(error) => return ControlResponse::endpoint_error(command, inner, error),
+                };
+                response.registration_accepted =
+                    lock_unpoisoned(&inner.registered).contains(&target);
             }
             if response.shutdown && !response.ui_ready {
                 response.ok = false;
@@ -1674,19 +1975,12 @@ fn dispatch(inner: &ControlInner, command: &str, endpoint: Option<PathBuf>) -> C
             response
         }
         "status" | "ping" => ControlResponse::status(command, inner),
-        "stop" => {
-            {
-                let mut state = lock_unpoisoned(&inner.shared);
-                state.request_shutdown();
+        "stop" | "shutdown" => {
+            let _lifecycle = lock_unpoisoned(&inner.lifecycle_writes);
+            if let Err(error) = record_user_stop(&inner.paths.state_dir) {
+                return ControlResponse::error(command, inner, error);
             }
-            ui::wake();
-            ControlResponse::status(command, inner)
-        }
-        "shutdown" => {
-            {
-                let mut state = lock_unpoisoned(&inner.shared);
-                state.request_shutdown();
-            }
+            lock_unpoisoned(&inner.shared).request_shutdown();
             ui::wake();
             ControlResponse::status(command, inner)
         }
@@ -1783,7 +2077,13 @@ fn access_lifecycle_settings(
     change: Option<(LifecycleSetting, bool)>,
 ) -> Result<LifecycleSettings, String> {
     let deadline = Instant::now() + crate::STARTUP_TIMEOUT;
+    let offline_origin = InstallOrigin::Unknown {
+        reason: "offline settings admission".into(),
+    };
     loop {
+        if change.is_some() {
+            start_allowed(&offline_origin, &paths.state_dir, None, None)?;
+        }
         if control_socket_is_live(&paths.control_socket, Duration::from_millis(150)) {
             let request = match change {
                 Some((key, value)) => lifecycle_request("set", Some(key), Some(value)),
@@ -1805,6 +2105,9 @@ fn access_lifecycle_settings(
             if !control_socket_is_live(&paths.control_socket, Duration::from_millis(150))
                 && !lifecycle::startup_pending(&paths.config_dir)?
             {
+                if change.is_some() {
+                    start_allowed(&offline_origin, &paths.state_dir, None, None)?;
+                }
                 let settings = match change {
                     Some((key, value)) => lifecycle::update_setting(&paths.config_dir, key, value)?,
                     None => lifecycle::read_settings(&paths.config_dir)?,
@@ -1834,15 +2137,15 @@ pub(crate) fn set_lifecycle_setting(
 
 fn register_endpoint(inner: &ControlInner, endpoint: PathBuf) -> Result<(), String> {
     let canonical_key = socket::canonical_endpoint(&endpoint)?;
+    let _write_guard = lock_unpoisoned(&inner.lifecycle_writes);
+    mutation_admission(inner)?;
     let was_registered = lock_unpoisoned(&inner.registered).contains(&canonical_key);
-    // Explicit register/ensure calls must always reach Watchers: a source can
-    // have been confirmed disabled since the last successful registration.
+    // Even registered endpoints may have since been disabled by the host.
     {
         let watchers = lock_unpoisoned(&inner.watchers);
         watchers.register(canonical_key.clone())?;
     }
     if !was_registered {
-        let _write_guard = lock_unpoisoned(&inner.lifecycle_writes);
         lifecycle::add_endpoint(&inner.paths.config_dir, &canonical_key)?;
         lock_unpoisoned(&inner.registered).insert(canonical_key);
     }
@@ -2571,6 +2874,103 @@ fn lock_unpoisoned<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
 mod tests {
     use super::*;
     use crate::character_types::{CharacterRef, PackRecord};
+    #[test]
+    fn ready_reports_requested_registered_endpoint_not_primary_display() {
+        let primary = socket::canonical_endpoint(Path::new("/tmp/herdr-primary.sock")).unwrap();
+        let secondary = socket::canonical_endpoint(Path::new("/tmp/herdr-secondary.sock")).unwrap();
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        lock_unpoisoned(&shared).set_ui_ready();
+        let inner = ControlInner {
+            stopping: AtomicBool::new(false),
+            watchers: Arc::new(Mutex::new(Watchers::new(Arc::clone(&shared)))),
+            shared,
+            packs: PackService::new(
+                PathBuf::from("/tmp/unused-profile"),
+                PathBuf::from("/tmp/unused-assets"),
+                None,
+            ),
+            paths: Paths {
+                config_dir: PathBuf::from("/tmp/unused-profile"),
+                state_dir: PathBuf::from("/tmp/unused-state"),
+                control_socket: PathBuf::from("/tmp/unused-control.sock"),
+                log_file: PathBuf::from("/tmp/unused-log"),
+            },
+            endpoint: Some(primary.clone()),
+            registered: Mutex::new(HashSet::from([primary.clone(), secondary.clone()])),
+            lifecycle_writes: Mutex::new(()),
+            executable_path: PathBuf::from("/tmp/unused-executable"),
+            pid: std::process::id(),
+            clients: Mutex::new(Vec::new()),
+            active_clients: Mutex::new(0),
+        };
+        let secondary_alias = PathBuf::from("/tmp/../tmp/herdr-secondary.sock");
+        let accepted = dispatch(&inner, "ready", Some(secondary_alias));
+        assert!(accepted.ok && accepted.ready && accepted.registration_accepted);
+        assert_eq!(accepted.herdr_socket, primary.display().to_string());
+        let missing = dispatch(
+            &inner,
+            "ready",
+            Some(PathBuf::from("/tmp/not-registered.sock")),
+        );
+        assert!(missing.ok && missing.ready && !missing.registration_accepted);
+        let invalid = dispatch(&inner, "ready", Some(PathBuf::from("relative.sock")));
+        assert!(!invalid.ok && !invalid.registration_accepted);
+    }
+
+    #[test]
+    fn updater_plan_rejects_other_profile_image_assets_and_source() {
+        use herdr_update_coordinator::{ExecutableIdentity, UpdateAction};
+        use std::collections::BTreeMap;
+        let running = ExecutableIdentity {
+            path: PathBuf::from("/tmp/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"),
+            sha256: "a".repeat(64),
+        };
+        let origin = InstallOrigin::Local {
+            root: PathBuf::from("/tmp/local-checkout"),
+        };
+        let context = UpdateContext {
+            executable: running.path.clone(),
+            version: "0.2.0".into(),
+            instance_id: "daemon-1".into(),
+            config_dir: PathBuf::from("/tmp/profile/config"),
+            host_plugin_config_dir: None,
+            state_dir: PathBuf::from("/tmp/profile/state"),
+            herdr_socket: PathBuf::from("/tmp/profile/herdr.sock"),
+            running: running.clone(),
+            running_origin: Some(Box::new(origin.clone())),
+            assets_override: Some(PathBuf::from("/tmp/profile/assets")),
+            environment: BTreeMap::new(),
+            locale: "en".into(),
+        };
+        let plan = UpdatePlan {
+            version: UPDATER_PROTOCOL,
+            operation_id: "operation-1".into(),
+            context: context.clone(),
+            origin,
+            action: UpdateAction::LocalRebuild,
+            running,
+            candidate: None,
+        };
+        assert!(verify_running_plan(&plan, &context).is_ok());
+        let mut tampered = plan.clone();
+        tampered.context.state_dir = PathBuf::from("/tmp/other-profile");
+        assert!(verify_running_plan(&tampered, &context).is_err());
+        tampered = plan.clone();
+        tampered.context.assets_override = None;
+        assert!(verify_running_plan(&tampered, &context).is_err());
+        tampered = plan.clone();
+        tampered.origin = InstallOrigin::Local {
+            root: PathBuf::from("/tmp/other-checkout"),
+        };
+        assert!(verify_running_plan(&tampered, &context).is_err());
+        tampered = plan.clone();
+        tampered.running.sha256 = "b".repeat(64);
+        assert!(verify_running_plan(&tampered, &context).is_err());
+        tampered = plan;
+        tampered.context.instance_id = "daemon-2".into();
+        assert!(verify_running_plan(&tampered, &context).is_err());
+    }
+
     #[test]
     fn official_import_control_rejects_missing_cas_and_unbounded_identity() {
         let mut request = PackRequest {

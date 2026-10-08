@@ -77,25 +77,35 @@ jobs:
         run: bun test scripts/release-docs.test.ts scripts/wiki-docs.test.ts tools/repair-hair-pockets.test.ts web/rig
 
       - name: Check native crate
-        run: cargo check --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
+        run: cargo check --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/Cargo.toml
+
+      - name: Check standalone update coordinator
+        run: cargo check --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/update-coordinator/Cargo.toml
 
       - name: Test native crate
-        run: cargo test --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
+        run: cargo test --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/Cargo.toml
+
+      - name: Test standalone update coordinator
+        run: cargo test --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/update-coordinator/Cargo.toml
 
       - name: Build native arm64 binary
-        run: cargo build --release --target aarch64-apple-darwin --manifest-path native/Cargo.toml
+        run: cargo build --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/Cargo.toml
+
+      - name: Build standalone arm64 update coordinator
+        run: cargo build --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/update-coordinator/Cargo.toml
 
       - name: Build ad-hoc signed application bundle
         env:
           HERDR_PET_APP_NAME: HerdrDesktopPet.app
         run: bun run package:native
 
-      - name: Verify arm64 application binary
+      - name: Verify arm64 application and standalone update coordinator
         shell: bash
         run: |
           set -euo pipefail
           app="dist/HerdrDesktopPet.app"
           binary="$app/Contents/MacOS/herdr-desktop-pet"
+          helper="$app/Contents/MacOS/herdr-update-coordinator"
           manifest="$app/Contents/Resources/default/manifest.json"
           [[ -x "$binary" ]]
           archs="$(lipo -archs "$binary")"
@@ -103,6 +113,27 @@ jobs:
             echo "error: expected an arm64-only binary, got $archs" >&2
             exit 1
           }
+          [[ -x "$helper" && ! -L "$helper" ]]
+          [[ "$(lipo -archs "$helper")" == "arm64" ]] || {
+            echo "error: expected arm64-only update coordinator" >&2
+            exit 1
+          }
+          [[ "$("$binary" update-capabilities)" == '{"protocol":2}' ]]
+          [[ "$("$helper" update-capabilities)" == '{"protocol":2}' ]]
+          [[ "$(otool -l "$helper")" != *"cmd LC_RPATH"* ]]
+          dependencies="$(otool -L "$helper")"
+          dependencies="${dependencies#*$'\n'}"
+          [[ -n "$dependencies" ]]
+          while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            read -r library _ <<< "$line"
+            case "$library" in
+              /usr/lib/*|/System/Library/*) ;;
+              *) echo "error: non-system coordinator dependency: $library" >&2; exit 1 ;;
+            esac
+          done <<< "$dependencies"
+          codesign --verify --strict "$helper"
+          codesign --verify --deep --strict "$app"
           test -f "$manifest"
           node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (m.id !== "rubelia-at12-multi-pose" || m.version !== 5 || m.render_mode !== "rig") process.exit(1);' "$manifest"
 

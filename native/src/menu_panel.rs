@@ -6,6 +6,7 @@ use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, BubbleThe
 use crate::sources::{MachineStatus, ObservationPreferences, SourceCatalog};
 use crate::state::Scene;
 use crate::ui::MenuTarget;
+use crate::update_card::{AppUpdateCard, UpdateCardModel};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{
@@ -17,7 +18,8 @@ use objc2_app_kit::{
     NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
     NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSImageView, NSPanel, NSPopUpButton,
     NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSwitch, NSTextAlignment, NSTextField,
-    NSUserInterfaceItemIdentification, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSTextView, NSUserInterfaceItemIdentification, NSView, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
@@ -442,6 +444,8 @@ pub(crate) struct MenuPanel {
     menu_bar_icon_custom: bool,
     menu_bar_icon_busy: Cell<bool>,
     lifecycle_card: LifecycleSettingsCard,
+    frozen_controls: Vec<(Retained<NSControl>, bool)>,
+    update_card: AppUpdateCard,
     observation_card: Retained<MenuPanelCard>,
     observation_title: Retained<NSTextField>,
     observation_local_label: Retained<NSTextField>,
@@ -1187,6 +1191,8 @@ impl MenuPanel {
         settings_tab.addSubview(&observation_card);
         let lifecycle_card = LifecycleSettingsCard::new(locale, target, mtm);
         settings_tab.addSubview(lifecycle_card.view());
+        let update_card = AppUpdateCard::new(locale, target, mtm);
+        settings_tab.addSubview(update_card.view());
 
         let status = label("", 10.5, false, secondary(), mtm);
         status.setMaximumNumberOfLines(2);
@@ -1276,6 +1282,8 @@ impl MenuPanel {
             menu_bar_icon_custom: false,
             menu_bar_icon_busy: Cell::new(false),
             lifecycle_card,
+            frozen_controls: Vec::new(),
+            update_card,
             observation_card,
             observation_title,
             observation_local_label,
@@ -1618,6 +1626,9 @@ impl MenuPanel {
         self.sync_observation(observation, catalog);
         self.update_color_swatches();
         self.layout_root();
+        if !self.frozen_controls.is_empty() {
+            self.set_update_frozen(true);
+        }
     }
 
     pub(crate) fn set_language_preference(&self, language: LanguagePreference) {
@@ -2199,6 +2210,7 @@ impl MenuPanel {
         self.language_label
             .setStringValue(&NSString::from_str(text(locale, Message::MenuLanguage)));
         self.lifecycle_card.set_locale(locale);
+        self.update_card.set_locale(locale);
         localize_popup_items(
             &self.language_popup,
             locale,
@@ -2395,6 +2407,92 @@ impl MenuPanel {
     }
     pub(crate) fn lifecycle_value(&self, key: crate::lifecycle::LifecycleSetting) -> bool {
         self.lifecycle_card.value(key)
+    }
+    pub(crate) fn refresh_app_update(&mut self, model: &UpdateCardModel) {
+        self.update_card.refresh(model);
+        self.layout_root();
+        if !self.frozen_controls.is_empty() {
+            self.set_update_frozen(true);
+        }
+    }
+    pub(crate) fn set_update_frozen(&mut self, frozen: bool) {
+        for field in &self.bubble_color_fields {
+            field.setEditable(!frozen);
+        }
+        for index in 0..self.bubble_color_fields.len() {
+            if let Some(editor) = self
+                .bubble_field_editor(index)
+                .and_then(|editor| editor.downcast_ref::<NSTextView>())
+            {
+                editor.setEditable(!frozen);
+            }
+        }
+        if frozen {
+            if !self.frozen_controls.is_empty() {
+                for (control, _) in &self.frozen_controls {
+                    control.setEnabled(false);
+                }
+                return;
+            }
+            fn disable(
+                view: &NSView,
+                quit: &NSButton,
+                controls: &mut Vec<(Retained<NSControl>, bool)>,
+            ) {
+                for child in view.subviews().iter() {
+                    if let Some(control) = child.downcast_ref::<NSControl>() {
+                        if !std::ptr::eq(&*child, quit as &NSView) {
+                            controls.push((control.retain(), control.isEnabled()));
+                            control.setEnabled(false);
+                        }
+                    }
+                    disable(&child, quit, controls);
+                }
+            }
+            disable(&self.root, &self.quit, &mut self.frozen_controls);
+        } else {
+            for (control, enabled) in self.frozen_controls.drain(..) {
+                control.setEnabled(enabled);
+            }
+        }
+    }
+
+    pub(crate) fn bubble_restart_draft(&self, saved: BubbleAppearance) -> bool {
+        if self.bubble_draft.conflicted()
+            || self.bubble_colors_marked()
+            || self.bubble_draft.baseline != Some(saved)
+        {
+            return true;
+        }
+        let expected_tag = match saved.theme {
+            BubbleTheme::WarmIvory => 0,
+            BubbleTheme::DustyRose => 1,
+            BubbleTheme::MoonlitInk => 2,
+            BubbleTheme::Custom => 3,
+        };
+        if self
+            .bubble_theme_popup
+            .selectedItem()
+            .map(|item| item.tag())
+            != Some(expected_tag)
+        {
+            return true;
+        }
+        let palette = saved.palette();
+        let colors = [
+            palette.surface,
+            palette.text,
+            palette.muted,
+            palette.border,
+            palette.accent,
+        ];
+        self.bubble_color_fields
+            .iter()
+            .zip(colors)
+            .any(|(field, color)| {
+                let raw = field.stringValue().to_string();
+                BubbleColor::parse_hex(&raw).map_or(true, |actual| actual != color)
+            })
     }
 
     pub(crate) fn lifecycle_saved(&mut self, settings: LifecycleSettings) {
@@ -2776,6 +2874,7 @@ impl MenuPanel {
         settings_content_height(
             self.menu_bar_card_height(card_width),
             self.observation_height(card_width),
+            self.update_card.height(card_width),
         )
     }
 
@@ -2961,6 +3060,18 @@ impl MenuPanel {
             ),
             NSSize::new(card_width, CARD_HEIGHT),
         ));
+        let update_height = self.update_card.height(card_width);
+        self.update_card.layout(NSRect::new(
+            NSPoint::new(
+                8.0,
+                MENU_BAR_CARD_TOP
+                    + menu_bar_height
+                    + MENU_BAR_CARD_GAP * 3.0
+                    + observation_height
+                    + CARD_HEIGHT,
+            ),
+            NSSize::new(card_width, update_height),
+        ));
     }
 
     fn observation_height(&self, card_width: f64) -> f64 {
@@ -3122,8 +3233,16 @@ impl MenuPanel {
     }
 }
 
-fn settings_content_height(menu_bar_height: f64, observation_height: f64) -> f64 {
-    SETTINGS_BASE_HEIGHT + MENU_BAR_CARD_GAP + menu_bar_height + observation_height
+fn settings_content_height(
+    menu_bar_height: f64,
+    observation_height: f64,
+    update_height: f64,
+) -> f64 {
+    SETTINGS_BASE_HEIGHT
+        + MENU_BAR_CARD_GAP * 2.0
+        + menu_bar_height
+        + observation_height
+        + update_height
 }
 
 fn measured_label_height(field: &NSTextField, width: f64) -> f64 {

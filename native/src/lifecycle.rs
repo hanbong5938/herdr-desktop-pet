@@ -10,6 +10,50 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PLUGIN_ID: &str = "desktop-pet";
+/// Private launcher-to-daemon provenance; never forwarded to an update manager.
+pub(crate) const CAPTURED_HOST_CONFIG_KEY: &str =
+    "HERDR_DESKTOP_PET_CAPTURED_HOST_PLUGIN_CONFIG_DIR";
+
+/// Capture the original host injection before the launcher rewrites the plugin
+/// profile variables for its child. The private value is only routing evidence:
+/// origin detection must still prove the registry, live host and running image.
+pub(crate) fn captured_host_plugin_config_dir(daemon_child: bool) -> Option<PathBuf> {
+    if std::env::var("HERDR_PLUGIN_ID").ok().as_deref() != Some(PLUGIN_ID)
+        || std::env::var("HERDR_ENV")
+            .ok()
+            .is_none_or(|value| value.is_empty())
+        || std::env::var("HERDR_BIN_PATH")
+            .ok()
+            .is_none_or(|value| value.is_empty())
+    {
+        return None;
+    }
+    let path = if daemon_child {
+        if std::env::var_os("HERDR_DESKTOP_PET_STARTUP_TOKEN").is_some() {
+            // A spawned child's HERDR_PLUGIN_CONFIG_DIR is the selected pet
+            // profile, not the upstream host injection. Never infer from it.
+            std::env::var_os(CAPTURED_HOST_CONFIG_KEY)
+        } else {
+            // A directly foregrounded daemon still sees the original injection.
+            std::env::var_os("HERDR_PLUGIN_CONFIG_DIR")
+        }
+    } else {
+        // The helper's child launcher has the original private capture but may
+        // be restoring a selected profile through HERDR_PLUGIN_CONFIG_DIR.
+        std::env::var_os(CAPTURED_HOST_CONFIG_KEY)
+            .or_else(|| std::env::var_os("HERDR_PLUGIN_CONFIG_DIR"))
+    }?;
+    let path = PathBuf::from(path);
+    if !path.is_absolute()
+        || path.file_name()? != PLUGIN_ID
+        || path.parent()?.file_name()? != "config"
+        || path.parent()?.parent()?.file_name()? != "plugins"
+    {
+        return None;
+    }
+    Some(path)
+}
+
 pub const LIFECYCLE_FILE: &str = "lifecycle.json";
 pub const CONTROL_SOCKET_FILE: &str = "control.sock";
 pub const LOCK_FILE: &str = "desktop-pet.lock";
@@ -79,22 +123,6 @@ impl Paths {
             state_dir,
         })
     }
-
-    pub fn export_environment(&self) {
-        // These are process-local overrides.  The daemon receives them explicitly
-        // from its launcher and never falls back to OMP_* compatibility variables.
-        env::set_var("HERDR_PLUGIN_CONFIG_DIR", &self.config_dir);
-        env::set_var("HERDR_PLUGIN_STATE_DIR", &self.state_dir);
-    }
-}
-
-/// Return the plugin's Herdr-managed config directory.
-///
-/// Herdr injects this variable for installed plugins.  Standalone invocation
-/// derives the same path under the active Herdr config root without invoking a
-/// command or consulting any legacy OMPet variables.
-pub(crate) fn config_directory() -> Result<PathBuf, String> {
-    resolve_dir("HERDR_PLUGIN_CONFIG_DIR", None, plugin_config_dir)
 }
 
 fn resolve_dir(
@@ -108,6 +136,41 @@ fn resolve_dir(
         None => explicit.map(Path::to_path_buf).unwrap_or_else(fallback),
     };
     validate_directory(&path, true)
+}
+
+/// Resolve an update journal profile without creating or changing its directories.
+pub(crate) fn update_status_directory(explicit: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    let path = match env::var_os("HERDR_PLUGIN_STATE_DIR") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        Some(_) => return Err("HERDR_PLUGIN_STATE_DIR is set to an empty path".into()),
+        None => explicit
+            .map(Path::to_path_buf)
+            .unwrap_or_else(plugin_state_dir),
+    };
+    if !path.is_absolute() {
+        return Err("update status directory must be absolute".into());
+    }
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect update status directory {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || metadata.uid() != effective_uid()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(format!(
+            "update status directory {} is not a private owned directory",
+            path.display()
+        ));
+    }
+    Ok(Some(path))
 }
 
 fn config_root() -> PathBuf {

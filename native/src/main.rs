@@ -6,6 +6,7 @@ compile_error!("Herdr Desktop Pet requires a macOS target");
 mod agent_outcome;
 mod alpha;
 mod animation;
+mod app_update;
 mod assets;
 mod automation;
 mod automation_cli;
@@ -52,6 +53,12 @@ mod status_indicator;
 #[cfg(test)]
 mod transport_tests;
 mod ui;
+mod update_card;
+use herdr_update_coordinator::protocol::{
+    latest_operation, read_operation, record_user_stop, start_allowed, UPDATER_PROTOCOL,
+};
+use herdr_update_coordinator::{detect_origin, executable_identity, InstallOrigin, UpdateContext};
+use std::collections::BTreeMap;
 mod worktree_confirmation;
 use character_service::execute_offline;
 use character_store::PackStore;
@@ -67,7 +74,7 @@ use std::ffi::OsString;
 use std::fs::{self, OpenOptions, Permissions};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -95,6 +102,8 @@ const USAGE: &str = concat!(
     "    settings set auto_start on|off\n",
     "    settings set exit_with_herdr on|off\n",
     "    status              Show daemon, registration, data, and executable status\n",
+    "    update-capabilities  Show read-only updater protocol support\n",
+    "    update-status [OPID] Show offline durable updater outcome (--state-dir PATH)\n",
     "    show                Show character; reattach visible bubble\n",
     "    hide                Hide character; leave enabled bubble standalone\n",
     "    toggle              Toggle character visibility, independently of bubble\n",
@@ -181,6 +190,8 @@ enum CommandKind {
     Stop,
     Restart,
     Status,
+    UpdateCapabilities,
+    UpdateStatus,
     Settings,
     Show,
     Hide,
@@ -216,6 +227,8 @@ impl CommandKind {
             "stop" => Self::Stop,
             "restart" => Self::Restart,
             "status" => Self::Status,
+            "update-capabilities" => Self::UpdateCapabilities,
+            "update-status" => Self::UpdateStatus,
             "settings" => Self::Settings,
             "show" => Self::Show,
             "hide" => Self::Hide,
@@ -252,6 +265,8 @@ impl CommandKind {
             Self::Ensure => "ensure",
             Self::Start => "start",
             Self::Stop => "stop",
+            Self::UpdateCapabilities => "update-capabilities",
+            Self::UpdateStatus => "update-status",
             Self::Restart => "restart",
             Self::Status => "status",
             Self::Show => "show",
@@ -325,6 +340,7 @@ enum SettingsCommand {
 #[derive(Debug, Default)]
 struct Cli {
     command: Option<CommandKind>,
+    update_operation: Option<String>,
     pack: Option<PackCommand>,
     settings: Option<SettingsCommand>,
     presentation: Option<automation_cli::PresentationCommand>,
@@ -354,6 +370,9 @@ fn run() -> Result<(), String> {
         println!("herdr-desktop-pet {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if cli.command == Some(CommandKind::UpdateCapabilities) {
+        return print_json(&serde_json::json!({"protocol": UPDATER_PROTOCOL}));
+    }
     let command = cli.command.unwrap_or(CommandKind::Ensure);
     if matches!(
         command,
@@ -366,12 +385,25 @@ fn run() -> Result<(), String> {
             | CommandKind::Sessions
             | CommandKind::Dialogue
             | CommandKind::Worktree
+            | CommandKind::UpdateStatus
     ) && cli.assets.is_some()
     {
         return Err("--assets is not valid with this command".to_owned());
     }
+    if command == CommandKind::UpdateStatus {
+        let Some(state_dir) = lifecycle::update_status_directory(cli.state_dir.as_deref())? else {
+            if let Some(id) = cli.update_operation.as_deref() {
+                return Err(format!("no durable update operation found for {id}"));
+            }
+            return print_json(&serde_json::json!({
+                "type": "update-status", "record": null, "recovery": "No update operation recorded for this profile."
+            }));
+        };
+        return update_status(&state_dir, cli.update_operation.as_deref());
+    }
+    let host_plugin_config_dir =
+        lifecycle::captured_host_plugin_config_dir(command == CommandKind::Daemon);
     let paths = Paths::resolve(cli.config_dir.as_deref(), cli.state_dir.as_deref())?;
-    paths.export_environment();
     let herdr_socket = cli.socket.unwrap_or_else(default_herdr_socket);
     if herdr_socket.is_relative() || herdr_socket.as_os_str().is_empty() {
         return Err("Herdr socket path must be a non-empty absolute path".to_owned());
@@ -396,6 +428,7 @@ fn run() -> Result<(), String> {
             env::var("HERDR_DESKTOP_PET_STARTUP_TOKEN").ok(),
             assets_override,
             automatic_start,
+            host_plugin_config_dir,
         ));
     }
     execute_command(
@@ -404,6 +437,7 @@ fn run() -> Result<(), String> {
         herdr_socket,
         assets,
         assets_override,
+        host_plugin_config_dir,
         cli.pack,
         cli.settings,
         cli.presentation,
@@ -417,16 +451,38 @@ fn execute_command(
     herdr_socket: PathBuf,
     assets: Option<PathBuf>,
     assets_override: bool,
+    host_plugin_config_dir: Option<PathBuf>,
     pack: Option<PackCommand>,
     settings: Option<SettingsCommand>,
     presentation: Option<automation_cli::PresentationCommand>,
     automation: Option<automation_cli::DomainCommand>,
 ) -> Result<(), String> {
     match command {
-        CommandKind::Ensure => ensure(paths, herdr_socket, assets, assets_override, true),
-        CommandKind::Start => ensure(paths, herdr_socket, assets, assets_override, false),
+        CommandKind::Ensure => ensure(
+            paths,
+            herdr_socket,
+            assets,
+            assets_override,
+            true,
+            host_plugin_config_dir,
+        ),
+        CommandKind::Start => ensure(
+            paths,
+            herdr_socket,
+            assets,
+            assets_override,
+            false,
+            host_plugin_config_dir,
+        ),
         CommandKind::Stop => stop(paths),
-        CommandKind::Restart => restart(paths, herdr_socket, assets, assets_override),
+        CommandKind::Restart => restart(
+            paths,
+            herdr_socket,
+            assets,
+            assets_override,
+            host_plugin_config_dir,
+        ),
+        CommandKind::UpdateCapabilities | CommandKind::UpdateStatus => unreachable!(),
         CommandKind::Status => status(paths, herdr_socket),
         CommandKind::Settings => lifecycle_settings_ui::run(paths),
         CommandKind::SettingsGet | CommandKind::SettingsSet => {
@@ -608,6 +664,10 @@ fn execute_pack_mutation(
         expected_generation,
         action,
     };
+    let offline_origin = InstallOrigin::Unknown {
+        reason: "offline pack admission".into(),
+    };
+    start_allowed(&offline_origin, &paths.state_dir, None, None)?;
     let socket = &paths.control_socket;
     if control::control_socket_is_live(socket, CONTROL_TIMEOUT) {
         return submit_live_pack(socket, request, wait);
@@ -620,6 +680,7 @@ fn execute_pack_mutation(
     if async_requested {
         return Err("pack --no-wait or explicit --wait requires a running daemon; start daemon or use the synchronous offline command".into());
     }
+    start_allowed(&offline_origin, &paths.state_dir, None, None)?;
     let builtin_assets = resolve_assets(None)?;
     let operation = execute_offline(paths.config_dir.clone(), builtin_assets, request)?;
     drop(lock);
@@ -776,19 +837,97 @@ fn new_operation_id() -> String {
     format!("{nanos:x}-{:x}-{counter:x}", std::process::id())
 }
 
+fn startup_origin(
+    paths: &Paths,
+    herdr_socket: &Path,
+    host_plugin_config_dir: Option<&Path>,
+) -> Result<InstallOrigin, String> {
+    let executable =
+        bundle::executable().map_err(|error| format!("cannot resolve executable path: {error}"))?;
+    let running = executable_identity(&executable)?;
+    let environment = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "HERDR_BIN_PATH",
+        "HERDR_PLUGIN_ID",
+        "HERDR_ENV",
+        "HERDR_PLUGIN_CONFIG_DIR",
+        "HERDR_PLUGIN_STATE_DIR",
+        "HERDR_SOCKET_PATH",
+    ]
+    .into_iter()
+    .filter_map(|key| env::var(key).ok().map(|value| (key.to_owned(), value)))
+    .collect::<BTreeMap<_, _>>();
+    let context = UpdateContext {
+        executable,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        instance_id: "launcher".to_owned(),
+        config_dir: paths.config_dir.clone(),
+        host_plugin_config_dir: host_plugin_config_dir.map(Path::to_path_buf),
+        state_dir: paths.state_dir.clone(),
+        herdr_socket: herdr_socket.to_owned(),
+        running,
+        running_origin: None,
+        assets_override: None,
+        environment,
+        locale: "en".to_owned(),
+    };
+    Ok(detect_origin(&context).unwrap_or_else(|error| InstallOrigin::Unknown { reason: error }))
+}
+
+fn updater_start_authorization() -> Result<(Option<u64>, Option<String>), String> {
+    let generation = env::var("HERDR_DESKTOP_PET_UPDATER_GENERATION")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| "invalid updater generation".to_owned())
+        })
+        .transpose()?;
+    let token = env::var("HERDR_DESKTOP_PET_UPDATER_TOKEN").ok();
+    if generation.is_some() != token.is_some() {
+        return Err("updater start needs both token and generation".into());
+    }
+    Ok((generation, token))
+}
+
 fn ensure(
     paths: Paths,
     herdr_socket: PathBuf,
     assets: Option<PathBuf>,
     assets_override: bool,
     automatic_start: bool,
+    host_plugin_config_dir: Option<PathBuf>,
 ) -> Result<(), String> {
+    let (expected_generation, updater_token) = updater_start_authorization()?;
+    let origin = startup_origin(&paths, &herdr_socket, host_plugin_config_dir.as_deref())?;
+    start_allowed(
+        &origin,
+        &paths.state_dir,
+        expected_generation,
+        updater_token.as_deref(),
+    )?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     let mut last_error = None;
     while Instant::now() < deadline {
+        start_allowed(
+            &origin,
+            &paths.state_dir,
+            expected_generation,
+            updater_token.as_deref(),
+        )?;
         if control::control_socket_is_live(&paths.control_socket, Duration::from_millis(150)) {
             match wait_for_ready(&paths, &herdr_socket, deadline) {
-                Ok(response) => return print_response(&response),
+                Ok(response) => {
+                    start_allowed(
+                        &origin,
+                        &paths.state_dir,
+                        expected_generation,
+                        updater_token.as_deref(),
+                    )?;
+                    return print_response(&response);
+                }
                 Err(ReadyFailure::Exiting(error)) => {
                     last_error = Some(error);
                     wait_for_finalization(&paths, deadline)?;
@@ -830,6 +969,12 @@ fn ensure(
             drop(lock);
             continue;
         }
+        start_allowed(
+            &origin,
+            &paths.state_dir,
+            expected_generation,
+            updater_token.as_deref(),
+        )?;
         let settings = lifecycle::read_settings(&paths.config_dir)?;
         if automatic_start && !settings.auto_start {
             if lifecycle::startup_pending(&paths.config_dir)? {
@@ -844,6 +989,12 @@ fn ensure(
             }));
         }
         let assets = resolve_assets(assets.as_deref())?;
+        start_allowed(
+            &origin,
+            &paths.state_dir,
+            expected_generation,
+            updater_token.as_deref(),
+        )?;
         let lease = match lifecycle::begin_startup(&paths.config_dir)? {
             Some(lease) => lease,
             None => {
@@ -859,6 +1010,7 @@ fn ensure(
             assets_override,
             &lease.token,
             automatic_start,
+            host_plugin_config_dir.as_deref(),
         ) {
             Ok(pid) => pid,
             Err(error) => {
@@ -869,7 +1021,15 @@ fn ensure(
         lifecycle::set_startup_child(&paths.config_dir, &lease.token, child_pid)?;
         drop(lock);
         match wait_for_ready(&paths, &herdr_socket, deadline) {
-            Ok(response) => return print_response(&response),
+            Ok(response) => {
+                start_allowed(
+                    &origin,
+                    &paths.state_dir,
+                    expected_generation,
+                    updater_token.as_deref(),
+                )?;
+                return print_response(&response);
+            }
             Err(failure) => {
                 if let ReadyFailure::TimedOut(error) = &failure {
                     if control::control_socket_is_live(
@@ -949,12 +1109,21 @@ fn restart(
     herdr_socket: PathBuf,
     assets: Option<PathBuf>,
     assets_override: bool,
+    host_plugin_config_dir: Option<PathBuf>,
 ) -> Result<(), String> {
     stop(paths.clone())?;
-    ensure(paths, herdr_socket, assets, assets_override, false)
+    ensure(
+        paths,
+        herdr_socket,
+        assets,
+        assets_override,
+        false,
+        host_plugin_config_dir,
+    )
 }
 
 fn stop(paths: Paths) -> Result<(), String> {
+    record_user_stop(&paths.state_dir)?;
     let deadline = Instant::now() + STOP_TIMEOUT;
     loop {
         if Instant::now() >= deadline {
@@ -997,6 +1166,53 @@ fn stop(paths: Paths) -> Result<(), String> {
     }
 }
 
+fn update_status_payload(
+    state_dir: &Path,
+    operation_id: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let record = if let Some(id) = operation_id {
+        read_operation(state_dir, id)?
+            .ok_or_else(|| format!("no durable update operation found for {id}"))?
+    } else {
+        let Some(record) = latest_operation(state_dir)? else {
+            return Ok(serde_json::json!({
+                "type": "update-status", "record": null, "recovery": "No update operation recorded for this profile."
+            }));
+        };
+        record
+    };
+    let plan = herdr_update_coordinator::read_plan(state_dir, &record.operation_id);
+    let helper = state_dir
+        .join("updates")
+        .join(format!("helper-{}", record.operation_id));
+    let staged = fs::symlink_metadata(&helper).ok().is_some_and(|metadata| {
+        metadata.is_file()
+            && metadata.uid() == lifecycle::effective_uid()
+            && metadata.permissions().mode() & 0o077 == 0
+    });
+    let helper_path = helper.display().to_string();
+    let state_path = state_dir.display().to_string();
+    let id = record.operation_id.as_str();
+    let last_durable_phase = record.phase;
+    Ok(serde_json::json!({
+        "type": "update-status",
+        "operation_id": id,
+        "record": record,
+        "last_durable_phase": last_durable_phase,
+        "live_process_evidence": "Not inspected by this offline journal command. The last durable phase is not proof the helper or installer remains running.",
+        "plan": plan.as_ref().ok(),
+        "plan_error": plan.as_ref().err(),
+        "staged_helper_present_private": staged,
+        "staged_helper_signature_verified": false,
+        "helper_status_command": staged.then(|| serde_json::json!([helper_path, "status", "--state-dir", state_path, "--operation-id", id])),
+        "helper_recover_command": staged.then(|| serde_json::json!([helper_path, "recover", "--state-dir", state_path, "--operation-id", id])),
+        "recovery": "Verify the private retained helper's code signature, then run helper_status_command for crash-aware helper/manager/candidate evidence. Run helper_recover_command only after inspecting the outcome; recovery never automatically repeats the installer."
+    }))
+}
+fn update_status(state_dir: &Path, operation_id: Option<&str>) -> Result<(), String> {
+    print_json(&update_status_payload(state_dir, operation_id)?)
+}
+
 fn status(paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
     let response = if control::control_socket_is_live(&paths.control_socket, CONTROL_TIMEOUT) {
         send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT)?
@@ -1035,6 +1251,9 @@ fn status(paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
             auto_start: settings.auto_start,
             exit_with_herdr: settings.exit_with_herdr,
             pid: 0,
+            instance_id: String::new(),
+            running_sha256: String::new(),
+            assets_override: None,
             executable_path: executable.display().to_string(),
             config_dir: paths.config_dir.display().to_string(),
             state_dir: paths.state_dir.display().to_string(),
@@ -1093,14 +1312,19 @@ fn wait_for_ready(
     herdr_socket: &Path,
     deadline: Instant,
 ) -> Result<ControlResponse, ReadyFailure> {
+    let herdr_socket = socket::canonical_endpoint(herdr_socket).map_err(ReadyFailure::TimedOut)?;
     let mut last_error = None;
     let mut registered = false;
     let mut answered = false;
+    let mut register_next = false;
     while Instant::now() < deadline {
-        let (command, endpoint) = if registered {
-            ("ready", None)
+        // A newly spawned daemon already owns this endpoint. Read readiness
+        // first; re-register only when the requested endpoint is not accepted.
+        // This also avoids a forbidden mutation during an updater reservation.
+        let (command, endpoint) = if register_next && !registered {
+            ("register", Some(herdr_socket.as_path()))
         } else {
-            ("register", Some(herdr_socket))
+            ("ready", Some(herdr_socket.as_path()))
         };
         match send_command(
             &paths.control_socket,
@@ -1118,14 +1342,23 @@ fn wait_for_ready(
             Ok(response) if !registered => {
                 answered = true;
                 if response.ok && response.registration_accepted {
+                    if response.ready && response.control_ready {
+                        return Ok(response);
+                    }
                     registered = true;
                 } else {
+                    register_next = true;
                     last_error = response
                         .error
                         .or_else(|| Some("Herdr endpoint registration is pending".to_owned()));
                 }
             }
-            Ok(response) if response.ok && response.ready && response.control_ready => {
+            Ok(response)
+                if response.ok
+                    && response.registration_accepted
+                    && response.ready
+                    && response.control_ready =>
+            {
                 return Ok(response);
             }
             Ok(response) => {
@@ -1158,6 +1391,7 @@ fn spawn_daemon(
     assets_override: bool,
     startup_token: &str,
     automatic_start: bool,
+    host_plugin_config_dir: Option<&Path>,
 ) -> Result<u32, String> {
     let executable = bundle::executable()
         .map_err(|error| format!("cannot resolve desktop-pet executable path: {error}"))?;
@@ -1202,6 +1436,23 @@ fn spawn_daemon(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_stderr));
+    if let Some(host_config) = host_plugin_config_dir {
+        command.env(lifecycle::CAPTURED_HOST_CONFIG_KEY, host_config);
+    } else {
+        command.env_remove(lifecycle::CAPTURED_HOST_CONFIG_KEY);
+    }
+    if let (Some(generation), Some(token)) = updater_start_authorization()? {
+        command
+            .env(
+                "HERDR_DESKTOP_PET_UPDATER_GENERATION",
+                generation.to_string(),
+            )
+            .env("HERDR_DESKTOP_PET_UPDATER_TOKEN", token);
+    } else {
+        command
+            .env_remove("HERDR_DESKTOP_PET_UPDATER_GENERATION")
+            .env_remove("HERDR_DESKTOP_PET_UPDATER_TOKEN");
+    }
     if assets_override {
         command
             .arg("--assets")
@@ -1251,6 +1502,7 @@ where
     let mut settings_tokens = Vec::new();
     let mut presentation_tokens = Vec::new();
     let mut automation_tokens = Vec::new();
+    let mut update_tokens = Vec::new();
     while let Some(argument) = arguments.next() {
         if matches!(
             cli.command,
@@ -1302,6 +1554,10 @@ where
             pack_tokens.push(argument);
             continue;
         }
+        if cli.command == Some(CommandKind::UpdateStatus) {
+            update_tokens.push(argument);
+            continue;
+        }
         if cli.command == Some(CommandKind::Settings) {
             settings_tokens.push(argument);
             continue;
@@ -1327,6 +1583,15 @@ where
         };
         if cli.command.replace(command).is_some() {
             return Err("only one command may be specified".to_owned());
+        }
+    }
+    if cli.command == Some(CommandKind::UpdateStatus) {
+        if update_tokens.len() > 1 {
+            return Err("update-status accepts at most one operation ID".into());
+        }
+        if let Some(id) = update_tokens.pop() {
+            herdr_update_coordinator::protocol::validate_operation_id(&id)?;
+            cli.update_operation = Some(id);
         }
     }
     if cli.command == Some(CommandKind::Pack) {
@@ -2126,6 +2391,61 @@ fn validate_assets_path(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_status_rejects_invalid_operation_identity_and_extra_arguments() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert!(parse_cli(["update-status", valid].map(str::to_owned)).is_ok());
+        assert!(parse_cli(["update-status".to_owned()]).is_ok());
+        for invalid in [
+            "operation-1",
+            "../other",
+            "0123456789ABCDEF0123456789ABCDEF",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+        ] {
+            assert!(parse_cli(["update-status", invalid].map(str::to_owned)).is_err());
+        }
+        assert!(parse_cli(["update-status", valid, valid].map(str::to_owned)).is_err());
+    }
+
+    #[test]
+    fn offline_update_status_never_presents_stale_installing_phase_as_live() {
+        use herdr_update_coordinator::protocol::{
+            write_operation, ExecutionFence, OperationPhase, OperationRecord, UPDATER_PROTOCOL,
+        };
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "herdr-update-status-{}-{nonce}",
+            std::process::id()
+        ));
+        lifecycle::validate_directory(&root, true).unwrap();
+        write_operation(
+            &root,
+            &OperationRecord {
+                version: UPDATER_PROTOCOL,
+                operation_id: "0123456789abcdef0123456789abcdef".into(),
+                phase: OperationPhase::Installing,
+                execution_fence: ExecutionFence::ManagerIntent,
+                detail: "installer result not yet observed".into(),
+                installed: false,
+                applied: false,
+                candidate: None,
+            },
+        )
+        .unwrap();
+        let status = update_status_payload(&root, None).unwrap();
+        assert_eq!(status["last_durable_phase"], "installing");
+        assert_eq!(status["record"]["installed"], false);
+        assert_eq!(status["record"]["applied"], false);
+        assert!(status["phase"].is_null());
+        assert!(status["plan_error"].is_string());
+        assert!(status["helper_status_command"].is_null());
+        assert!(update_status_payload(&root, Some("fedcba9876543210fedcba9876543210")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn settings_cli_rejects_ambiguous_or_invalid_mutations() {
@@ -2617,6 +2937,9 @@ mod tests {
             auto_start: true,
             exit_with_herdr: true,
             pid: std::process::id(),
+            instance_id: String::new(),
+            running_sha256: String::new(),
+            assets_override: None,
             executable_path: String::new(),
             config_dir: String::new(),
             state_dir: String::new(),
@@ -2627,7 +2950,11 @@ mod tests {
     /// Binds a private control socket that answers exactly one request with
     /// `reply`; `vanish` unlinks the socket before answering, as an exiting
     /// daemon does.
-    fn serve_one_reply(reply: ControlResponse, vanish: bool) -> (Paths, thread::JoinHandle<()>) {
+    fn serve_one_reply(
+        reply: ControlResponse,
+        vanish: bool,
+        expected_endpoint: Option<PathBuf>,
+    ) -> (Paths, thread::JoinHandle<()>) {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
 
@@ -2652,6 +2979,11 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = String::new();
             BufReader::new(&stream).read_line(&mut request).unwrap();
+            if let Some(expected) = expected_endpoint {
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["command"], "ready");
+                assert_eq!(request["endpoint"], expected.display().to_string());
+            }
             if vanish {
                 fs::remove_file(&control_socket).unwrap();
             }
@@ -2664,7 +2996,7 @@ mod tests {
 
     #[test]
     fn readiness_wait_stops_once_the_daemon_reports_shutdown() {
-        let (paths, server) = serve_one_reply(control_reply(false, false, true), false);
+        let (paths, server) = serve_one_reply(control_reply(false, false, true), false, None);
         let start = Instant::now();
         let result = wait_for_ready(
             &paths,
@@ -2682,7 +3014,7 @@ mod tests {
 
     #[test]
     fn readiness_wait_stops_once_an_answering_daemon_unlinks_its_socket() {
-        let (paths, server) = serve_one_reply(control_reply(true, true, false), true);
+        let (paths, server) = serve_one_reply(control_reply(true, true, false), true, None);
         let start = Instant::now();
         let result = wait_for_ready(
             &paths,
@@ -2696,5 +3028,25 @@ mod tests {
             "{result:?}"
         );
         assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn readiness_reuses_secondary_canonical_endpoint_without_registration() {
+        let alias = PathBuf::from("/tmp/../tmp/herdr-secondary.sock");
+        let canonical = socket::canonical_endpoint(&alias).unwrap();
+        let mut reply = control_reply(true, true, false);
+        reply.command = "ready".into();
+        reply.ready = true;
+        reply.ui_ready = true;
+        reply.herdr_socket = socket::canonical_endpoint(Path::new("/tmp/herdr-primary.sock"))
+            .unwrap()
+            .display()
+            .to_string();
+        let (paths, server) = serve_one_reply(reply, false, Some(canonical.clone()));
+        let response =
+            wait_for_ready(&paths, &alias, Instant::now() + Duration::from_secs(2)).unwrap();
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(paths.control_socket.parent().unwrap());
+        assert!(response.registration_accepted && response.ready);
+        assert_ne!(response.herdr_socket, canonical.display().to_string());
     }
 }

@@ -503,6 +503,24 @@ impl PackService {
         mutation_busy(&state, &queue)
     }
 
+    /// Mutations include accepted queue entries, native preflight and commit,
+    /// even when the worker has temporarily removed an item from its queue.
+    /// Requested dialogue metadata can also still publish into the editor.
+    pub fn has_pending_update_work(&self) -> bool {
+        let state = lock_unpoisoned(&self.state);
+        let queue = lock_unpoisoned(&self.queue);
+        let mutating = mutation_busy(&state, &queue)
+            || state.commit_started
+            || state.operations.values().any(|entry| {
+                matches!(
+                    entry.operation.state.as_str(),
+                    COMMITTED_PENDING_APPLY | DURABILITY_UNKNOWN
+                )
+            });
+        let metadata = lock_unpoisoned(&self.metadata);
+        mutating || !metadata.pending.is_empty() || metadata.loading.is_some()
+    }
+
     /// Enqueue a UI request only when no other pack mutation owns admission.
     pub fn submit_ui_if_idle(&self, request: PackRequest) -> Result<PackOperation, String> {
         self.submit_inner(request, true)
@@ -1559,6 +1577,64 @@ mod tests {
                 id: "character".to_owned(),
             },
         }
+    }
+
+    #[test]
+    fn update_blocker_keeps_dequeued_pack_commit_and_metadata_visible() {
+        let root = tempfile::tempdir().unwrap();
+        let service =
+            PackService::new(root.path().to_path_buf(), root.path().join("builtin"), None);
+        service.started.store(true, Ordering::Release);
+        lock_unpoisoned(&service.state).ui_ready = true;
+        assert!(!service.has_pending_update_work());
+
+        service.submit(request("pack-update-blocker")).unwrap();
+        assert!(service.has_pending_update_work());
+        let _dequeued = lock_unpoisoned(&service.queue).pop_front().unwrap();
+        assert!(service.has_pending_update_work());
+        {
+            let mut state = lock_unpoisoned(&service.state);
+            let operation = &mut state
+                .operations
+                .get_mut("pack-update-blocker")
+                .unwrap()
+                .operation;
+            operation.state = APPLYING.into();
+            operation.committed = true;
+            state.commit_started = true;
+        }
+        assert!(service.has_pending_update_work());
+        {
+            let mut state = lock_unpoisoned(&service.state);
+            state
+                .operations
+                .get_mut("pack-update-blocker")
+                .unwrap()
+                .operation
+                .state = COMPLETED.into();
+            state.commit_started = false;
+        }
+        assert!(!service.has_pending_update_work());
+        lock_unpoisoned(&service.state)
+            .operations
+            .get_mut("pack-update-blocker")
+            .unwrap()
+            .operation
+            .state = DURABILITY_UNKNOWN.into();
+        assert!(service.has_pending_update_work());
+        lock_unpoisoned(&service.state)
+            .operations
+            .get_mut("pack-update-blocker")
+            .unwrap()
+            .operation
+            .state = COMPLETED.into();
+        lock_unpoisoned(&service.metadata).loading = Some(MetadataKey {
+            reference: CharacterRef::builtin(),
+            generation: 1,
+        });
+        assert!(service.has_pending_update_work());
+        lock_unpoisoned(&service.metadata).loading = None;
+        assert!(!service.has_pending_update_work());
     }
 
     #[test]

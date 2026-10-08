@@ -688,6 +688,24 @@ impl AutomationState {
     pub(crate) fn snapshot(&self) -> PresentationSnapshot {
         self.snapshot.clone()
     }
+    /// Accepted requests remain busy after draining until their exact native,
+    /// persistence, or domain outcome has been published.
+    pub(crate) fn has_pending_update_operations(&self) -> bool {
+        !self.queued.is_empty()
+            || !self.domain_queued.is_empty()
+            || self
+                .entries
+                .values()
+                .any(|entry| !entry.operation.state.terminal())
+            || self.domain_entries.values().any(|entry| {
+                !entry.operation.state.terminal()
+                    || (entry.operation.state == DomainOperationState::UnknownDelivery
+                        && matches!(
+                            entry.operation.kind.as_str(),
+                            "session_prompt" | "worktree_remove"
+                        ))
+            })
+    }
 
     /// A different daemon instance must never accept a stale client's mutation.
     /// Identical IDs are idempotent only while retained, and only for the entire request.
@@ -1079,7 +1097,29 @@ impl AutomationState {
             .domain_entries
             .get(operation_id)
             .ok_or("unknown domain operation")?;
-        if entry.operation.state != DomainOperationState::Pending {
+        let observed_unknown = entry.operation.kind == "worktree_remove"
+            && entry.operation.state == DomainOperationState::UnknownDelivery
+            && state == DomainOperationState::Superseded
+            && !committed
+            && !native_applied
+            && result.as_ref().is_some_and(|result| {
+                let observation = result.get("observation");
+                result.get("acknowledged").and_then(Value::as_bool) == Some(false)
+                    && result.get("final_observed").and_then(Value::as_bool) == Some(true)
+                    && observation
+                        .and_then(|value| value.get("pane_absent"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    && observation
+                        .and_then(|value| value.get("session_absent"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    && observation
+                        .and_then(|value| value.get("snapshot_revision"))
+                        .and_then(Value::as_u64)
+                        .is_some()
+            });
+        if entry.operation.state != DomainOperationState::Pending && !observed_unknown {
             return Err("domain operation is not pending".into());
         }
         if state == DomainOperationState::Accepted {
@@ -1155,6 +1195,10 @@ impl AutomationState {
         entry.operation.error_code = error_code;
         entry.operation.error = error.map(bounded_error);
         let operation = entry.operation.clone();
+        if state == DomainOperationState::UnknownDelivery {
+            // Query-terminal but unresolved: not an evictable completed entry.
+            return Ok(operation);
+        }
         if state.terminal() {
             self.domain_completed.push_back(operation_id.to_owned());
             while self.domain_completed.len() > MAX_COMPLETED {
@@ -1201,7 +1245,9 @@ impl AutomationState {
                 );
             }
             entry.request = None;
-            self.domain_completed.push_back(id);
+            if entry.operation.state != DomainOperationState::UnknownDelivery {
+                self.domain_completed.push_back(id);
+            }
         }
         self.queued.clear();
         let outstanding: Vec<_> = self
@@ -1581,6 +1627,117 @@ mod tests {
                 text,
             },
         )
+    }
+
+    #[test]
+    fn update_blocker_tracks_drained_requests_and_unknown_prompt_delivery() {
+        let mut state = AutomationState::with_instance("test".into(), target(), Some(target()));
+        assert!(!state.has_pending_update_operations());
+        state.submit(request("hide", set_visible(false))).unwrap();
+        assert!(state.has_pending_update_operations());
+        let drained = state.drain_queued();
+        assert_eq!(drained.len(), 1);
+        assert!(state.has_pending_update_operations());
+        let hidden = target().applying(&set_visible(false)).unwrap();
+        state.start_request("hide", hidden).unwrap();
+        assert!(state.has_pending_update_operations());
+        state.publish_checkpoint(checkpoint(state.revision(), hidden, Some(hidden)));
+        assert!(!state.has_pending_update_operations());
+
+        state
+            .submit_domain(prompt("send", "message".into()))
+            .unwrap();
+        let drained = state.drain_domain_requests();
+        assert_eq!(drained.len(), 1);
+        assert!(state.has_pending_update_operations());
+        state.start_domain_request("send").unwrap();
+        state
+            .finish_domain_operation(
+                "send",
+                DomainOperationState::UnknownDelivery,
+                false,
+                false,
+                None,
+                None,
+                Some("delivery outcome unknown".into()),
+            )
+            .unwrap();
+        assert!(state.has_pending_update_operations());
+    }
+
+    #[test]
+    fn unknown_prompt_survives_completed_history_churn_and_bounded_admission() {
+        let mut state = AutomationState::with_instance("test".into(), target(), None);
+        let ambiguous = prompt("ambiguous", "may have been delivered".into());
+        state.submit_domain(ambiguous.clone()).unwrap();
+        state.drain_domain_requests();
+        state.start_domain_request("ambiguous").unwrap();
+        state
+            .finish_domain_operation(
+                "ambiguous",
+                DomainOperationState::UnknownDelivery,
+                false,
+                false,
+                None,
+                Some("unknown_delivery".into()),
+                None,
+            )
+            .unwrap();
+        for index in 0..MAX_COMPLETED + 32 {
+            let id = format!("read-{index}");
+            state
+                .submit_domain(domain_request(&id, DomainAction::PreferencesGet {}))
+                .unwrap();
+            state.drain_domain_requests();
+            state.start_domain_request(&id).unwrap();
+            state
+                .finish_domain_operation(
+                    &id,
+                    DomainOperationState::Applied,
+                    false,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        assert!(state.has_pending_update_operations());
+        assert_eq!(state.domain_completed.len(), MAX_COMPLETED);
+        assert_eq!(
+            state.domain_status("test", "ambiguous").unwrap().state,
+            DomainOperationState::UnknownDelivery
+        );
+        assert_eq!(
+            state.submit_domain(ambiguous).unwrap().state,
+            DomainOperationState::UnknownDelivery
+        );
+        assert!(state
+            .submit_domain(prompt("ambiguous", "different body".into()))
+            .unwrap_err()
+            .contains("different request"));
+        let mut busy = false;
+        for index in 0..MAX_OPERATIONS + MAX_COMPLETED {
+            let id = format!("outstanding-{index}");
+            match state.submit_domain(domain_request(&id, DomainAction::PreferencesGet {})) {
+                Ok(_) => {
+                    state.drain_domain_requests();
+                }
+                Err(error) => {
+                    assert!(error.contains("history"));
+                    busy = true;
+                    break;
+                }
+            }
+        }
+        assert!(busy);
+        assert_eq!(state.domain_entries.len(), MAX_OPERATIONS);
+        assert!(state.domain_completed.is_empty());
+        assert_eq!(
+            state.domain_status("test", "ambiguous").unwrap().state,
+            DomainOperationState::UnknownDelivery
+        );
+        assert!(state.has_pending_update_operations());
     }
 
     #[test]
@@ -2165,6 +2322,82 @@ mod tests {
         assert_eq!(
             acknowledged.error_code.as_deref(),
             Some("observation_interrupted")
+        );
+    }
+
+    #[test]
+    fn unknown_worktree_observation_never_fabricates_delivery_ack() {
+        let mut state = AutomationState::with_instance("test".into(), target(), None);
+        let request = domain_request(
+            "remove",
+            DomainAction::WorktreeRemove {
+                token: "c".repeat(64),
+            },
+        );
+        state.submit_domain(request.clone()).unwrap();
+        state.drain_domain_requests();
+        state.start_domain_request("remove").unwrap();
+        state
+            .finish_domain_operation(
+                "remove",
+                DomainOperationState::UnknownDelivery,
+                false,
+                false,
+                None,
+                Some("unknown_delivery".into()),
+                None,
+            )
+            .unwrap();
+        assert!(state.has_pending_update_operations());
+        assert_eq!(
+            state.submit_domain(request.clone()).unwrap().state,
+            DomainOperationState::UnknownDelivery
+        );
+        assert!(state
+            .finish_domain_operation(
+                "remove",
+                DomainOperationState::Applied,
+                true,
+                false,
+                Some(serde_json::json!({
+                    "acknowledged": true, "final_observed": true, "observation": {}
+                })),
+                None,
+                None,
+            )
+            .is_err());
+        let observation = serde_json::json!({
+            "acknowledged": false,
+            "final_observed": true,
+            "observation": {
+                "source": "/local.sock",
+                "source_id": 4,
+                "generation": 8,
+                "snapshot_revision": 19,
+                "pane_absent": true,
+                "session_absent": true,
+            },
+        });
+        let settled = state
+            .finish_domain_operation(
+                "remove",
+                DomainOperationState::Superseded,
+                false,
+                false,
+                Some(observation.clone()),
+                Some("target_absent".into()),
+                Some(
+                    "later coherent pane/session absence; delivery and disk deletion unconfirmed"
+                        .into(),
+                ),
+            )
+            .unwrap();
+        assert!(!state.has_pending_update_operations());
+        assert!(!settled.committed);
+        assert_eq!(settled.result, Some(observation));
+        assert_eq!(
+            state.submit_domain(request).unwrap().state,
+            DomainOperationState::Superseded
         );
     }
 
