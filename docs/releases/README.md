@@ -8,14 +8,15 @@ Reviewed Markdown in this repository is the canonical version documentation. The
 
 | What you need | Where to go |
 | --- | --- |
-| v0.2.0 stable source, release changes and safe upgrade | [0.2 release line](0.2.md) · [v0.2.0 notes](v0.2.0.md) · [v0.1.11 → v0.2.0 migration (English/한국어)](../migrations/v0.1.11-to-v0.2.0.md) |
+| v0.3.0 stable source, capabilities and safe upgrade | [0.3 release line and bilingual migration](0.3.md) · [v0.3.0 bilingual release note](v0.3.0.md) |
+| v0.2.1 public stable compatibility patch, Arin archive import | [0.2 release line](0.2.md) · [v0.2.1 bilingual notes](v0.2.1.md) · [v0.1.11 → v0.2.0 migration (English/한국어)](../migrations/v0.1.11-to-v0.2.0.md) |
 | Historical published 0.1 binaries, last at v0.1.11 | [0.1 release line](0.1.md) · [v0.1.11 Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.1.11) |
 | Other historical transition: composer to inline reply | [v0.1.4 → v0.1.6 migration](../migrations/v0.1.4-to-v0.1.6.md) |
 | Version and compatibility rules | [Versioning and compatibility](policy.md) |
 | How reviewed notes reach Wiki and new Release bodies | [Publishing](publishing.md) |
 | Current public release/asset state | [GitHub Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases); the generated Wiki's **Release-Status** and **Older-Releases** pages |
 
-**Source and publication authority differ.** The v0.2.0 source on `main` includes the promoted native feature groups and their later fixes; `bash scripts/install.sh --source` builds the checkout you actually have, while the default/prebuilt installer pins stable v0.2.0. The separate beta1/beta2/beta3 tags and assets remain historical. The [v0.2.0 note](v0.2.0.md) and [migration guide](../migrations/v0.1.11-to-v0.2.0.md) describe the stable behavior; the [older Unreleased record](unreleased.md) describes its prior local/beta provenance, not the scope of today's `main` source.
+**Source and publication authority differ.** This checkout selects v0.3.0 as its stable source and default/prebuilt target, retaining the public v0.2.1 compatibility fix for Arin archive imports (app v0.2.1+). Its search/order, automation, drafts, resizing, official character browser, protocol-2 updater and worker JIT belong to v0.3.0, not the old v0.2.1 or immutable beta binaries. `bash scripts/install.sh --source` builds this checkout; successful default/`--prebuilt` installation requires the exact non-draft v0.3.0 Release, complete uploaded assets and updated installer. See the [v0.3.0 note](v0.3.0.md) and [upgrade guidance](0.3.md#upgrade-from-v021-or-beta). The older [Unreleased record](unreleased.md) documents historical source/beta evidence, not public v0.3.0 verification.
 
 The generated Wiki derives publication status from GitHub's actual Release catalog and complete uploaded assets, **not** from a Markdown file or tag. This source index is not a live API-status report and does not by itself establish that the stable archive was published. In the historical 0.1 line, **v0.1.5 is a tag only, not a published binary release**.
 
@@ -23,7 +24,8 @@ The generated Wiki derives publication status from GitHub's actual Release catal
 
 | Line | Notes and upgrade context |
 | --- | --- |
-| [0.2](0.2.md) | v0.2.0 stable source, [canonical notes](v0.2.0.md) and [bilingual upgrade guidance](../migrations/v0.1.11-to-v0.2.0.md); consult the Release catalog for actual publication |
+| [0.3](0.3.md) | v0.3.0 stable source/default-prebuilt target [bilingual notes](v0.3.0.md) and upgrade guidance; consult the Release catalog for actual publication |
+| [0.2](0.2.md) | Historical v0.2.1 stable compatibility patch [canonical notes](v0.2.1.md); v0.2.0 [stable notes](v0.2.0.md) and [bilingual upgrade guidance](../migrations/v0.1.11-to-v0.2.0.md) |
 | [0.1](0.1.md) | Historical published v0.1.4 and v0.1.6–v0.1.11; tagged-only v0.1.5 |
 
 Future minor lines get their own `X.Y.md` overview with tagged version notes and migration guidance as needed. This index does not promise a support lifetime.

@@ -31,7 +31,8 @@ const PANEL_RADIUS: f64 = 16.0;
 const CARD_RADIUS: f64 = 10.0;
 const SCROLL_TOP: f64 = 86.0;
 const FOOTER_HEIGHT: f64 = 50.0;
-const CHARACTER_CONTENT_HEIGHT: f64 = 404.0;
+const CHARACTER_VIEW_TOP: f64 = 106.0;
+const INITIAL_CHARACTER_HEIGHT: f64 = 72.0;
 const BUBBLE_CONTENT_HEIGHT: f64 = 578.0;
 const SETTINGS_BASE_HEIGHT: f64 = 308.0 + CARD_HEIGHT + 14.0;
 const MENU_BAR_CARD_TOP: f64 = 300.0;
@@ -385,6 +386,7 @@ pub(crate) struct MenuPanel {
     tabs: [Retained<NSButton>; 3],
     placement_buttons: [Retained<NSButton>; 5],
     character_view: Retained<NSView>,
+    character_content_height: f64,
     mtm: MainThreadMarker,
     character_editing_open: Retained<NSButton>,
     character_browser_open: Retained<NSButton>,
@@ -489,9 +491,11 @@ impl MenuPanel {
         locale: UiLocale,
         mtm: MainThreadMarker,
     ) -> Self {
+        let initial_height =
+            SCROLL_TOP + CHARACTER_VIEW_TOP + INITIAL_CHARACTER_HEIGHT + FOOTER_HEIGHT;
         let frame = NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(PANEL_WIDTH, PANEL_HEIGHT),
+            NSSize::new(PANEL_WIDTH, initial_height),
         );
         let panel = MenuPanelWindow::new(frame, mtm);
         configure_panel(&panel);
@@ -511,7 +515,7 @@ impl MenuPanel {
         let document = MenuPanelDocument::new(
             NSRect::new(
                 NSPoint::new(0.0, 0.0),
-                NSSize::new(PANEL_WIDTH, CHARACTER_CONTENT_HEIGHT),
+                NSSize::new(PANEL_WIDTH, CHARACTER_VIEW_TOP + INITIAL_CHARACTER_HEIGHT),
             ),
             mtm,
         );
@@ -523,7 +527,7 @@ impl MenuPanel {
                 NSScrollView::alloc(mtm),
                 initWithFrame: NSRect::new(
                     NSPoint::new(0.0, SCROLL_TOP),
-                    NSSize::new(PANEL_WIDTH, PANEL_HEIGHT - SCROLL_TOP - FOOTER_HEIGHT),
+                    NSSize::new(PANEL_WIDTH, initial_height - SCROLL_TOP - FOOTER_HEIGHT),
                 )
             ]
         };
@@ -547,7 +551,7 @@ impl MenuPanel {
         let character_tab = MenuPanelDocument::new(
             NSRect::new(
                 NSPoint::new(0.0, 0.0),
-                NSSize::new(PANEL_WIDTH, CHARACTER_CONTENT_HEIGHT),
+                NSSize::new(PANEL_WIDTH, CHARACTER_VIEW_TOP + INITIAL_CHARACTER_HEIGHT),
             ),
             mtm,
         );
@@ -1221,6 +1225,7 @@ impl MenuPanel {
             placement_buttons,
             character_view,
             mtm,
+            character_content_height: INITIAL_CHARACTER_HEIGHT,
             character_editing_open,
             character_browser_open,
             target: target.retain(),
@@ -1311,8 +1316,7 @@ impl MenuPanel {
         panel
     }
 
-    pub(crate) fn show_at(&self, anchor_screen_rect: NSRect, visible_frame: NSRect) {
-        self.reanchor_at(anchor_screen_rect, visible_frame);
+    pub(crate) fn show(&self) {
         if !self.panel.isVisible() {
             self.panel.makeKeyAndOrderFront(None);
             let first = &self.tabs[self.selected_tab];
@@ -1331,6 +1335,22 @@ impl MenuPanel {
 
     pub(crate) fn is_visible(&self) -> bool {
         self.panel.isVisible()
+    }
+
+    pub(crate) fn is_character_tab(&self) -> bool {
+        self.selected_tab == 0
+    }
+
+    pub(crate) fn set_character_content_height(&mut self, height: f64) -> bool {
+        if self.character_content_height == height {
+            return false;
+        }
+        self.character_content_height = height;
+        true
+    }
+
+    pub(crate) fn character_frame(&self) -> NSRect {
+        self.character_view.frame()
     }
 
     pub(crate) fn select_tab(&mut self, index: usize) {
@@ -2340,7 +2360,12 @@ impl MenuPanel {
     }
 
     pub(crate) fn reanchor_at(&self, anchor_screen_rect: NSRect, visible_frame: NSRect) {
-        let height = PANEL_HEIGHT.min((visible_frame.size.height - 16.0).max(1.0));
+        let desired_height = if self.is_character_tab() {
+            SCROLL_TOP + CHARACTER_VIEW_TOP + self.character_content_height + FOOTER_HEIGHT
+        } else {
+            PANEL_HEIGHT
+        };
+        let height = desired_height.min((visible_frame.size.height - 16.0).max(1.0));
         let width = PANEL_WIDTH.min((visible_frame.size.width - 16.0).max(1.0));
         self.panel.setContentSize(NSSize::new(width, height));
         self.root.setFrame(NSRect::new(
@@ -2593,8 +2618,8 @@ impl MenuPanel {
         let scroll_width = scroll_frame.size.width.max(1.0);
         let scroll_height = scroll_frame.size.height.max(1.0);
 
-        let char_view_height = (scroll_height - 106.0).max(250.0);
-        let char_content_height = (106.0 + char_view_height).max(scroll_height);
+        let char_view_height = self.character_content_height;
+        let char_content_height = (CHARACTER_VIEW_TOP + char_view_height).max(scroll_height);
 
         let old_offset = self.scroll.contentView().bounds().origin.y;
         let initial_width = (scroll_width - 30.0).max(1.0);
@@ -2697,7 +2722,7 @@ impl MenuPanel {
             NSSize::new((card_width - btn_width - gap).max(1.0), 36.0),
         ));
         self.character_view.setFrame(NSRect::new(
-            NSPoint::new(0.0, 106.0),
+            NSPoint::new(0.0, CHARACTER_VIEW_TOP),
             NSSize::new(clip_width, char_view_height),
         ));
     }

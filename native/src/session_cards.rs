@@ -47,7 +47,6 @@ const RUNNING_ITEM_INDEX: isize = SORT_ITEM_START + SESSION_SORTS.len() as isize
 const HEADER_GAP: f64 = 5.0;
 const ROW_HEIGHT: f64 = 46.0;
 const EMPTY_HEIGHT: f64 = 20.0;
-const LIST_VIEWPORT_MAX_HEIGHT: f64 = 180.0;
 const ROW_GAP: f64 = 0.0;
 const ROW_HORIZONTAL_INSET: f64 = 12.0;
 const ROW_TEXT_HEIGHT: f64 = 16.0;
@@ -59,10 +58,6 @@ const BADGE_GAP: f64 = 8.0;
 /// Toolbar, insets and one selectable row; the inline reply adds its measured height.
 pub(crate) const fn minimum_selectable_height() -> f64 {
     OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP + ROW_HEIGHT
-}
-
-pub(crate) const fn maximum_cards_height() -> f64 {
-    OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP + LIST_VIEWPORT_MAX_HEIGHT
 }
 
 #[derive(Default)]
@@ -951,13 +946,6 @@ struct SessionCardsInner {
 
 impl SessionCardsInner {
     fn content_height(&self) -> f64 {
-        OUTER_INSET * 2.0
-            + HEADER_HEIGHT
-            + HEADER_GAP
-            + self.rows_height().min(LIST_VIEWPORT_MAX_HEIGHT)
-    }
-
-    fn document_content_height(&self) -> f64 {
         OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP + self.rows_height()
     }
 
@@ -2010,11 +1998,6 @@ impl SessionCards {
         self.inner.borrow().content_height()
     }
 
-    /// Full requested viewport height, before the automatic bubble's 180pt cap.
-    pub(crate) fn document_content_height(&self) -> f64 {
-        self.inner.borrow().document_content_height()
-    }
-
     pub(crate) fn minimum_content_width(&self) -> f64 {
         self.inner.borrow().minimum_content_width()
     }
@@ -2464,6 +2447,24 @@ mod tests {
         );
         assert_eq!(row_frame(2, None, 0.0, 250.0).origin.y, 2.0 * ROW_HEIGHT);
         assert_eq!(rows_height(3, 0.0), 3.0 * ROW_HEIGHT);
+    }
+
+    #[test]
+    fn long_list_and_reply_tail_keep_natural_document_extent() {
+        let chrome = OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP;
+        let long = rows_height(12, 0.0);
+        let reply = 73.5;
+        assert_eq!(long, 12.0 * ROW_HEIGHT);
+        assert_eq!(chrome + long + reply, chrome + rows_height(12, reply));
+        let last = row_frame(11, Some(3), reply, 270.0);
+        assert_eq!(last.origin.y + last.size.height, rows_height(12, reply));
+        let filtered = rows_height(2, 0.0);
+        assert!(filtered < long);
+        assert_eq!(
+            row_frame(1, None, 0.0, 270.0).origin.y + ROW_HEIGHT,
+            filtered
+        );
+        assert!(chrome + EMPTY_HEIGHT < chrome + filtered);
     }
 
     fn row(

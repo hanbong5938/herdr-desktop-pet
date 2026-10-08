@@ -2,22 +2,26 @@
 
 [Versions](README.md) · [Versioning and compatibility](policy.md) · [Unreleased](unreleased.md) · [한국어 버전 안내](README.ko.md)
 
-Reviewed Markdown in the main repository is canonical. GitHub Wiki is a generated reading view, not a second editing authority. For **new** app releases, the Release body and Wiki version page use the same note frozen by the release tag. Current indexes, policy, migrations and Unreleased use the reviewed default-branch documentation snapshot and the live GitHub release catalog. [v0.2.0](v0.2.0.md) is the current authorized stable source/release contract, including the formerly local native feature groups; publication status still requires the actual Release catalog and uploaded assets.
+Reviewed Markdown in the repository is canonical. GitHub Wiki is a generated reading view, not a second editing authority. For **new** app releases, the Release body and Wiki version page use the same note frozen by the release tag. Current indexes, policy, migrations and Unreleased use reviewed default-branch documentation and the live GitHub release catalog. The reviewed [v0.3.0 note](v0.3.0.md) documents the integrated stable minor; neither it nor a source build proves publication, which requires the exact non-draft Release and complete uploaded assets. The [v0.2.1 patch note](v0.2.1.md) remains frozen at the separate public v0.2.0-based compatibility patch and must not be retroactively rewritten to include the newer features.
 
-The original docs/tools-only authorization for the earlier `9cbad32`-era main update has been superseded. The user now authorizes promoting exact beta3 native behavior into v0.2.0 on `main`, the stable `v0.2.0` tag, binary assets, stable Homebrew formula/default installation, and Wiki publication. Preserve historical beta1/beta2/beta3 tags, assets and the separate beta formula. This authorization does not change character-pack v5, bundled `default@0`, artwork licensing, or the independent Herdr host.
+The original documentation/tools-only authorization, v0.2.0 promotion and narrower v0.2.1 patch authorization below are **historical release scopes**, not a continuing ban on the separately authorized v0.3.0 minor source. Preserve beta1/beta2/beta3 and `beta/0.3.0-beta.2` tags/assets, the separate beta formula, pack v5, bundled `default@0`, artwork/rig overrides/motion/licensing and the independent Herdr host.
 
 ## Authorization and setup record
 
-The original **read-only setup inspection** found owner ADMIN access, Wiki disabled (`has_wiki: false`), and no repository Actions secrets. It made no setting, initial-page, secret, remote-publication, commit or push changes. **Later Wiki activation and initial Home occurred**: the Wiki Git remote has an initialized HEAD (`680633c28f33f264b5d532a385370e1ec5995d1a`). That confirms initialization, **not** publication of the generated v0.2.0 Wiki pages. No dedicated `WIKI_PUBLISH_TOKEN` Actions secret is configured. An authorized owner `gh` OAuth login may be used ephemerally for a **local manual Wiki publication** but must never be printed, persisted or copied into a CI secret. Local authorization/login does not provision future automation.
+The original **read-only setup inspection** found owner ADMIN access, Wiki disabled and no repository Actions secrets; it made no setting, secret or publication changes. Later Wiki activation created initial HEAD `680633c28f33f264b5d532a385370e1ec5995d1a`. That historical inspection is not current credential status: [the v0.2.1 release run](https://github.com/hanbong5938/herdr-desktop-pet/actions/runs/37787113731) successfully generated 24 managed Wiki pages and pushed Wiki commit `b0d63dc` using its supplied `WIKI_PUBLISH_TOKEN`. This patch operation did not create or change any secret. Credentials must never be printed, persisted in source or copied from a broad owner login into a CI secret.
 
-The original documentation/tools-only publication used the then-main source and excluded four local native commits (`078f5c2`, `e828c77`, `f638f0c`, `bf23ced`). That is historical provenance, **not** a restriction on the current stable cutover. Render now from the reviewed, pushed v0.2.0 default-branch SHA, not the original local branch SHA or an old docs-only SHA.
+The original documentation/tools-only publication used the then-main source and excluded four local native commits (`078f5c2`, `e828c77`, `f638f0c`, `bf23ced`). That is historical provenance. The isolated v0.2.1 patch was tagged from v0.2.0-based source, not the then-unreleased `main`; its Wiki version page and Release body remain frozen there. The v0.3.0 release instead needs its own integrated source/tag and reviewed [new note](v0.3.0.md), with current navigation from the reviewed pushed default branch.
 
-### Authorized stable and local Wiki publication
+### Historical authorized v0.2.1 patch and local Wiki publication
 
-1. Review and push the v0.2.0 source/docs to `main`, including the native code and version/installer cutover. Use the resulting immutable pushed main SHA for current Wiki rendering; use the frozen `v0.2.0` tag note for the Release body and Wiki version page.
-2. Validate the stable `v0.2.0` tag and canonical note, publish the actual arm64 app archive, `.sha256` and `SHA256SUMS` through the Release workflow, and update the stable Homebrew formula/default installer as authorized. Do not alter archived beta tags/assets or the beta formula. A completed tag or source build alone is not binary-publication proof.
-3. Wiki is enabled with initial Home and Git HEAD. Render the canonical pages from pushed main using the live Release catalog, then run the publisher with a usable Wiki-write credential **only** in the local publisher process environment. The command below shows the authorized ephemeral owner-OAuth route; it does not create an Actions secret or dispatch an Actions publication.
+1. Review the isolated patch source/docs based on public v0.2.0 (`b8b7b8c`), including the focused reference-only mesh fix, version/installer cutover and [v0.2.1 canonical note](v0.2.1.md). Do not mix in unrelated unreleased `main` features. Integrate/review current documentation on the default branch separately; the v0.2.1 version page and Release body must always use the exact patch tag.
+2. Validate the stable `v0.2.1` tag and canonical note, publish the actual arm64 app archive, `.sha256` and `SHA256SUMS` through the Release workflow, then update the stable Homebrew formula/default installer to v0.2.1 as authorized. Do not alter archived v0.2.0 or beta tags/assets or the beta formula. A completed tag or source build alone is not binary-publication proof; confirm actual uploaded assets/checksums and consumer upgrade separately.
+3. Wiki is enabled with initial Home and Git HEAD. Render current navigation from the reviewed pushed default branch and the version page from the frozen v0.2.1 tag using the live Release catalog, then publish with a usable Wiki-write credential **only** in the local publisher process environment. This does not create an Actions secret or dispatch Actions publication.
 4. Confirm the remote Wiki push/result and actual Release/asset publication independently. The Release job may succeed while its dependent Wiki job fails for lack of `WIKI_PUBLISH_TOKEN`; do not rerun the binary Release to repair the Wiki or claim the Wiki published before observing its remote result.
+
+### v0.3.0 stable publication contract
+
+Review the integrated source, four matching manifests/root lock and bilingual [v0.3.0 note](v0.3.0.md) on the final candidate; run combined TypeScript/Bun, native/coordinator, release build/package, signed updater/helper and worker-entitlement checks and isolated updater/UI/recovery acceptance. PR #17's pre-merge source gates and ad-hoc signing are historical scoped evidence, not substituted for these final gates. Freeze the reviewed note at the exact v0.3.0 tag. Publish a non-draft stable Release with arm64 archive, `.sha256` and `SHA256SUMS`; download and verify all assets and their digests. Then update the stable default/`--prebuilt` installer and Homebrew formula and prove a consumer install/upgrade plus restarted daemon `app_version` and executable. Keep prior stable and beta assets unchanged. A tag, prepared note or incomplete Release does not suffice. Verify the Wiki's tagged version page/current navigation push separately; a failed Wiki job is repaired with Wiki-only sync, not a repeat binary release.
 
 ### Credential prerequisite for future automation
 
@@ -33,7 +37,7 @@ Recommended owner safeguards, not runtime prerequisites: protect the default bra
 
 ## Workflow and trust boundary
 
-[`.github/workflows/wiki.yml`](../../.github/workflows/wiki.yml) runs for relevant document/script changes pushed to `main`, can be run manually, and can be called after a successful Release job. It resolves the actual default branch through the GitHub API, reads that branch's current commit SHA, and checks out **that immutable SHA** with full tag history. For v0.2.0 this source is the reviewed native-and-documentation main, not the historical unmerged local checkout. A caller's old release tag is never used as the current index snapshot. Only default-branch push/manual runs, or a release-tag push caller with the matching required tag, are accepted; no pull-request code is a publication source. Successful HTTPS publication still requires the separately configured dedicated Wiki write credential, or the explicitly authorized process-local owner-OAuth route for manual publication.
+The [Wiki workflow](../../.github/workflows/wiki.yml) uses the reviewed pushed default-branch SHA for **current** navigation and the exact fetched release tag for a **frozen** version page. For v0.3.0 this must be its integrated stable tag, never the older isolated v0.2.1 patch or a beta tag. It reads the actual default branch and Release catalog; an old tag is not a current-index snapshot. Only default-branch push/manual runs or matching release-tag push callers are accepted. Successful publication still requires the configured Wiki-write credential; the v0.2.1 Wiki run below is historical.
 
 The checkout does not persist credentials. GitHub API reads use only the ordinary `GITHUB_TOKEN` (`contents: read`). Rendering finishes and validates the full managed page set **before** the publisher is invoked. `WIKI_PUBLISH_TOKEN` is assigned only in the publishing step's environment. The workflow uses SHA-pinned actions and one repository-wide, non-cancelling publication concurrency group, shared by push, manual and reusable calls.
 
@@ -71,7 +75,7 @@ Generated pages contain source attribution with immutable source references. Pub
 
 ## Routine documentation updates and Wiki-only repair
 
-Edit canonical repository pages, review them, and merge to the default branch. After the dedicated automation credential is configured, relevant main-branch pushes synchronize Unreleased, migration guidance, policy and navigation. Documentation-only sync runs do not create a Release or change an already published binary; the separately authorized v0.2.0 source/tag/binary/formula cutover is a stable Release operation, not a Wiki-only run.
+Edit and review canonical pages, then merge to the default branch. Main-branch Wiki synchronization updates navigation and history but does not create a binary Release. The historical v0.2.1 patch used isolated source; v0.3.0 publication requires integrated stable source, its exact tag and separately confirmed assets, stable formula/default-installer cutover and consumer upgrade. Do not count a Wiki-only sync as a release.
 
 After dedicated automation credential setup, repair a failed publication by opening [the Wiki workflow](https://github.com/hanbong5938/herdr-desktop-pet/actions/workflows/wiki.yml), choosing the **default branch**, and selecting **Run workflow**. This Actions manual dispatch is distinct from the authorized local owner-OAuth publication; the Wiki already has initialized Git history:
 
@@ -84,7 +88,7 @@ If a called Wiki job fails, its step summary independently checks the Release AP
 
 ## Local rendering and isolated Git publication
 
-The generator has no publishing side effects. For the authorized remote publication, run these commands from the reviewed **pushed v0.2.0 main checkout** at its immutable source SHA, not from the historical local checkout. `git rev-parse HEAD` below must identify that pushed main snapshot with promoted native groups:
+The generator has no publishing side effects. For an authorized remote Wiki publication, render from the reviewed **pushed default-branch documentation source** at its immutable source SHA with the selected published stable tag fetched for its frozen version note; the isolated v0.2.1 patch source and integrated v0.3.0 stable source are not interchangeable. `git rev-parse HEAD` below must identify that reviewed pushed default-branch snapshot:
 
 ```sh
 rendered="$(mktemp -d)"
@@ -140,7 +144,7 @@ The generator declares the managed Wiki mappings:
 | `X.Y.md`, `vX.Y.Z.md` | `Release-Line-X.Y`, `Release-vX.Y.Z` |
 | `docs/migrations/v0.1.4-to-v0.1.6.md` | `Migration-v0.1.4-to-v0.1.6` |
 | `docs/migrations/v0.1.11-to-v0.2.0.md` | `Migration-v0.1.11-to-v0.2.0` (one bilingual page) |
-| `docs/migrations/unreleased.md`, `unreleased.ko.md` | `Upgrade-Unreleased`, `Upgrade-Unreleased-ko` |
+| `docs/migrations/unreleased.md`, `unreleased.ko.md` | `Upgrade-Unreleased`, `Upgrade-Unreleased-ko`; v0.3.0 bilingual upgrade guidance lives in the supported `docs/releases/0.3.md` overview |
 | Catalog/generated navigation | `Release-Status`, `Older-Releases`, `_Sidebar` |
 
 Top-level canonical Markdown filenames in `docs/releases/` and `docs/migrations/` are limited to the mappings above; an unsupported filename fails rendering rather than being ignored. Put manual validation checklists and supporting records in `docs/validation/` instead. Canonical pages may link to those files, but the Wiki renders links as immutable source-commit blob URLs, not additional managed Wiki pages. Checklist procedures are not completed acceptance evidence: keep observed results distinct from unexercised checks. Changes under `docs/validation/` trigger Wiki sync so those pinned links update with the source commit.
@@ -162,11 +166,11 @@ A render error occurs before the publisher is called. Clone/validation/copy/comm
 
 ## 한국어 운영·안전 요약
 
-정본은 저장소에서 검토한 Markdown이며 Wiki는 생성된 읽기용 문서입니다. 현재 안정판 소스·릴리스 계약은 **0.2.0**으로, 이전 베타3의 네이티브 기능을 `main`에 포함하고 안정판 태그·바이너리·Homebrew 포뮬러·기본 설치·Wiki 발행이 허용되었습니다. 예전 `9cbad32` 시기의 문서·도구 전용 허가는 역사적 범위이지 현재의 제한이 아닙니다. beta1/2/3의 태그·자산과 별도 베타 포뮬러는 그대로 둡니다. 실제 릴리스 게시 상태는 공개 Release 카탈로그·업로드된 자산으로 판단합니다.
+정본은 저장소에서 검토한 Markdown이고 Wiki는 생성된 읽기용 문서입니다. 공개 v0.2.0 기반의 좁은 **v0.2.1 호환성 패치만** 허용됐던 범위는 과거 패치의 경계이며 별도로 승인된 v0.3.0 minor를 금지하지 않습니다. [v0.3.0 한영 노트](v0.3.0.md)는 통합된 검색·정렬·자동화·초안·크기 조절·공식 다운로드·protocol-2 updater·worker JIT를 설명하지만 게시 증거는 아닙니다. 최종 통합 검사와 실제 비초안 Release·공개 자산/체크섬·설치기/포뮬러·소비자 업그레이드·Wiki 게시를 각각 확인하세요. v0.2.1 노트와 예전 베타 태그·자산은 변경하지 않습니다.
 
 `docs/releases/`와 `docs/migrations/`의 최상위 정본 Markdown 파일명은 위 매핑으로 제한되며, 지원하지 않는 파일명은 무시되지 않고 렌더링 오류를 일으킵니다. 수동 검증 체크리스트와 보조 기록은 `docs/validation/`에 둡니다. 정본 페이지에서 해당 파일을 링크할 수 있지만 Wiki에서는 새 관리 페이지가 아니라 소스 커밋에 고정된 blob URL로 연결됩니다. 체크리스트의 절차 자체는 완료된 인수 검증 증거가 아니므로 관찰한 결과와 실행하지 않은 항목을 구분합니다. `docs/validation/`의 변경도 Wiki 동기화를 트리거하여 고정 링크를 갱신합니다.
 
-원래 읽기 전용 점검에서는 Wiki가 꺼져 있고 Actions 비밀이 없었으며 설정·초기 페이지·원격 커밋/푸시/배포는 하지 않았습니다. 이후 Wiki가 활성화되어 첫 Home과 HEAD `680633c28f33f264b5d532a385370e1ec5995d1a`가 확인되었습니다. 이 사실만으로 생성된 v0.2.0 Wiki 페이지가 게시됐다고 주장하지 않습니다. **전용 `WIKI_PUBLISH_TOKEN` Actions 비밀은 아직 설정되지 않았습니다.** 허가된 로컬 수동 발행에는 기존 소유자 `gh` OAuth를 추적·출력·저장 없이 발행 프로세스 환경에만 일시적으로 전달할 수 있습니다. 절대로 CI 비밀에 복사하지 마세요. 이후 main 푸시·Actions 수동 실행·릴리스 후 자동 발행에는 실제 Wiki Git 쓰기 권한·만료·소유자를 확인한 **전용** 자동화 토큰을 따로 설정해야 합니다. 일반 `GITHUB_TOKEN`의 Wiki 쓰기 권한은 가정하지 않습니다.
+원래 읽기 전용 점검에서는 Wiki와 Actions 비밀이 없었고 설정·초기 페이지·원격 게시를 변경하지 않았습니다. 이후 초기 Wiki HEAD `680633c28f33f264b5d532a385370e1ec5995d1a`가 만들어졌습니다. 이 과거 점검을 현재 비밀 설정 상태로 해석하지 마세요. [v0.2.1 릴리스 실행](https://github.com/hanbong5938/herdr-desktop-pet/actions/runs/37787113731)은 공급된 `WIKI_PUBLISH_TOKEN`으로 관리 페이지 24개를 생성하고 Wiki 커밋 `b0d63dc`를 실제 푸시했습니다. 이번 패치 작업은 비밀을 생성·변경하지 않았습니다. 자격 증명을 출력·소스 저장·소유자의 광범위 로그인에서 CI 비밀로 복사하지 말고, 이후 자동화 토큰의 실제 Wiki 쓰기 권한·만료·소유자를 별도로 관리하세요. 일반 `GITHUB_TOKEN`의 Wiki 쓰기 권한은 가정하지 않습니다.
 
 새 릴리스의 본문과 Wiki 버전 페이지는 같은 태그의 고정된 문서를 사용하고, 인덱스·정책·Unreleased는 현재 기본 브랜치 문서와 실제 Release API 상태를 사용합니다. Markdown 병합이나 태그 존재만으로 미배포 변경을 출시 완료로 표시하지 않습니다. 전용 자동화 토큰이 준비된 뒤에는 아래 Wiki 전용 워크플로로 복구할 수 있으며, 허가된 로컬 수동 발행과 Actions의 수동 실행은 다른 경로입니다.
 

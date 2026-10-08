@@ -10,6 +10,7 @@ if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(profile)) throw new Error(`invalid HERD
 const outputRoot = join(root, "native", "target", "rig-native", profile)
 const runtimeRoot = join(outputRoot, "Resources", "rig")
 const swiftHeader = join(rigRoot, "RigBridge.h")
+const workerEntitlements = join(rigRoot, "RigDecodeWorker.entitlements.plist")
 
 function run(program, args, cwd = root) {
   const child = spawnSync(program, args, { cwd, stdio: "inherit" })
@@ -30,15 +31,16 @@ async function requireFile(path, label) {
 }
 
 const jsRuntime = process.env.HERDR_RIG_JS_RUNTIME?.trim() || "bun"
+await requireFile(workerEntitlements, "rig decode worker entitlements")
+const codesign = await output("xcrun", ["--find", "codesign"])
+const swiftc = await output("xcrun", ["--find", "swiftc"])
+const sdk = await output("xcrun", ["--sdk", "macosx", "--show-sdk-path"])
 await rm(outputRoot, { recursive: true, force: true })
 await mkdir(runtimeRoot, { recursive: true })
 await run(jsRuntime, [join(rigRoot, "build-decoder.mjs"), runtimeRoot])
 const rigLimits = join(runtimeRoot, "RigLimits.swift")
 await requireFile(join(runtimeRoot, "decoder.js"), "generated rig decoder")
 await requireFile(rigLimits, "generated RigLimits.swift")
-
-const swiftc = await output("xcrun", ["--find", "swiftc"])
-const sdk = await output("xcrun", ["--sdk", "macosx", "--show-sdk-path"])
 
 const frameworks = ["AppKit", "CoreGraphics", "Foundation", "ImageIO", "JavaScriptCore", "Metal", "QuartzCore"]
 const common = ["-sdk", sdk, "-target", "arm64-apple-macos13.0", "-O", "-whole-module-optimization"]
@@ -77,6 +79,7 @@ await run(swiftc, [
   rigLimits,
   ...frameworkArgs,
 ])
+await run(codesign, ["--force", "--timestamp=none", "--sign", "-", "--entitlements", workerEntitlements, workerOutput])
 
 const manifest = {
   version: 1,

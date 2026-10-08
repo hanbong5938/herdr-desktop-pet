@@ -14,6 +14,7 @@ fn main() {
         "rig/RigModel.swift",
         "rig/RigDecoder.swift",
         "rig/RigDecodeWorker.swift",
+        "rig/RigDecodeWorker.entitlements.plist",
         "rig/RigDeformation.swift",
         "rig/RigHitTesting.swift",
         "rig/RigMetalRenderer.swift",

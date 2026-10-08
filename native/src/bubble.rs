@@ -85,69 +85,275 @@ impl BubbleSize {
     }
 }
 
-/// Resize a screen-space body from its bottom-right corner while keeping its
-/// top-left fixed. AppKit's upward-positive Y makes downward drag negative.
-/// The pointer's initial offset from the corner is already accounted for by
-/// passing the drag displacement, rather than an absolute pointer location.
+/// The pointer displacement is relative to the captured body, in AppKit's
+/// upward-positive screen coordinates. The opposite edge remains fixed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BubbleResizeDirection {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl BubbleResizeDirection {
+    pub(crate) fn size_delta(self, delta: (f64, f64)) -> (f64, f64) {
+        let dx = finite_coordinate(delta.0);
+        let dy = finite_coordinate(delta.1);
+        match self {
+            Self::Left => (-dx, 0.0),
+            Self::Right => (dx, 0.0),
+            Self::Top => (0.0, dy),
+            Self::Bottom => (0.0, -dy),
+            Self::TopLeft => (-dx, dy),
+            Self::TopRight => (dx, dy),
+            Self::BottomLeft => (-dx, -dy),
+            Self::BottomRight => (dx, -dy),
+        }
+    }
+}
+
+/// Preserve a saved request on axes the drag did not actually move, including
+/// requests larger than the currently visible screen can display.
+pub(crate) fn requested_bubble_resize_size(
+    start_body: Rect,
+    direction: BubbleResizeDirection,
+    delta: (f64, f64),
+    minimum: BubbleSize,
+    prior: Option<BubbleSize>,
+) -> BubbleSize {
+    let (dw, dh) = direction.size_delta(delta);
+    let requested_axis = |start: f64, change: f64, floor: f64, saved: Option<f64>| {
+        let floor = finite_non_negative(floor).max(1.0);
+        if change == 0.0 {
+            saved
+                .map(finite_non_negative)
+                .unwrap_or_else(|| finite_non_negative(start).max(floor))
+        } else {
+            saturating_add(finite_non_negative(start), change).max(floor)
+        }
+    };
+    BubbleSize {
+        width: requested_axis(start_body.width, dw, minimum.width, prior.map(|s| s.width)),
+        height: requested_axis(
+            start_body.height,
+            dh,
+            minimum.height,
+            prior.map(|s| s.height),
+        ),
+    }
+}
+
+/// Resize against the captured opposite edge. On an edge drag, the orthogonal
+/// axis keeps its low origin where possible while accommodating a fresh floor.
 pub(crate) fn resize_bubble_body(
     start_body: Rect,
+    direction: BubbleResizeDirection,
     delta: (f64, f64),
     minimum: BubbleSize,
     visible: Rect,
 ) -> Rect {
     let start = normalize_rect(start_body);
+    let (dw, dh) = direction.size_delta(delta);
+    fit_resizing_body(
+        start,
+        direction,
+        BubbleSize {
+            width: saturating_add(start.width, dw).max(finite_non_negative(minimum.width)),
+            height: saturating_add(start.height, dh).max(finite_non_negative(minimum.height)),
+        },
+        visible,
+    )
+}
+
+/// Fit a freshly measured effective size, including natural shrink, without
+/// encoding a pointer displacement or a saved size request.
+pub(crate) fn fit_resizing_bubble_body(
+    start_body: Rect,
+    direction: BubbleResizeDirection,
+    target_effective: BubbleSize,
+    visible: Rect,
+) -> Rect {
+    fit_resizing_body(
+        normalize_rect(start_body),
+        direction,
+        target_effective,
+        visible,
+    )
+}
+
+fn fit_resizing_body(
+    start: Rect,
+    direction: BubbleResizeDirection,
+    target: BubbleSize,
+    visible: Rect,
+) -> Rect {
     let visible = normalize_rect(visible);
-    let visible_right = right(visible);
-    let visible_top = top(visible);
-    let width_capacity = body_capacity(visible.width, BUBBLE_WINDOW_INSET * 2.0);
-    let height_capacity = body_capacity(visible.height, BUBBLE_WINDOW_INSET * 2.0);
-    let left = if width_capacity > 0.0 {
-        saturating_add(visible.x, BUBBLE_WINDOW_INSET)
-    } else {
-        visible.x
-    };
-    let right_edge = if width_capacity > 0.0 {
-        saturating_sub(visible_right, BUBBLE_WINDOW_INSET)
-    } else {
-        visible_right
-    };
-    let bottom = if height_capacity > 0.0 {
-        saturating_add(visible.y, BUBBLE_WINDOW_INSET)
-    } else {
-        visible.y
-    };
-    let top_edge = if height_capacity > 0.0 {
-        saturating_sub(visible_top, BUBBLE_WINDOW_INSET)
-    } else {
-        visible_top
-    };
-    let x = clamp_scalar(start.x, left, right_edge);
-    let top = clamp_scalar(top(start), bottom, top_edge);
-    let max_width = if width_capacity > 0.0 {
-        saturating_sub(right_edge, x)
-    } else {
-        0.0
-    };
-    let max_height = if height_capacity > 0.0 {
-        saturating_sub(top, bottom)
-    } else {
-        0.0
-    };
-    let width = clamp_scalar(
-        saturating_add(start.width, finite_coordinate(delta.0)),
-        finite_non_negative(minimum.width).min(max_width),
-        max_width,
+    let (x, width) = resize_axis(
+        start.x,
+        start.width,
+        visible.x,
+        visible.width,
+        target.width,
+        !matches!(
+            direction,
+            BubbleResizeDirection::Top | BubbleResizeDirection::Bottom
+        ),
+        matches!(
+            direction,
+            BubbleResizeDirection::Left
+                | BubbleResizeDirection::TopLeft
+                | BubbleResizeDirection::BottomLeft
+        ),
     );
-    let height = clamp_scalar(
-        saturating_sub(start.height, finite_coordinate(delta.1)),
-        finite_non_negative(minimum.height).min(max_height),
-        max_height,
+    let (y, height) = resize_axis(
+        start.y,
+        start.height,
+        visible.y,
+        visible.height,
+        target.height,
+        !matches!(
+            direction,
+            BubbleResizeDirection::Left | BubbleResizeDirection::Right
+        ),
+        matches!(
+            direction,
+            BubbleResizeDirection::Bottom
+                | BubbleResizeDirection::BottomLeft
+                | BubbleResizeDirection::BottomRight
+        ),
     );
     Rect {
         x,
-        y: saturating_sub(top, height),
+        y,
         width,
         height,
+    }
+}
+
+fn resize_axis(
+    start: f64,
+    length: f64,
+    visible_origin: f64,
+    visible_extent: f64,
+    target: f64,
+    grabbed: bool,
+    moving_low: bool,
+) -> (f64, f64) {
+    let capacity = body_capacity(visible_extent, BUBBLE_WINDOW_INSET * 2.0);
+    let low = if capacity > 0.0 {
+        saturating_add(visible_origin, BUBBLE_WINDOW_INSET)
+    } else {
+        visible_origin
+    };
+    let high = if capacity > 0.0 {
+        saturating_sub(
+            saturating_add(visible_origin, visible_extent),
+            BUBBLE_WINDOW_INSET,
+        )
+    } else {
+        saturating_add(visible_origin, visible_extent)
+    };
+    if capacity == 0.0 {
+        return (low, 0.0);
+    }
+    if !grabbed {
+        let length = finite_non_negative(target).min(capacity);
+        return (clamp_origin(start, length, low, high), length);
+    }
+    let fixed = clamp_scalar(
+        if moving_low {
+            saturating_add(start, length)
+        } else {
+            start
+        },
+        low,
+        high,
+    );
+    let maximum = if moving_low {
+        saturating_sub(fixed, low)
+    } else {
+        saturating_sub(high, fixed)
+    };
+    let length = finite_non_negative(target).min(maximum);
+    (
+        if moving_low {
+            saturating_sub(fixed, length)
+        } else {
+            fixed
+        },
+        length,
+    )
+}
+
+/// Only the painted rounded body is interactive; the tail and transparent
+/// window inset are excluded. Corner regions extend inward beyond edge bands.
+pub(crate) fn bubble_resize_direction_at(
+    body: Rect,
+    point: (f64, f64),
+) -> Option<BubbleResizeDirection> {
+    if !point.0.is_finite()
+        || !point.1.is_finite()
+        || !body.x.is_finite()
+        || !body.y.is_finite()
+        || !body.width.is_finite()
+        || !body.height.is_finite()
+        || body.width <= 0.0
+        || body.height <= 0.0
+    {
+        return None;
+    }
+    let x = point.0 - body.x;
+    let y = point.1 - body.y;
+    if x < 0.0 || y < 0.0 || x > body.width || y > body.height {
+        return None;
+    }
+    let radius = BUBBLE_RADIUS.min(body.width * 0.5).min(body.height * 0.5);
+    let corner_x = if x < radius {
+        radius
+    } else {
+        body.width - radius
+    };
+    let corner_y = if y < radius {
+        radius
+    } else {
+        body.height - radius
+    };
+    if (x < radius || x > body.width - radius)
+        && (y < radius || y > body.height - radius)
+        && (x - corner_x).powi(2) + (y - corner_y).powi(2) > radius * radius
+    {
+        return None;
+    }
+    let left = x <= body.width - x;
+    let bottom = y <= body.height - y;
+    let dx = x.min(body.width - x);
+    let dy = y.min(body.height - y);
+    if dx <= 14.0 && dy <= 14.0 {
+        return Some(match (left, bottom) {
+            (true, true) => BubbleResizeDirection::BottomLeft,
+            (true, false) => BubbleResizeDirection::TopLeft,
+            (false, true) => BubbleResizeDirection::BottomRight,
+            (false, false) => BubbleResizeDirection::TopRight,
+        });
+    }
+    if dx <= 5.0 {
+        Some(if left {
+            BubbleResizeDirection::Left
+        } else {
+            BubbleResizeDirection::Right
+        })
+    } else if dy <= 5.0 {
+        Some(if bottom {
+            BubbleResizeDirection::Bottom
+        } else {
+            BubbleResizeDirection::Top
+        })
+    } else {
+        None
     }
 }
 
@@ -734,19 +940,43 @@ mod tests {
         };
         assert!(minimum.is_valid());
         assert_eq!(
-            resize_bubble_body(start, (0.0, 0.0), minimum, visible),
+            resize_bubble_body(
+                start,
+                BubbleResizeDirection::BottomRight,
+                (0.0, 0.0),
+                minimum,
+                visible
+            ),
             start
         );
         assert_eq!(
-            resize_bubble_body(start, (25.0, 0.0), minimum, visible),
+            resize_bubble_body(
+                start,
+                BubbleResizeDirection::BottomRight,
+                (25.0, 0.0),
+                minimum,
+                visible
+            ),
             rect(-200.0, -100.0, 145.0, 60.0)
         );
         assert_eq!(
-            resize_bubble_body(start, (0.0, -30.0), minimum, visible),
+            resize_bubble_body(
+                start,
+                BubbleResizeDirection::BottomRight,
+                (0.0, -30.0),
+                minimum,
+                visible
+            ),
             rect(-200.0, -130.0, 120.0, 90.0)
         );
         assert_eq!(
-            resize_bubble_body(start, (-1000.0, 1000.0), minimum, visible),
+            resize_bubble_body(
+                start,
+                BubbleResizeDirection::BottomRight,
+                (-1000.0, 1000.0),
+                minimum,
+                visible
+            ),
             rect(-200.0, -75.0, 80.0, 35.0)
         );
     }
@@ -760,6 +990,7 @@ mod tests {
         };
         let body = resize_bubble_body(
             rect(-250.0, -150.0, 100.0, 50.0),
+            BubbleResizeDirection::BottomRight,
             (1000.0, -1000.0),
             minimum,
             visible,
@@ -774,7 +1005,13 @@ mod tests {
         assert_local_body(geometry);
 
         let tiny = rect(-2.0, -3.0, 3.0, 2.0);
-        let tiny_body = resize_bubble_body(body, (f64::INFINITY, f64::NAN), minimum, tiny);
+        let tiny_body = resize_bubble_body(
+            body,
+            BubbleResizeDirection::BottomRight,
+            (f64::INFINITY, f64::NAN),
+            minimum,
+            tiny,
+        );
         assert_eq!(tiny_body.width, 0.0);
         assert_eq!(tiny_body.height, 0.0);
         let geometry = place_resizing_bubble(tiny_body, tiny, None);
@@ -804,6 +1041,7 @@ mod tests {
         let visible = rect(-200.0, -100.0, 300.0, 200.0);
         let body = resize_bubble_body(
             rect(f64::NAN, f64::INFINITY, f64::INFINITY, -1.0),
+            BubbleResizeDirection::BottomRight,
             (f64::NAN, f64::NEG_INFINITY),
             BubbleSize {
                 width: f64::INFINITY,
@@ -814,6 +1052,416 @@ mod tests {
         let geometry = place_resizing_bubble(body, visible, None);
         assert_bounded(geometry.window, visible);
         assert_local_body(geometry);
+    }
+
+    #[test]
+    fn resize_all_eight_directions_keep_opposite_edges_and_return_to_capture() {
+        use BubbleResizeDirection::*;
+        let visible = rect(-400.0, -300.0, 800.0, 600.0);
+        let start = rect(-100.0, -80.0, 120.0, 60.0);
+        let minimum = BubbleSize {
+            width: 80.0,
+            height: 35.0,
+        };
+        for (direction, expected) in [
+            (Left, rect(-80.0, -80.0, 100.0, 60.0)),
+            (Right, rect(-100.0, -80.0, 140.0, 60.0)),
+            (Top, rect(-100.0, -80.0, 120.0, 45.0)),
+            (Bottom, rect(-100.0, -95.0, 120.0, 75.0)),
+            (TopLeft, rect(-80.0, -80.0, 100.0, 45.0)),
+            (TopRight, rect(-100.0, -80.0, 140.0, 45.0)),
+            (BottomLeft, rect(-80.0, -95.0, 100.0, 75.0)),
+            (BottomRight, rect(-100.0, -95.0, 140.0, 75.0)),
+        ] {
+            assert_eq!(
+                resize_bubble_body(start, direction, (20.0, -15.0), minimum, visible),
+                expected,
+                "{direction:?}"
+            );
+            assert_eq!(
+                resize_bubble_body(start, direction, (0.0, 0.0), minimum, visible),
+                start,
+                "{direction:?}"
+            );
+            let smaller = resize_bubble_body(start, direction, (-1000.0, 1000.0), minimum, visible);
+            let larger = resize_bubble_body(start, direction, (1000.0, -1000.0), minimum, visible);
+            for body in [smaller, larger] {
+                assert!(body.width <= visible.width - 2.0 * BUBBLE_WINDOW_INSET);
+                assert!(body.height <= visible.height - 2.0 * BUBBLE_WINDOW_INSET);
+                assert!(body.x >= visible.x + BUBBLE_WINDOW_INSET);
+                assert!(body.y >= visible.y + BUBBLE_WINDOW_INSET);
+                assert!(right(body) <= right(visible) - BUBBLE_WINDOW_INSET);
+                assert!(top(body) <= top(visible) - BUBBLE_WINDOW_INSET);
+                if matches!(direction, Left | TopLeft | BottomLeft) {
+                    assert_eq!(right(body), right(start));
+                } else {
+                    assert_eq!(body.x, start.x);
+                }
+                if matches!(direction, Bottom | BottomLeft | BottomRight) {
+                    assert_eq!(top(body), top(start));
+                } else {
+                    assert_eq!(body.y, start.y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resize_inactive_axis_grows_to_content_floor_without_changing_saved_request() {
+        use BubbleResizeDirection::*;
+        let start = rect(-100.0, -80.0, 60.0, 35.0);
+        let minimum = BubbleSize {
+            width: 100.0,
+            height: 70.0,
+        };
+        let saved = BubbleSize {
+            width: 450.0,
+            height: 300.0,
+        };
+        let visible = rect(-300.0, -200.0, 400.0, 300.0);
+        for direction in [Top, Bottom] {
+            let body = resize_bubble_body(start, direction, (300.0, -10.0), minimum, visible);
+            assert_eq!((body.x, body.width), (start.x, minimum.width));
+            assert_eq!(
+                requested_bubble_resize_size(
+                    start,
+                    direction,
+                    (300.0, -10.0),
+                    minimum,
+                    Some(saved)
+                )
+                .width,
+                saved.width
+            );
+        }
+        for direction in [Left, Right] {
+            let body = resize_bubble_body(start, direction, (10.0, -300.0), minimum, visible);
+            assert_eq!((body.y, body.height), (start.y, minimum.height));
+            assert_eq!(
+                requested_bubble_resize_size(
+                    start,
+                    direction,
+                    (10.0, -300.0),
+                    minimum,
+                    Some(saved)
+                )
+                .height,
+                saved.height
+            );
+        }
+        assert_eq!(
+            requested_bubble_resize_size(start, BottomRight, (0.0, 0.0), minimum, Some(saved)),
+            saved
+        );
+        assert_eq!(
+            requested_bubble_resize_size(start, BottomRight, (0.0, 0.0), minimum, None),
+            minimum
+        );
+        assert_eq!(
+            requested_bubble_resize_size(start, TopLeft, (-20.0, 10.0), minimum, Some(saved)),
+            BubbleSize {
+                width: 100.0,
+                height: 70.0
+            }
+        );
+    }
+
+    #[test]
+    fn resize_wrap_height_floor_grows_on_horizontal_edges_and_clamps_low_origin() {
+        use BubbleResizeDirection::*;
+        let visible = rect(-300.0, -200.0, 240.0, 160.0);
+        let start = rect(-250.0, -150.0, 100.0, 50.0);
+        let wrapped = BubbleSize {
+            width: 90.0,
+            height: 110.0,
+        };
+        // The saved untouched height may exceed the screen; the rendered body
+        // instead grows to the fresh text floor at the captured screen width.
+        let saved = BubbleSize {
+            width: 440.0,
+            height: 310.0,
+        };
+        for direction in [Left, Right] {
+            let body = resize_bubble_body(start, direction, (10.0, -1000.0), wrapped, visible);
+            assert_eq!((body.y, body.height), (-162.0, 110.0), "{direction:?}");
+            assert_eq!(
+                requested_bubble_resize_size(
+                    start,
+                    direction,
+                    (10.0, -1000.0),
+                    wrapped,
+                    Some(saved),
+                )
+                .height,
+                saved.height
+            );
+            let geometry = place_resizing_bubble(body, visible, None);
+            assert_bounded(geometry.window, visible);
+            assert_eq!(geometry.window.y + geometry.body.y, body.y);
+            assert_eq!(geometry.body.height, body.height);
+        }
+        // An inactive axis has the whole inset interval, not just the room
+        // beside a corner's fixed opposite edge.
+        let wide = BubbleSize {
+            width: 210.0,
+            height: 40.0,
+        };
+        for direction in [Top, Bottom] {
+            let body = resize_bubble_body(start, direction, (1000.0, 5.0), wide, visible);
+            assert_eq!((body.x, body.width), (-282.0, 210.0), "{direction:?}");
+            assert_eq!(
+                requested_bubble_resize_size(start, direction, (1000.0, 5.0), wide, Some(saved))
+                    .width,
+                saved.width
+            );
+            assert_bounded(place_resizing_bubble(body, visible, None).window, visible);
+            let overflowing = BubbleSize {
+                width: 300.0,
+                height: 40.0,
+            };
+            let clipped = resize_bubble_body(start, direction, (1000.0, 5.0), overflowing, visible);
+            assert_eq!((clipped.x, clipped.width), (-288.0, 216.0));
+            assert_bounded(
+                place_resizing_bubble(clipped, visible, None).window,
+                visible,
+            );
+        }
+    }
+
+    #[test]
+    fn resize_corner_floors_on_unmoved_axis_keep_both_opposite_edges_fixed() {
+        use BubbleResizeDirection::*;
+        let visible = rect(-300.0, -200.0, 240.0, 160.0);
+        let start = rect(-250.0, -150.0, 100.0, 50.0);
+        let taller = BubbleSize {
+            width: 90.0,
+            height: 110.0,
+        };
+        let wider = BubbleSize {
+            width: 300.0,
+            height: 40.0,
+        };
+        for (direction, horizontal, vertical) in [
+            (
+                TopLeft,
+                rect(-270.0, -150.0, 120.0, 98.0),
+                rect(-288.0, -150.0, 138.0, 40.0),
+            ),
+            (
+                TopRight,
+                rect(-250.0, -150.0, 120.0, 98.0),
+                rect(-250.0, -150.0, 178.0, 40.0),
+            ),
+            (
+                BottomLeft,
+                rect(-270.0, -188.0, 120.0, 88.0),
+                rect(-288.0, -160.0, 138.0, 60.0),
+            ),
+            (
+                BottomRight,
+                rect(-250.0, -188.0, 120.0, 88.0),
+                rect(-250.0, -160.0, 178.0, 60.0),
+            ),
+        ] {
+            let dx = if matches!(direction, TopLeft | BottomLeft) {
+                -20.0
+            } else {
+                20.0
+            };
+            let horizontal_body = resize_bubble_body(start, direction, (dx, 0.0), taller, visible);
+            let vertical_body = resize_bubble_body(start, direction, (0.0, -10.0), wider, visible);
+            assert_eq!(horizontal_body, horizontal, "{direction:?} x-only");
+            assert_eq!(vertical_body, vertical, "{direction:?} y-only");
+            for body in [horizontal_body, vertical_body] {
+                if matches!(direction, TopLeft | BottomLeft) {
+                    assert_eq!(right(body), right(start));
+                } else {
+                    assert_eq!(body.x, start.x);
+                }
+                if matches!(direction, BottomLeft | BottomRight) {
+                    assert_eq!(top(body), top(start));
+                } else {
+                    assert_eq!(body.y, start.y);
+                }
+                let geometry = place_resizing_bubble(body, visible, None);
+                assert_bounded(geometry.window, visible);
+                assert_eq!(geometry.window.x + geometry.body.x, body.x);
+                assert_eq!(geometry.window.y + geometry.body.y, body.y);
+            }
+            // A reverse preview does not make a captured corner's fixed edge
+            // slide to satisfy an impossible content floor.
+            let reversed = resize_bubble_body(start, direction, (-dx, 0.0), taller, visible);
+            let returned = resize_bubble_body(start, direction, (0.0, 0.0), taller, visible);
+            let reversed_x = if matches!(direction, TopLeft | BottomLeft) {
+                -240.0
+            } else {
+                -250.0
+            };
+            assert_eq!((reversed.x, reversed.width), (reversed_x, 90.0));
+            assert_eq!((returned.x, returned.width), (start.x, start.width));
+            assert_eq!(
+                (returned.y, returned.height),
+                (horizontal.y, horizontal.height)
+            );
+            let captured_floor = BubbleSize {
+                width: start.width,
+                height: start.height,
+            };
+            assert_eq!(
+                resize_bubble_body(start, direction, (0.0, 0.0), captured_floor, visible),
+                start
+            );
+        }
+    }
+
+    #[test]
+    fn exact_resize_fit_can_shrink_or_grow_without_changing_saved_request() {
+        use BubbleResizeDirection::*;
+        let visible = rect(-300.0, -200.0, 240.0, 160.0);
+        let start = rect(-250.0, -150.0, 100.0, 50.0);
+        let smaller = BubbleSize {
+            width: 60.0,
+            height: 30.0,
+        };
+        let larger = BubbleSize {
+            width: 300.0,
+            height: 110.0,
+        };
+        for (direction, shrunk, grown) in [
+            (
+                TopLeft,
+                rect(-210.0, -150.0, 60.0, 30.0),
+                rect(-288.0, -150.0, 138.0, 98.0),
+            ),
+            (
+                BottomRight,
+                rect(-250.0, -130.0, 60.0, 30.0),
+                rect(-250.0, -188.0, 178.0, 88.0),
+            ),
+        ] {
+            assert_eq!(
+                fit_resizing_bubble_body(start, direction, smaller, visible),
+                shrunk
+            );
+            let body = fit_resizing_bubble_body(start, direction, larger, visible);
+            assert_eq!(body, grown);
+            assert_bounded(place_resizing_bubble(body, visible, None).window, visible);
+            for prior in [
+                None,
+                Some(BubbleSize {
+                    width: 500.0,
+                    height: 400.0,
+                }),
+            ] {
+                let saved =
+                    requested_bubble_resize_size(start, direction, (0.0, 0.0), larger, prior);
+                assert_eq!(saved, prior.unwrap_or(larger));
+                assert_ne!((saved.width, saved.height), (body.width, body.height));
+            }
+        }
+        assert_eq!(
+            fit_resizing_bubble_body(start, Right, larger, visible),
+            rect(-250.0, -162.0, 178.0, 110.0)
+        );
+        let tiny = rect(-2.0, -3.0, 3.0, 2.0);
+        let invalid = BubbleSize {
+            width: f64::INFINITY,
+            height: f64::NAN,
+        };
+        for direction in [TopLeft, BottomRight] {
+            let body = fit_resizing_bubble_body(start, direction, invalid, tiny);
+            assert_eq!((body.width, body.height), (0.0, 0.0));
+            assert!(body.x.is_finite() && body.y.is_finite());
+            assert_bounded(place_resizing_bubble(body, tiny, None).window, tiny);
+            let sanitized = fit_resizing_bubble_body(
+                rect(f64::NAN, f64::INFINITY, f64::INFINITY, -1.0),
+                direction,
+                invalid,
+                visible,
+            );
+            assert!(sanitized.x.is_finite() && sanitized.y.is_finite());
+            assert!(sanitized.width.is_finite() && sanitized.height.is_finite());
+            assert_bounded(
+                place_resizing_bubble(sanitized, visible, None).window,
+                visible,
+            );
+        }
+    }
+
+    #[test]
+    fn resize_negative_screen_extremes_and_invalid_input_stay_bounded() {
+        let visible = rect(-300.0, -200.0, 240.0, 160.0);
+        let start = rect(-250.0, -150.0, 100.0, 50.0);
+        let minimum = BubbleSize {
+            width: 90.0,
+            height: 40.0,
+        };
+        let left_top = resize_bubble_body(
+            start,
+            BubbleResizeDirection::TopLeft,
+            (-1000.0, 1000.0),
+            minimum,
+            visible,
+        );
+        assert_eq!(left_top, rect(-288.0, -150.0, 138.0, 98.0));
+        let tiny = rect(-2.0, -3.0, 3.0, 2.0);
+        for direction in [
+            BubbleResizeDirection::TopLeft,
+            BubbleResizeDirection::BottomRight,
+        ] {
+            let collapsed =
+                resize_bubble_body(start, direction, (f64::NAN, f64::INFINITY), minimum, tiny);
+            assert_eq!((collapsed.width, collapsed.height), (0.0, 0.0));
+            assert!(collapsed.x.is_finite() && collapsed.y.is_finite());
+            let normalized = resize_bubble_body(
+                rect(f64::NAN, f64::INFINITY, f64::INFINITY, -1.0),
+                direction,
+                (f64::NEG_INFINITY, f64::NAN),
+                minimum,
+                visible,
+            );
+            assert!(normalized.x.is_finite() && normalized.y.is_finite());
+            assert!(normalized.width.is_finite() && normalized.height.is_finite());
+            assert!(normalized.x >= visible.x && right(normalized) <= right(visible));
+            assert!(normalized.y >= visible.y && top(normalized) <= top(visible));
+        }
+    }
+
+    #[test]
+    fn resize_hit_classifier_excludes_cutouts_tail_and_interior() {
+        use BubbleResizeDirection::*;
+        let body = rect(-100.0, -80.0, 120.0, 60.0);
+        for (point, expected) in [
+            ((-98.0, -50.0), Some(Left)),
+            ((18.0, -50.0), Some(Right)),
+            ((-40.0, -22.0), Some(Top)),
+            ((-40.0, -78.0), Some(Bottom)),
+            ((-91.0, -71.0), Some(BottomLeft)),
+            ((11.0, -71.0), Some(BottomRight)),
+            ((-91.0, -29.0), Some(TopLeft)),
+            ((11.0, -29.0), Some(TopRight)),
+            ((-40.0, -50.0), None),
+            ((-99.0, -79.0), None),
+            ((19.0, -21.0), None),
+            ((-101.0, -50.0), None),
+            ((-40.0, -85.0), None),
+            ((f64::NAN, -50.0), None),
+        ] {
+            assert_eq!(
+                bubble_resize_direction_at(body, point),
+                expected,
+                "{point:?}"
+            );
+        }
+        // Equal-distance edge collisions choose the left/bottom deterministically.
+        assert_eq!(
+            bubble_resize_direction_at(rect(0.0, 0.0, 12.0, 12.0), (6.0, 6.0)),
+            Some(BottomLeft)
+        );
+        assert_eq!(
+            bubble_resize_direction_at(rect(0.0, 0.0, 0.0, 12.0), (0.0, 6.0)),
+            None
+        );
     }
 
     #[test]
@@ -835,6 +1483,7 @@ mod tests {
 
         let expanded = resize_bubble_body(
             start_body,
+            BubbleResizeDirection::BottomRight,
             (80.0, 10.0),
             BubbleSize {
                 width: 80.0,

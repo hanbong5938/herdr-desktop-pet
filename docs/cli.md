@@ -1,6 +1,6 @@
 # Herdr Desktop Pet CLI contract
 
-This document describes the **unreleased source-checkout CLI**, not a promise about previously published `0.2.0` or beta binaries. The source package version is still `0.2.0`; use a build from this checkout for these commands. All examples assume `herdr-desktop-pet` resolves to that build and a running desktop daemon unless stated otherwise. JSON examples below show **fields and types**, not literal values to paste as identities. No CLI command here imports a menu image, edits a GUI draft, tests a GUI draft, or certifies physical keyboard/IME, accessibility, pointer, or pixel behavior.
+This is the **v0.3.0 CLI contract**; source manifests and documentation alone do not prove a public archive or installer. Earlier public v0.2.0/v0.2.1 and historical beta binaries do not gain these commands by changing documentation. Build this checkout with `--source` or confirm the exact non-draft v0.3.0 Release, complete assets and updated installer/formula before using a prebuilt; check the CLI version **and running daemon executable**. Examples assume `herdr-desktop-pet` resolves to that build and a running daemon unless stated otherwise. JSON examples show **fields and types**, not identities to paste. No command imports a menu image, edits/tests a GUI draft, or certifies physical keyboard/IME, accessibility, pointer or pixel behavior.
 
 ## English
 
