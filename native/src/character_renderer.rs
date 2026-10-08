@@ -1,11 +1,13 @@
 use crate::alpha::AlphaMask;
 use crate::animation::{ClipSet, FrameId, Playback};
 use crate::assets::{AssetPack, CharacterMetadata, FrameAsset, FrameRegions, ValidatedCharacter};
-use crate::behavior::{EffectKind, PresentationIntent};
+use crate::behavior::{EffectKind, PresentationIntent, PresentationViewport};
 use crate::bubble::{screen_rect_for_image_bounds, Rect};
 use crate::character_types::RendererToken;
 use crate::interaction::{legacy_region, Point, Region, RegionPolicy};
-use crate::rig_renderer::{PreparedRig, RigIntent, RigPreparation, RigRegion};
+use crate::rig_renderer::{
+    PreparedRig, RigIntent, RigPreparation, RigRegion, RigSpeechAnchorStatus,
+};
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
@@ -62,6 +64,22 @@ pub struct CharacterHit {
     pub opaque: bool,
     pub region: RegionPolicy,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpeechAnchorStatus {
+    Invalid,
+    TemporarilyUnavailable,
+    ReadyAnchorless,
+    ReadyAnchor(Rect),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeechAnchorSnapshot {
+    pub status: SpeechAnchorStatus,
+    pub backend_epoch: u64,
+    pub input_epoch: Option<u64>,
+    pub anchor_epoch: Option<u64>,
+    pub viewport: Option<PresentationViewport>,
+}
 
 impl PreparedCharacter {
     pub fn token(&self) -> &RendererToken {
@@ -84,14 +102,6 @@ impl PreparedCharacter {
             Self::Rig(rig) => rig.input_ready(),
         }
     }
-    /// Semantic rig pose/model generation, excluding continuously advancing
-    /// animation clocks. Pair with input_epoch and input_ready in UI caches.
-    pub fn speech_anchor_epoch(&self) -> Option<u64> {
-        match self {
-            Self::Png(_) => Some(1),
-            Self::Rig(rig) => rig.speech_anchor_epoch(),
-        }
-    }
 
     pub fn canvas_size(&self) -> (u32, u32) {
         match self {
@@ -107,60 +117,110 @@ impl PreparedCharacter {
         }
     }
 
-    /// Visible head bounds in AppKit screen coordinates (bottom-left origin).
-    /// Call when the presented frame or viewport changes, not per animation tick.
-    /// A PNG head is clipped to its alpha mask; when absent, visible artwork
-    /// provides a padding-free fallback. An unavailable input snapshot has no anchor.
-    pub fn speech_anchor(
+    /// Samples speech geometry and its native freshness/provenance together.
+    /// Ready anchors are AppKit screen coordinates with a bottom-left origin.
+    pub fn speech_anchor_snapshot(
         &self,
         frame: Option<FrameId>,
         rect: (f64, f64, f64, f64),
-    ) -> Option<Rect> {
+        viewport: PresentationViewport,
+    ) -> Result<SpeechAnchorSnapshot, String> {
+        let invalid = || SpeechAnchorSnapshot {
+            status: SpeechAnchorStatus::Invalid,
+            backend_epoch: self.token().backend_epoch,
+            input_epoch: None,
+            anchor_epoch: None,
+            viewport: None,
+        };
         let (x, y, width, height) = rect;
-        if ![x, y, width, height].iter().all(|value| value.is_finite())
+        if ![
+            x,
+            y,
+            width,
+            height,
+            viewport.width,
+            viewport.height,
+            viewport.backing_scale,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
             || width <= 0.0
             || height <= 0.0
+            || viewport.width <= 0.0
+            || viewport.height <= 0.0
+            || !(1.0..=4.0).contains(&viewport.backing_scale)
         {
-            return None;
+            return Ok(invalid());
         }
-        match self {
+        let (bounds, source_width, source_height, snapshot) = match self {
             Self::Png(png) => {
-                let bounds = png.frames.get(frame?.index())?.anchor_bounds?;
-                let scale = (width / f64::from(png.width)).min(height / f64::from(png.height));
-                let fitted_width = f64::from(png.width) * scale;
-                let fitted_height = f64::from(png.height) * scale;
-                let fitted = Rect {
-                    x: x + (width - fitted_width) * 0.5,
-                    y: y + (height - fitted_height) * 0.5,
-                    width: fitted_width,
-                    height: fitted_height,
+                let Some(frame) = frame.and_then(|id| png.frames.get(id.index())) else {
+                    return Ok(invalid());
                 };
-                screen_rect_for_image_bounds(fitted, bounds)
+                let snapshot = SpeechAnchorSnapshot {
+                    status: SpeechAnchorStatus::ReadyAnchorless,
+                    backend_epoch: self.token().backend_epoch,
+                    input_epoch: Some(1),
+                    anchor_epoch: Some(1),
+                    viewport: Some(viewport),
+                };
+                let Some(bounds) = frame.anchor_bounds else {
+                    return Ok(snapshot);
+                };
+                (bounds, png.width, png.height, snapshot)
             }
             Self::Rig(rig) => {
-                let (source_width, source_height) = rig.canvas_size();
-                let (x0, y0, x1, y1) = rig.speech_anchor()?;
-                let scale =
-                    (width / f64::from(source_width)).min(height / f64::from(source_height));
-                let fitted_width = f64::from(source_width) * scale;
-                let fitted_height = f64::from(source_height) * scale;
-                let fitted = Rect {
-                    x: x + (width - fitted_width) * 0.5,
-                    y: y + (height - fitted_height) * 0.5,
-                    width: fitted_width,
-                    height: fitted_height,
+                let observed = rig.speech_anchor_snapshot(viewport)?;
+                let snapshot = SpeechAnchorSnapshot {
+                    status: match observed.status {
+                        RigSpeechAnchorStatus::Invalid => SpeechAnchorStatus::Invalid,
+                        RigSpeechAnchorStatus::TemporarilyUnavailable => {
+                            SpeechAnchorStatus::TemporarilyUnavailable
+                        }
+                        RigSpeechAnchorStatus::ReadyAnchorless => {
+                            SpeechAnchorStatus::ReadyAnchorless
+                        }
+                        RigSpeechAnchorStatus::ReadyAnchor(_) => {
+                            SpeechAnchorStatus::ReadyAnchorless
+                        }
+                    },
+                    backend_epoch: observed.backend_epoch,
+                    input_epoch: observed.input_epoch,
+                    anchor_epoch: observed.anchor_epoch,
+                    viewport: observed.viewport,
                 };
-                screen_rect_for_image_bounds(
-                    fitted,
+                let RigSpeechAnchorStatus::ReadyAnchor((x0, y0, x1, y1)) = observed.status else {
+                    return Ok(snapshot);
+                };
+                (
                     (
-                        x0 / f64::from(source_width),
-                        y0 / f64::from(source_height),
-                        x1 / f64::from(source_width),
-                        y1 / f64::from(source_height),
+                        x0 / f64::from(observed.canvas_width),
+                        y0 / f64::from(observed.canvas_height),
+                        x1 / f64::from(observed.canvas_width),
+                        y1 / f64::from(observed.canvas_height),
                     ),
+                    observed.canvas_width,
+                    observed.canvas_height,
+                    snapshot,
                 )
             }
-        }
+        };
+        let scale = (width / f64::from(source_width)).min(height / f64::from(source_height));
+        let fitted_width = f64::from(source_width) * scale;
+        let fitted_height = f64::from(source_height) * scale;
+        let fitted = Rect {
+            x: x + (width - fitted_width) * 0.5,
+            y: y + (height - fitted_height) * 0.5,
+            width: fitted_width,
+            height: fitted_height,
+        };
+        let Some(anchor) = screen_rect_for_image_bounds(fitted, bounds) else {
+            return Ok(invalid());
+        };
+        Ok(SpeechAnchorSnapshot {
+            status: SpeechAnchorStatus::ReadyAnchor(anchor),
+            ..snapshot
+        })
     }
 
     pub fn preview_png(
@@ -626,12 +686,9 @@ fn union_display_bounds<'a>(masks: impl Iterator<Item = &'a AlphaMask>) -> (f64,
     let mut union: Option<(f64, f64, f64, f64)> = None;
     for (x0, y0, x1, y1) in masks.filter_map(AlphaMask::display_bounds) {
         union = Some(match union {
-            Some((left, top, right, bottom)) => (
-                left.min(x0),
-                top.min(y0),
-                right.max(x1),
-                bottom.max(y1),
-            ),
+            Some((left, top, right, bottom)) => {
+                (left.min(x0), top.min(y0), right.max(x1), bottom.max(y1))
+            }
             None => (x0, y0, x1, y1),
         });
     }

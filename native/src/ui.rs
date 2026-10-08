@@ -14,15 +14,15 @@ use crate::automation::{
     lock_automation, AutomationState, PendingReason, PresentationAction, PresentationCheckpoint,
     PresentationPatch, PresentationTarget, SharedAutomation, WindowFrame,
 };
-use crate::behavior::{
-    Behavior, EffectKind, Presentation, PresentationIntent, PresentationViewport, Reaction,
-};
+use crate::behavior::{Behavior, Presentation, PresentationIntent, PresentationViewport, Reaction};
 use crate::bubble::{
     place_bubble, place_standalone_bubble, BubbleGeometry, BubblePlacement, Rect as BubbleRect,
     BUBBLE_RADIUS, BUBBLE_WINDOW_INSET,
 };
 use crate::character_menu::{self, CharacterMenu, MenuCommand};
-use crate::character_renderer::{self, CharacterHit, PrepareBuilder, PreparedCharacter};
+use crate::character_renderer::{
+    self, CharacterHit, PrepareBuilder, PreparedCharacter, SpeechAnchorSnapshot, SpeechAnchorStatus,
+};
 use crate::character_selection::{CharacterSelection, SelectionError};
 use crate::character_service::PackService;
 use crate::character_types::{
@@ -750,17 +750,122 @@ struct AnchorKey {
     frame: Option<FrameId>,
     artwork: NSRect,
     backend_epoch: u64,
-    input_epoch: Option<u64>,
-    anchor_epoch: Option<u64>,
-    ready: bool,
-    phase: Phase,
-    effect: Option<EffectKind>,
+    viewport: PresentationViewport,
+    scale: f64,
+}
+
+#[derive(Clone, Copy)]
+struct VisualAnchor {
+    key: AnchorKey,
+    // Panel-relative so a move translates the last valid attachment.
+    relative: BubbleRect,
 }
 
 struct CachedAnchor {
     key: AnchorKey,
-    // Relative to the pet panel; dragging translates without resampling art.
+}
+
+impl AnchorKey {
+    fn same_transform(self, other: Self) -> bool {
+        self.backend_epoch == other.backend_epoch
+            && rect_nearly_equal(self.artwork, other.artwork)
+            && self.scale == other.scale
+            && self.viewport == other.viewport
+    }
+
+    fn same_query(self, other: Self) -> bool {
+        self.same_transform(other) && self.frame == other.frame
+    }
+}
+
+fn visual_relative_for(visual: Option<VisualAnchor>, current: AnchorKey) -> Option<BubbleRect> {
+    visual
+        .filter(|anchor| anchor.key.same_transform(current))
+        .map(|anchor| anchor.relative)
+}
+
+// Both the renderer refresh and lifecycle tests use this placement invalidation.
+// Comparing raw bounds misses a same-bounds return after a transform change;
+// comparing only effective bounds misses a discarded, previously applied visual.
+fn accept_visual_anchor(
+    previous: Option<VisualAnchor>,
+    key: AnchorKey,
+    status: SpeechAnchorStatus,
+    rig: bool,
+) -> (Option<VisualAnchor>, bool) {
+    let before = visual_relative_for(previous, key);
+    let selected = match status {
+        SpeechAnchorStatus::ReadyAnchor(relative)
+            if [relative.x, relative.y, relative.width, relative.height]
+                .iter()
+                .all(|value| value.is_finite())
+                && relative.width > 0.0
+                && relative.height > 0.0 =>
+        {
+            Some(VisualAnchor { key, relative })
+        }
+        SpeechAnchorStatus::TemporarilyUnavailable if rig => {
+            previous.filter(|old| old.key.same_transform(key))
+        }
+        SpeechAnchorStatus::Invalid
+        | SpeechAnchorStatus::ReadyAnchorless
+        | SpeechAnchorStatus::TemporarilyUnavailable
+        | SpeechAnchorStatus::ReadyAnchor(_) => None,
+    };
+    let invalidated =
+        before != visual_relative_for(selected, key) || (previous.is_some() && selected.is_none());
+    (selected, invalidated)
+}
+
+fn presentation_anchor_status(
+    result: &Result<SpeechAnchorSnapshot, String>,
+    key: AnchorKey,
+    panel_origin: NSPoint,
+    rig: bool,
+) -> SpeechAnchorStatus {
+    match result {
+        Ok(snapshot)
+            if snapshot.backend_epoch == key.backend_epoch
+                && snapshot.viewport == Some(key.viewport)
+                && (!rig
+                    || (snapshot.input_epoch.is_some() && snapshot.anchor_epoch.is_some())) =>
+        {
+            match snapshot.status {
+                SpeechAnchorStatus::ReadyAnchor(anchor) => {
+                    SpeechAnchorStatus::ReadyAnchor(BubbleRect {
+                        x: anchor.x - panel_origin.x,
+                        y: anchor.y - panel_origin.y,
+                        width: anchor.width,
+                        height: anchor.height,
+                    })
+                }
+                other => other,
+            }
+        }
+        _ => SpeechAnchorStatus::Invalid,
+    }
+}
+
+fn anchor_query_needed(cached: Option<&CachedAnchor>, key: AnchorKey, rig: bool) -> bool {
+    rig || !cached.is_some_and(|cached| cached.key.same_query(key))
+}
+
+fn placed_attached_bubble(
     relative: Option<BubbleRect>,
+    pet: BubbleRect,
+    body: (f64, f64),
+    visible: BubbleRect,
+    placement: BubblePlacement,
+) -> BubbleGeometry {
+    let anchor = relative
+        .map(|anchor| BubbleRect {
+            x: pet.x + anchor.x,
+            y: pet.y + anchor.y,
+            width: anchor.width,
+            height: anchor.height,
+        })
+        .unwrap_or(pet);
+    place_bubble(anchor, body, visible, placement)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -949,6 +1054,7 @@ struct Ui {
     bubble_appearance: BubbleAppearance,
     native_bubble_appearance: BubbleAppearance,
     cached_anchor: Option<CachedAnchor>,
+    visual_anchor: Option<VisualAnchor>,
     displayed_frame: Option<FrameId>,
     viewport: PresentationViewport,
     playback: Playback,
@@ -4074,6 +4180,7 @@ impl Ui {
             bubble_appearance,
             native_bubble_appearance: bubble_appearance,
             cached_anchor: None,
+            visual_anchor: None,
             displayed_frame: initial_frame,
             viewport: PresentationViewport {
                 width: BASE_WIDTH * scene.scale,
@@ -4816,6 +4923,7 @@ impl Ui {
                 self.clamp_panel_origin();
                 self.save_position_only(None);
                 self.cached_anchor = None;
+                self.visual_anchor = None;
                 self.displayed_frame = None;
                 let now = self.launch_time.elapsed();
                 self.playback.reset_pack(
@@ -4919,22 +5027,25 @@ impl Ui {
         }
     }
 
-    fn update_rig(&mut self, scene: &Scene) {
+    fn update_rig(&mut self, scene: &Scene) -> bool {
         if !matches!(&self.active, PreparedCharacter::Rig(_)) {
-            return;
+            return true;
         }
         let intent = self.presentation_intent(scene);
-        if let PreparedCharacter::Rig(rig) = &mut self.active {
-            rig.view()
-                .setFrame(self.display_geometry.canvas_frame(scene.scale));
-            rig.set_viewport_epoch(intent.viewport.epoch);
-            rig.set_visible(intent.visible);
-            let error = rig
-                .update(character_renderer::rig_intent(intent))
-                .err()
-                .or_else(|| rig.error());
-            self.packs.set_renderer_error(error);
-        }
+        let PreparedCharacter::Rig(rig) = &mut self.active else {
+            unreachable!();
+        };
+        rig.view()
+            .setFrame(self.display_geometry.canvas_frame(scene.scale));
+        rig.set_viewport_epoch(intent.viewport.epoch);
+        rig.set_visible(intent.visible);
+        let error = rig
+            .update(character_renderer::rig_intent(intent))
+            .err()
+            .or_else(|| rig.error());
+        let usable = error.is_none();
+        self.packs.set_renderer_error(error);
+        usable
     }
 
     fn character_hit(&self, point: NSPoint) -> Option<CharacterHit> {
@@ -5880,15 +5991,7 @@ impl Ui {
                 self.panel.orderOut(None);
             }
         }
-        if bubble_changed || presentation_changed || reset_position_changed || scale_changed {
-            self.update_bubble_frame_scene(&scene);
-        }
-        if self.bubble_placement_tracking_locked() || self.composer_marked() {
-            self.pending_bubble_scene = Some(scene.clone());
-            self.queue_language_apply();
-        } else if scene.bubble_visible {
-            self.show_bubble_panel();
-        } else {
+        if !scene.bubble_visible {
             if self.bubble_panel.isVisible() {
                 self.hide_bubble_panel();
             }
@@ -5919,12 +6022,23 @@ impl Ui {
         self.sync_status_menu(&scene);
         self.last_scene = scene.clone();
         self.did_present = true;
-        self.render(&scene, completed, None);
+        self.render(
+            &scene,
+            completed,
+            None,
+            bubble_changed || presentation_changed || reset_position_changed || scale_changed,
+        );
         self.publish_presentation_checkpoint(&scene);
         self.presentation_operation = None;
     }
 
-    fn render(&mut self, scene: &Scene, completed: bool, reaction: Option<Reaction>) {
+    fn render(
+        &mut self,
+        scene: &Scene,
+        completed: bool,
+        reaction: Option<Reaction>,
+        relayout_bubble: bool,
+    ) {
         let manipulating = self.interaction.is_active()
             || self.root.ivars().drag.get().is_some()
             || self.bubble_root.ivars().drag.get().is_some();
@@ -5977,10 +6091,19 @@ impl Ui {
             self.stop_timer();
         }
         self.apply_presentation(scene, rendered);
-        self.refresh_bubble_content(scene);
-        self.update_rig(scene);
-        if scene.visible && self.refresh_speech_anchor(scene) {
+        let content_changed = self.measure_bubble_content(scene);
+        let rig_usable = self.update_rig(scene);
+        let placement_invalidated = if !rig_usable {
+            self.cached_anchor = None;
+            self.visual_anchor.take().is_some()
+        } else {
+            scene.visible && self.refresh_speech_anchor(scene)
+        };
+        if relayout_bubble || content_changed || placement_invalidated {
             self.update_bubble_frame_scene(scene);
+        }
+        if scene.bubble_visible && !self.bubble_panel.isVisible() {
+            self.show_bubble_panel();
         }
         self.advance_bubble_fade();
         self.update_pointer_timer(scene);
@@ -6014,7 +6137,7 @@ impl Ui {
             stop_application(self.mtm);
             return;
         }
-        self.render(&scene, false, None);
+        self.render(&scene, false, None, false);
     }
 
     fn start_timer(&mut self) {
@@ -6087,14 +6210,21 @@ impl Ui {
             self.refresh();
             return;
         }
-        if scene.visible {
-            self.update_rig(&scene);
-            if self.refresh_speech_anchor(&scene) {
-                self.update_bubble_frame_scene(&scene);
+        let placement_invalidated = if scene.visible {
+            if self.update_rig(&scene) {
+                self.refresh_speech_anchor(&scene)
+            } else {
+                self.cached_anchor = None;
+                self.visual_anchor.take().is_some()
             }
-        }
+        } else {
+            false
+        };
         self.advance_bubble_fade();
         self.apply_pending_bubble_updates();
+        if placement_invalidated {
+            self.update_bubble_frame_scene(&scene);
+        }
         if self.reply_open && !self.composer_scroll.isHidden() {
             layout_composer(
                 &self.composer_view,
@@ -6537,9 +6667,9 @@ impl Ui {
             {
                 return;
             }
-            self.render(&current, completed, reaction);
+            self.render(&current, completed, reaction, false);
         } else {
-            self.render(&scene, completed, reaction);
+            self.render(&scene, completed, reaction, false);
         }
     }
 
@@ -7030,82 +7160,64 @@ impl Ui {
         self.apply_bubble_frame_scene(scene);
     }
 
-    fn refresh_speech_anchor(&mut self, scene: &Scene) -> bool {
-        let panel = self.panel.frame();
+    fn current_anchor_key(&self, scale: f64) -> AnchorKey {
         let artwork = if matches!(&self.active, PreparedCharacter::Png(_)) {
             self.image_view.frame()
         } else {
-            self.display_geometry.canvas_frame(scene.scale)
+            self.display_geometry.canvas_frame(scale)
         };
-        let key = AnchorKey {
+        AnchorKey {
             frame: self.displayed_frame,
             artwork,
             backend_epoch: self.active.token().backend_epoch,
-            input_epoch: self.active.input_epoch(),
-            anchor_epoch: self.active.speech_anchor_epoch(),
-            ready: self.active.input_ready(),
-            phase: scene.phase,
-            effect: self.presentation.effect.map(|effect| effect.kind),
-        };
-        if self.cached_anchor.as_ref().is_some_and(|cached| {
-            cached.key.frame == key.frame
-                && rect_nearly_equal(cached.key.artwork, key.artwork)
-                && cached.key.backend_epoch == key.backend_epoch
-                && cached.key.input_epoch == key.input_epoch
-                && cached.key.anchor_epoch == key.anchor_epoch
-                && cached.key.ready == key.ready
-                && cached.key.phase == key.phase
-                && cached.key.effect == key.effect
-        }) {
-            return false;
+            viewport: PresentationViewport {
+                width: artwork.size.width,
+                height: artwork.size.height,
+                backing_scale: self.panel.backingScaleFactor(),
+                epoch: self.viewport.epoch,
+            },
+            scale,
         }
-        let screen_artwork = BubbleRect {
-            x: panel.origin.x + artwork.origin.x,
-            y: panel.origin.y + artwork.origin.y,
-            width: artwork.size.width,
-            height: artwork.size.height,
-        };
-        let relative = self
-            .active
-            .speech_anchor(
-                self.displayed_frame,
-                (
-                    screen_artwork.x,
-                    screen_artwork.y,
-                    screen_artwork.width,
-                    screen_artwork.height,
-                ),
-            )
-            .map(|anchor| BubbleRect {
-                x: anchor.x - panel.origin.x,
-                y: anchor.y - panel.origin.y,
-                width: anchor.width,
-                height: anchor.height,
-            });
-        self.cached_anchor = Some(CachedAnchor { key, relative });
-        true
     }
 
-    fn attached_bubble_geometry(&self, placement: BubblePlacement) -> Option<BubbleGeometry> {
+    fn refresh_speech_anchor(&mut self, scene: &Scene) -> bool {
+        let key = self.current_anchor_key(scene.scale);
+        let rig = matches!(&self.active, PreparedCharacter::Rig(_));
+        if !anchor_query_needed(self.cached_anchor.as_ref(), key, rig) {
+            return false;
+        }
+        let panel = self.panel.frame();
+        let rect = (
+            panel.origin.x + key.artwork.origin.x,
+            panel.origin.y + key.artwork.origin.y,
+            key.artwork.size.width,
+            key.artwork.size.height,
+        );
+        let result = self
+            .active
+            .speech_anchor_snapshot(key.frame, rect, key.viewport);
+        let cacheable = result.as_ref().is_ok_and(|snapshot| {
+            snapshot.backend_epoch == key.backend_epoch && snapshot.viewport == Some(key.viewport)
+        });
+        let status = presentation_anchor_status(&result, key, panel.origin, rig);
+        let (selected, invalidated) = accept_visual_anchor(self.visual_anchor, key, status, rig);
+        self.visual_anchor = selected;
+        self.cached_anchor = (!rig && cacheable).then_some(CachedAnchor { key });
+        invalidated
+    }
+
+    fn attached_bubble_geometry(
+        &self,
+        placement: BubblePlacement,
+        scale: f64,
+    ) -> Option<BubbleGeometry> {
         let visible = panel_visible_frame(&self.panel, self.mtm)?;
         let pet = self.panel.frame();
         let body = self.bubble_layout.body_size;
-        Some(place_bubble(
-            self.cached_anchor
-                .as_ref()
-                .and_then(|cached| cached.relative)
-                .map(|anchor| BubbleRect {
-                    x: pet.origin.x + anchor.x,
-                    y: pet.origin.y + anchor.y,
-                    width: anchor.width,
-                    height: anchor.height,
-                })
-                .unwrap_or(BubbleRect {
-                    x: pet.origin.x,
-                    y: pet.origin.y,
-                    width: pet.size.width,
-                    height: pet.size.height,
-                }),
+        let relative = visual_relative_for(self.visual_anchor, self.current_anchor_key(scale));
+        Some(placed_attached_bubble(
+            relative,
+            bubble_rect(pet),
             (body.width.max(0.0), body.height.max(0.0)),
             bubble_rect(visible),
             placement,
@@ -7118,7 +7230,7 @@ impl Ui {
             return;
         }
         let geometry = if scene.visible {
-            self.attached_bubble_geometry(scene.bubble_placement)
+            self.attached_bubble_geometry(scene.bubble_placement, scene.scale)
         } else {
             let origin = preferred_standalone_origin(
                 if self.standalone_reset_pending || self.standalone_position_unsaved {
@@ -7131,7 +7243,7 @@ impl Ui {
                 self.bubble_geometry_attached,
             )
             .or_else(|| {
-                self.attached_bubble_geometry(scene.bubble_placement)
+                self.attached_bubble_geometry(scene.bubble_placement, scene.scale)
                     .map(bubble_body_origin)
             });
             origin.and_then(|origin| {
@@ -7183,6 +7295,12 @@ impl Ui {
         }
     }
     fn refresh_bubble_content(&mut self, scene: &Scene) {
+        if self.measure_bubble_content(scene) {
+            self.update_bubble_frame_scene(scene);
+        }
+    }
+
+    fn measure_bubble_content(&mut self, scene: &Scene) -> bool {
         let dialogue = self
             .effective_dialogue
             .dialogue_text(
@@ -7203,14 +7321,14 @@ impl Ui {
             {
                 self.defer_bubble_content();
             }
-            return;
+            return false;
         }
         if self.pending_bubble_content {
             self.bubble_content_dirty = true;
             self.pending_bubble_content = false;
         }
         if !self.bubble_content_dirty && self.dialogue_text == dialogue {
-            return;
+            return false;
         }
         let show_status = self.prefs.show_status_indicators();
         self.cards.set_composition_active(self.composer_marked());
@@ -7249,7 +7367,7 @@ impl Ui {
             && self.status_text == status
             && self.disconnect_text == disconnect
         {
-            return;
+            return false;
         }
         let primary = if show_status {
             dialogue.to_owned()
@@ -7300,10 +7418,16 @@ impl Ui {
         self.dialogue
             .setStringValue(&NSString::from_str(&self.bubble_layout.secondary));
         self.bubble_content_dirty = false;
-        self.remeasure_bubble(scene);
+        self.measure_bubble(scene);
+        true
     }
 
     fn remeasure_bubble(&mut self, scene: &Scene) {
+        self.measure_bubble(scene);
+        self.update_bubble_frame_scene(scene);
+    }
+
+    fn measure_bubble(&mut self, scene: &Scene) {
         let primary = self.bubble_layout.primary.clone();
         let primary_font = NSFont::systemFontOfSize(BUBBLE_PRIMARY_FONT_SIZE);
         let secondary_font = NSFont::systemFontOfSize(BUBBLE_SECONDARY_FONT_SIZE);
@@ -7626,7 +7750,7 @@ impl Ui {
             BubbleMode::Expanded => NSSize::new(expanded_width, expanded_height),
         };
         self.bubble_layout_dirty = true;
-        self.update_bubble_frame_scene(scene);
+        // The caller commits this measurement with its current visual anchor.
     }
 
     fn layout_bubble_children(&mut self) {
@@ -9586,6 +9710,411 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1.0e-9
+    }
+
+    fn test_anchor_key() -> AnchorKey {
+        AnchorKey {
+            frame: None,
+            artwork: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 350.0)),
+            backend_epoch: 11,
+            viewport: PresentationViewport {
+                width: 400.0,
+                height: 350.0,
+                backing_scale: 2.0,
+                epoch: 7,
+            },
+            scale: 1.0,
+        }
+    }
+
+    fn test_head() -> BubbleRect {
+        BubbleRect {
+            x: 100.0,
+            y: 60.0,
+            width: 180.0,
+            height: 230.0,
+        }
+    }
+
+    fn test_panel() -> BubbleRect {
+        BubbleRect {
+            x: 300.0,
+            y: 180.0,
+            width: 400.0,
+            height: 350.0,
+        }
+    }
+
+    fn test_visible() -> BubbleRect {
+        BubbleRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+        }
+    }
+
+    #[test]
+    fn rig_transient_keeps_compatible_visual_and_retries_same_generation() {
+        let key = test_anchor_key();
+        let (initial, changed) = accept_visual_anchor(
+            None,
+            key,
+            SpeechAnchorStatus::ReadyAnchor(test_head()),
+            true,
+        );
+        assert!(changed);
+        let body = (320.0, 180.0);
+        let initial_geometry = placed_attached_bubble(
+            visual_relative_for(initial, key),
+            test_panel(),
+            body,
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_eq!(initial_geometry.side, Some(crate::bubble::BubbleSide::Left));
+        let (retained, changed) = accept_visual_anchor(
+            initial,
+            key,
+            SpeechAnchorStatus::TemporarilyUnavailable,
+            true,
+        );
+        assert!(!changed);
+        assert_eq!(
+            placed_attached_bubble(
+                visual_relative_for(retained, key),
+                test_panel(),
+                body,
+                test_visible(),
+                BubblePlacement::Left,
+            ),
+            initial_geometry,
+        );
+        assert!(anchor_query_needed(Some(&CachedAnchor { key }), key, true));
+        let new_head = BubbleRect {
+            x: 120.0,
+            y: 78.0,
+            width: 165.0,
+            height: 205.0,
+        };
+        let (recovered, changed) = accept_visual_anchor(
+            retained,
+            key,
+            SpeechAnchorStatus::ReadyAnchor(new_head),
+            true,
+        );
+        assert!(changed);
+        let recovered_geometry = placed_attached_bubble(
+            visual_relative_for(recovered, key),
+            test_panel(),
+            (280.0, 140.0),
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_eq!(
+            recovered_geometry.side,
+            Some(crate::bubble::BubbleSide::Left)
+        );
+        assert_ne!(recovered_geometry, initial_geometry);
+        assert_eq!(
+            recovered_geometry,
+            placed_attached_bubble(
+                Some(new_head),
+                test_panel(),
+                (280.0, 140.0),
+                test_visible(),
+                BubblePlacement::Left,
+            ),
+        );
+        let (anchorless, changed) =
+            accept_visual_anchor(recovered, key, SpeechAnchorStatus::ReadyAnchorless, true);
+        assert!(changed && anchorless.is_none());
+        assert_eq!(
+            placed_attached_bubble(
+                None,
+                test_panel(),
+                body,
+                test_visible(),
+                BubblePlacement::Left
+            )
+            .side,
+            Some(crate::bubble::BubbleSide::Above),
+        );
+    }
+
+    #[test]
+    fn equal_bounds_png_recovery_invalidates_fallback_after_backing_change() {
+        let key = AnchorKey {
+            frame: Some(FrameId::new(0)),
+            ..test_anchor_key()
+        };
+        let (old, _) = accept_visual_anchor(
+            None,
+            key,
+            SpeechAnchorStatus::ReadyAnchor(test_head()),
+            false,
+        );
+        let body = (320.0, 180.0);
+        let attached = placed_attached_bubble(
+            visual_relative_for(old, key),
+            test_panel(),
+            body,
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_eq!(attached.side, Some(crate::bubble::BubbleSide::Left));
+        let current = AnchorKey {
+            viewport: PresentationViewport {
+                backing_scale: 1.0,
+                ..key.viewport
+            },
+            ..key
+        };
+        assert_eq!(visual_relative_for(old, current), None);
+        let fallback = placed_attached_bubble(
+            visual_relative_for(old, current),
+            test_panel(),
+            body,
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_eq!(fallback.side, Some(crate::bubble::BubbleSide::Above));
+        let (restored, invalidated) = accept_visual_anchor(
+            old,
+            current,
+            SpeechAnchorStatus::ReadyAnchor(test_head()),
+            false,
+        );
+        assert!(invalidated);
+        let final_geometry = placed_attached_bubble(
+            visual_relative_for(restored, current),
+            test_panel(),
+            body,
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_eq!(final_geometry, attached);
+        assert_eq!(final_geometry.side, Some(crate::bubble::BubbleSide::Left));
+        assert_ne!(final_geometry.window, fallback.window);
+        assert_ne!(final_geometry.tail, fallback.tail);
+        // A later PNG frame with no usable head must clear the restored
+        // attachment instead of replaying the cached geometry.
+        let next_frame = AnchorKey {
+            frame: Some(FrameId::new(1)),
+            ..current
+        };
+        assert!(anchor_query_needed(
+            Some(&CachedAnchor { key: current }),
+            next_frame,
+            false,
+        ));
+        let (missing, invalidated) = accept_visual_anchor(
+            restored,
+            next_frame,
+            SpeechAnchorStatus::ReadyAnchorless,
+            false,
+        );
+        assert!(invalidated);
+        assert_eq!(
+            placed_attached_bubble(
+                visual_relative_for(missing, next_frame),
+                test_panel(),
+                body,
+                test_visible(),
+                BubblePlacement::Left,
+            ),
+            fallback,
+        );
+    }
+
+    #[test]
+    fn incompatible_visual_loss_invalidates_even_when_current_bounds_are_both_absent() {
+        let key = test_anchor_key();
+        let (valid, _) = accept_visual_anchor(
+            None,
+            key,
+            SpeechAnchorStatus::ReadyAnchor(test_head()),
+            true,
+        );
+        let changed_keys = [
+            AnchorKey {
+                backend_epoch: 12,
+                ..key
+            },
+            AnchorKey {
+                artwork: NSRect::new(NSPoint::new(5.0, 0.0), key.artwork.size),
+                ..key
+            },
+            AnchorKey {
+                viewport: PresentationViewport {
+                    epoch: 9,
+                    ..key.viewport
+                },
+                ..key
+            },
+            AnchorKey {
+                viewport: PresentationViewport {
+                    backing_scale: 1.0,
+                    epoch: 8,
+                    ..key.viewport
+                },
+                ..key
+            },
+            AnchorKey { scale: 1.25, ..key },
+        ];
+        let applied = placed_attached_bubble(
+            visual_relative_for(valid, key),
+            test_panel(),
+            (320.0, 180.0),
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        for current in changed_keys {
+            assert_eq!(visual_relative_for(valid, current), None);
+            let (selected, invalidated) = accept_visual_anchor(
+                valid,
+                current,
+                SpeechAnchorStatus::TemporarilyUnavailable,
+                true,
+            );
+            assert!(invalidated && selected.is_none());
+            let fallback = placed_attached_bubble(
+                visual_relative_for(selected, current),
+                test_panel(),
+                (320.0, 180.0),
+                test_visible(),
+                BubblePlacement::Left,
+            );
+            assert_eq!(fallback.side, Some(crate::bubble::BubbleSide::Above));
+            assert_ne!(fallback, applied);
+        }
+    }
+
+    #[test]
+    fn terminal_absence_invalid_geometry_and_errors_clear_but_move_translates_visual() {
+        let key = test_anchor_key();
+        let (valid, _) = accept_visual_anchor(
+            None,
+            key,
+            SpeechAnchorStatus::ReadyAnchor(test_head()),
+            true,
+        );
+        for status in [
+            SpeechAnchorStatus::Invalid,
+            SpeechAnchorStatus::ReadyAnchorless,
+            SpeechAnchorStatus::ReadyAnchor(BubbleRect {
+                width: f64::NAN,
+                ..test_head()
+            }),
+            SpeechAnchorStatus::ReadyAnchor(BubbleRect {
+                height: 0.0,
+                ..test_head()
+            }),
+        ] {
+            let (removed, invalidated) = accept_visual_anchor(valid, key, status, true);
+            assert!(removed.is_none() && invalidated);
+        }
+        let (png_missing, invalidated) = accept_visual_anchor(
+            valid,
+            key,
+            SpeechAnchorStatus::TemporarilyUnavailable,
+            false,
+        );
+        assert!(png_missing.is_none() && invalidated);
+        let (no_history, invalidated) =
+            accept_visual_anchor(None, key, SpeechAnchorStatus::TemporarilyUnavailable, true);
+        assert!(no_history.is_none() && !invalidated);
+        let moved = BubbleRect {
+            x: test_panel().x + 75.0,
+            y: test_panel().y + 40.0,
+            ..test_panel()
+        };
+        let before = placed_attached_bubble(
+            visual_relative_for(valid, key),
+            test_panel(),
+            (320.0, 180.0),
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        let (retained, invalidated) =
+            accept_visual_anchor(valid, key, SpeechAnchorStatus::TemporarilyUnavailable, true);
+        assert!(!invalidated);
+        let after = placed_attached_bubble(
+            visual_relative_for(retained, key),
+            moved,
+            (320.0, 180.0),
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_eq!(before.side, after.side);
+        assert!(close(after.window.x - before.window.x, 75.0));
+        assert!(close(after.window.y - before.window.y, 40.0));
+        let changed_body = placed_attached_bubble(
+            visual_relative_for(retained, key),
+            moved,
+            (280.0, 140.0),
+            test_visible(),
+            BubblePlacement::Left,
+        );
+        assert_ne!(changed_body.body, after.body);
+    }
+
+    #[test]
+    fn snapshot_provenance_and_error_select_authoritative_fallback() {
+        let key = test_anchor_key();
+        let origin = NSPoint::new(test_panel().x, test_panel().y);
+        let snapshot = SpeechAnchorSnapshot {
+            status: SpeechAnchorStatus::ReadyAnchor(BubbleRect {
+                x: origin.x + test_head().x,
+                y: origin.y + test_head().y,
+                ..test_head()
+            }),
+            backend_epoch: key.backend_epoch,
+            input_epoch: Some(2),
+            anchor_epoch: Some(0),
+            viewport: Some(key.viewport),
+        };
+        let status = presentation_anchor_status(&Ok(snapshot), key, origin, true);
+        assert_eq!(status, SpeechAnchorStatus::ReadyAnchor(test_head()));
+        let (valid, _) = accept_visual_anchor(None, key, status, true);
+        let transient = SpeechAnchorSnapshot {
+            status: SpeechAnchorStatus::TemporarilyUnavailable,
+            input_epoch: Some(3),
+            anchor_epoch: Some(4),
+            ..snapshot
+        };
+        let status = presentation_anchor_status(&Ok(transient), key, origin, true);
+        let (retained, invalidated) = accept_visual_anchor(valid, key, status, true);
+        assert!(!invalidated);
+        assert_eq!(visual_relative_for(retained, key), Some(test_head()));
+        for result in [
+            Err("native snapshot failure".to_owned()),
+            Ok(SpeechAnchorSnapshot {
+                backend_epoch: key.backend_epoch + 1,
+                ..transient
+            }),
+            Ok(SpeechAnchorSnapshot {
+                viewport: None,
+                ..transient
+            }),
+            Ok(SpeechAnchorSnapshot {
+                input_epoch: None,
+                ..transient
+            }),
+        ] {
+            let status = presentation_anchor_status(&result, key, origin, true);
+            assert_eq!(status, SpeechAnchorStatus::Invalid);
+            let (removed, invalidated) = accept_visual_anchor(valid, key, status, true);
+            assert!(removed.is_none() && invalidated);
+            let fallback = placed_attached_bubble(
+                visual_relative_for(removed, key),
+                test_panel(),
+                (320.0, 180.0),
+                test_visible(),
+                BubblePlacement::Left,
+            );
+            assert_eq!(fallback.side, Some(crate::bubble::BubbleSide::Above));
+        }
     }
 
     #[test]
