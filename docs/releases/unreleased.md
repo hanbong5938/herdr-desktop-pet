@@ -1,8 +1,8 @@
 # Herdr Desktop Pet Unreleased (historical source and beta evidence)
 
-[Versions](README.md) · [v0.3.1 prepared stable note](v0.3.1.md) · [0.3 upgrade guidance](0.3.md) · [Versioning and compatibility](policy.md)
+[Versions](README.md) · [v0.3.2 prepared stable note](v0.3.2.md) · [0.3 upgrade guidance](0.3.md) · [Versioning and compatibility](policy.md)
 
-**Historical record, not the current release note or public v0.3.1 proof.** The v0.2.0 native promotion and v0.2.1 Arin compatibility patch remain their own frozen releases. The later session search/order, CLI automation, drafts, resizing, browser/official Download & Apply, protocol-2 updater and worker-only JIT changes are now selected in the prepared v0.3.1 stable source. Evidence below was observed in the named earlier source snapshots and isolated builds, not in a newly verified integrated/tagged/published v0.3.1 binary. Follow the [v0.3.1 note](v0.3.1.md) and [bilingual migration](0.3.md); the Release catalog owns public status.
+**Historical record, not the current release note or public v0.3.2 proof.** The v0.2.0 native promotion and v0.2.1 Arin compatibility patch remain their own frozen releases. The later session search/order, CLI automation, drafts, resizing, browser/official Download & Apply, protocol-2 updater and worker-only JIT changes are now selected in the prepared v0.3.2 stable source. Evidence below was observed in the named earlier source snapshots and isolated builds, not in a newly verified integrated/tagged/published v0.3.2 binary. Follow the [v0.3.2 note](v0.3.2.md) and [bilingual migration](0.3.md); the Release catalog owns public status.
 
 | Source | What it provides |
 | --- | --- |
@@ -13,7 +13,7 @@
 | Stable v0.2.0 source/release contract | `main` source contains the promoted native groups and stable manifests; `bash scripts/install.sh --source` builds them, and the default/`--prebuilt` path pins stable v0.2.0 |
 | Prepublication preparation snapshot for `beta/0.3.0-beta.1` | Session search, running-first and ordering plus unreleased corrections; new-minor beta source beyond stable v0.2.0 and all published 0.2.0 betas. This note alone does not prove later publication or real GUI acceptance; check the live Release catalog and actual artifact |
 
-The original branch name and commit identify implementation history, not an installation prerequisite. Follow the bilingual root [English](../../readme.md) / [Korean](../../readme.ko.md) runtime guides. Stop an older daemon before changing binaries; `status` must show the actual executable/app version, since CLI `--version` cannot prove which daemon was reused. For v0.3.1 follow [current bilingual upgrade guidance](0.3.md), not the historical [local-checkout guide](../migrations/unreleased.md).
+The original branch name and commit identify implementation history, not an installation prerequisite. Follow the bilingual root [English](../../readme.md) / [Korean](../../readme.ko.md) runtime guides. Stop an older daemon before changing binaries; `status` must show the actual executable/app version, since CLI `--version` cannot prove which daemon was reused. For v0.3.2 follow [current bilingual upgrade guidance](0.3.md), not the historical [local-checkout guide](../migrations/unreleased.md).
 
 ## Historical protocol-2 updater source record / 과거 protocol-2 업데이트 소스 기록
 

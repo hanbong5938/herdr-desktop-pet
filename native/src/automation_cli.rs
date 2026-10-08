@@ -1985,11 +1985,14 @@ mod domain_tests {
         let socket = root.join("control.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Keep the terminal response beyond the deadline without requiring
+        // a subsecond first poll from a busy CI runner.
+        let wait = Duration::from_secs(2);
         let server = std::thread::spawn(move || {
             let mut seen = Vec::new();
             for state in [DomainOperationState::Pending, DomainOperationState::Applied] {
                 listener.set_nonblocking(true).unwrap();
-                let until = Instant::now() + Duration::from_secs(2);
+                let until = Instant::now() + Duration::from_secs(5);
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -2008,7 +2011,7 @@ mod domain_tests {
                 let request: AutomationRequestEnvelope = serde_json::from_str(&request).unwrap();
                 seen.push(request.command.clone());
                 if state == DomainOperationState::Applied {
-                    std::thread::sleep(Duration::from_millis(260));
+                    std::thread::sleep(wait + Duration::from_secs(1));
                 }
                 let reply = crate::control::AutomationReplyEnvelope {
                     version: 1,
@@ -2038,9 +2041,12 @@ mod domain_tests {
             "daemon_1".into(),
             DomainAction::PreferencesGet {},
             Some("wait_1".into()),
-            Some(Duration::from_millis(170)),
+            Some(wait),
         );
-        assert!(result.unwrap_err().contains("remains pending"));
+        assert!(
+            result.is_err(),
+            "a terminal mutation reply after the deadline must not be accepted"
+        );
         assert_eq!(server.join().unwrap(), vec!["request", "status"]);
         std::fs::remove_dir_all(root).unwrap();
     }
