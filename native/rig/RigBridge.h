@@ -73,6 +73,24 @@ typedef struct {
     double y1;
 } HerdrRigAnchor;
 
+/* A single coherent main-thread observation of speech geometry and its owner.
+ * 0 = invalid, 1 = temporarily unavailable, 2 = ready without visible
+ * geometry, 3 = ready with a source-canvas anchor. */
+typedef struct {
+    uint32_t status;
+    uint32_t reserved;
+    uint64_t backend_epoch;
+    uint64_t input_epoch;
+    uint64_t anchor_epoch;
+    uint64_t viewport_epoch;
+    uint32_t canvas_width;
+    uint32_t canvas_height;
+    double viewport_width;
+    double viewport_height;
+    double backing_scale;
+    HerdrRigAnchor anchor;
+} HerdrRigSpeechAnchorSnapshot;
+
 /* Every error returned through an out_error is allocated by strdup and must be
  * released with herdr_rig_error_free.  A successful call always writes NULL. */
 void herdr_rig_error_free(char *error);
@@ -103,10 +121,11 @@ void herdr_rig_set_visible(HerdrRigHandle handle, uint32_t visible);
 uint64_t herdr_rig_input_epoch(HerdrRigHandle handle);
 /* Freshness gates new semantic actions without discarding a same-owner capture. */
 uint32_t herdr_rig_input_ready(HerdrRigHandle handle);
-uint64_t herdr_rig_speech_anchor_epoch(HerdrRigHandle handle);
+int32_t herdr_rig_speech_anchor_snapshot(HerdrRigHandle handle,
+                                         HerdrRigSpeechAnchorSnapshot *out_snapshot,
+                                         char **out_error);
 int32_t herdr_rig_hit(HerdrRigHandle handle, double x, double y,
                       HerdrRigHit *out_hit, uint32_t *out_has_hit, char **out_error);
-uint32_t herdr_rig_speech_anchor(HerdrRigHandle handle, HerdrRigAnchor *out_anchor);
 /* Cached union across every reachable pose/model, normalized source-canvas
  * coordinates from the top-left. Zero means there is no visible envelope. */
 uint32_t herdr_rig_display_bounds(HerdrRigHandle handle, HerdrRigAnchor *out_bounds);

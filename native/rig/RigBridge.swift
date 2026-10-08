@@ -196,9 +196,25 @@ public func herdrRigInputReady(_ handle: HerdrRigHandle?) -> UInt32 {
     bridgeHost(handle)?.inputReady() == true ? 1 : 0
 }
 
-@_cdecl("herdr_rig_speech_anchor_epoch")
-public func herdrRigSpeechAnchorEpoch(_ handle: HerdrRigHandle?) -> UInt64 {
-    bridgeHost(handle)?.speechAnchorEpoch() ?? 0
+@_cdecl("herdr_rig_speech_anchor_snapshot")
+public func herdrRigSpeechAnchorSnapshot(
+    _ handle: HerdrRigHandle?,
+    _ output: UnsafeMutablePointer<HerdrRigSpeechAnchorSnapshot>?,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32 {
+    clearError(error)
+    output?.pointee = HerdrRigSpeechAnchorSnapshot()
+    guard let host = bridgeHost(handle), let output else {
+        assignError(error, "rig speech anchor snapshot received an invalid handle or output")
+        return rigBridgeInvalid
+    }
+    do {
+        output.pointee = try host.speechAnchorSnapshot()
+        return rigBridgeOK
+    } catch let failure {
+        assignError(error, failure)
+        return rigBridgeInvalid
+    }
 }
 
 @_cdecl("herdr_rig_hit")
@@ -223,15 +239,6 @@ public func herdrRigHit(
     return rigBridgeOK
 }
 
-@_cdecl("herdr_rig_speech_anchor")
-public func herdrRigSpeechAnchor(
-    _ handle: HerdrRigHandle?,
-    _ output: UnsafeMutablePointer<HerdrRigAnchor>?
-) -> UInt32 {
-    guard let host = bridgeHost(handle), let output, let anchor = host.speechAnchor() else { return 0 }
-    output.pointee = anchor
-    return 1
-}
 
 @_cdecl("herdr_rig_display_bounds")
 public func herdrRigDisplayBounds(
