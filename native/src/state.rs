@@ -1,18 +1,65 @@
+use crate::automation::{
+    PresentationAction, PresentationPatch, PresentationTarget, SessionIdentity, SharedAutomation,
+};
 use crate::bubble::BubblePlacement;
 use crate::herdr_protocol::{AgentRecord, AgentStatus};
 use crate::lifecycle::LifecycleSettings;
 use crate::session::{CompletionObservation, OutcomeObservation};
 use crate::session_view::{
-    CardDisplay, PromptTarget, PromptTargetError, SessionKey, SessionListOptions, SessionSnapshot,
-    SessionStore, SessionView, WorktreeRemoveTarget, WorktreeRemoveTargetError,
+    CardDisplay, PromptTarget, PromptTargetError, SessionKey, SessionListOptions,
+    SessionPageCursor, SessionPageError, SessionPageRequest, SessionSnapshot, SessionStore,
+    SessionView, WorktreeRemoveTarget, WorktreeRemoveTargetError,
 };
 use crate::sources::{remote_machine_id, remote_source, ObservationPreferences, SourceCatalog};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MAX_COMPLETIONS: usize = 64;
 const COMPLETION_MAX_AGE: Duration = Duration::from_secs(30);
+/// Only export stored, displayable metadata. In particular, raw source paths,
+/// full working directories, and worktree root/checkout paths are not session wire data.
+fn automation_session_row(instance_id: &str, view: &SessionView) -> Value {
+    use crate::agent_outcome::AgentOutcome;
+    let status = match view.status {
+        AgentStatus::Idle => "idle",
+        AgentStatus::Working => "working",
+        AgentStatus::Blocked => "blocked",
+        AgentStatus::Done => "done",
+        AgentStatus::Unknown => "unknown",
+    };
+    let outcome = view.outcome.map(|outcome| match outcome {
+        AgentOutcome::Running => "running",
+        AgentOutcome::Succeeded => "succeeded",
+        AgentOutcome::Failed => "failed",
+        AgentOutcome::Cancelled => "cancelled",
+    });
+    json!({
+        "key": {
+            "instance_id": instance_id,
+            "source_id": view.key.source_id,
+            "generation": view.key.generation,
+            "terminal_id": view.key.terminal_id,
+        },
+        "source_label": view.source_label,
+        "is_local": view.is_local,
+        "pane_id": view.pane_id,
+        "availability": view.availability,
+        "status": status,
+        "outcome": outcome,
+        "display_status": view.display_status(),
+        "metadata": {
+            "title": view.metadata.title,
+            "agent": view.metadata.agent,
+            "workspace_id": view.metadata.workspace_id,
+            "workspace_label": view.metadata.workspace_label,
+            "tab_id": view.metadata.tab_id,
+            "tab_label": view.metadata.tab_label,
+        },
+    })
+}
 
 fn completion_is_fresh(observed_at: Instant, now: Instant) -> bool {
     now.checked_duration_since(observed_at)
@@ -130,12 +177,14 @@ pub(crate) struct SessionStatusUpdate<'a> {
     pub(crate) observed_at: Instant,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct SourceState {
     generation: u64,
     connected: bool,
     coherent: bool,
     counts: SourceCounts,
+    // Populated only by a complete, accepted snapshot for this generation.
+    pane_ids: Option<Arc<[String]>>,
 }
 
 #[derive(Debug)]
@@ -147,6 +196,7 @@ pub struct AppState {
     bubble_placement: BubblePlacement,
     scale: f64,
     reset_position_revision: u64,
+    automation: Option<SharedAutomation>,
     shutdown: bool,
     lifecycle_settings: LifecycleSettings,
     ui_ready: bool,
@@ -178,6 +228,7 @@ impl AppState {
             bubble_placement: BubblePlacement::default(),
             scale: DEFAULT_SCALE,
             reset_position_revision: 0,
+            automation: None,
             shutdown: false,
             lifecycle_settings: LifecycleSettings {
                 auto_start: true,
@@ -353,6 +404,89 @@ impl AppState {
         self.session_store.view_for_key(key)
     }
 
+    /// Paginate retained rows without the GUI's snapshot cap or selection state.
+    pub(crate) fn automation_session_page(
+        &self,
+        request: &SessionPageRequest,
+    ) -> Result<Value, String> {
+        let automation = self.automation.as_ref().ok_or("automation unavailable")?;
+        let instance = crate::automation::lock_automation(automation)
+            .instance()
+            .to_owned();
+        if request.instance_id != instance {
+            return Err("daemon instance changed".into());
+        }
+        let revision = self.session_store.revision();
+        let after = match request.cursor.as_ref() {
+            Some(cursor) => {
+                if cursor.instance_id != instance {
+                    return Err("cursor daemon instance changed".into());
+                }
+                if cursor.revision != revision {
+                    return Err("session revision changed".into());
+                }
+                if cursor.filter != request.filter {
+                    return Err("cursor filter changed".into());
+                }
+                Some(&cursor.position)
+            }
+            None => None,
+        };
+        let page = self
+            .session_store
+            .page(request.filter, revision, after, request.limit)
+            .map_err(|error| match error {
+                SessionPageError::StaleRevision => "session revision changed",
+                SessionPageError::InvalidLimit => "session page limit must be between 1 and 128",
+            })?;
+        let next_cursor = page.next_cursor.map(|position| SessionPageCursor {
+            instance_id: instance.clone(),
+            revision: page.revision,
+            filter: request.filter,
+            position,
+        });
+        let rows: Vec<_> = page
+            .rows
+            .iter()
+            .map(|view| automation_session_row(&instance, view))
+            .collect();
+        Ok(json!({
+            "instance_id": instance,
+            "revision": page.revision,
+            "filter": request.filter,
+            "rows": rows,
+            "total": page.total,
+            "matched": page.matched,
+            "status_summary": page.status_summary,
+            "next_cursor": next_cursor,
+        }))
+    }
+
+    /// Resolve an exact identity, including a cached offline row, without
+    /// consulting or mutating GUI selection.
+    pub(crate) fn automation_session_detail(
+        &self,
+        identity: &SessionIdentity,
+    ) -> Result<Value, String> {
+        let automation = self.automation.as_ref().ok_or("automation unavailable")?;
+        let instance = crate::automation::lock_automation(automation)
+            .instance()
+            .to_owned();
+        if identity.instance_id != instance {
+            return Err("daemon instance changed".into());
+        }
+        let key = SessionKey {
+            source_id: identity.source_id,
+            generation: identity.generation,
+            terminal_id: identity.terminal_id.clone(),
+        };
+        let view = self
+            .session_store
+            .view_for_key(&key)
+            .ok_or("stale session key")?;
+        Ok(automation_session_row(&instance, &view))
+    }
+
     pub(crate) fn prompt_target(
         &self,
         key: &SessionKey,
@@ -403,6 +537,39 @@ impl AppState {
             return Err(WorktreeRemoveTargetError::Offline);
         }
         Ok(target)
+    }
+    /// The watcher supplies complete pane IDs independently of agent rows:
+    /// an exited agent can leave a shell pane behind. A reconnect can prove
+    /// absence only if the registered source ID/path is unchanged and its new
+    /// generation has provided another coherent full snapshot.
+    pub(crate) fn automation_worktree_observation(
+        &self,
+        target: &WorktreeRemoveTarget,
+    ) -> Option<Value> {
+        if self.shutdown
+            || remote_machine_id(&target.source).is_some()
+            || !std::path::Path::new(&target.source).is_absolute()
+            || !self.includes_source(&target.source)
+        {
+            return None;
+        }
+        let source = self.sources.get(&target.source)?;
+        if !source.connected || !source.coherent || source.generation < target.key.generation {
+            return None;
+        }
+        let panes = source.pane_ids.as_ref()?;
+        let session_absent = self.session_store.worktree_session_absent(
+            &target.source,
+            target.key.source_id,
+            source.generation,
+            &target.key.terminal_id,
+        )?;
+        Some(json!({
+            "source_id": target.key.source_id,
+            "generation": source.generation,
+            "pane_absent": !panes.iter().any(|id| id == &target.pane_id),
+            "session_absent": session_absent,
+        }))
     }
 
     pub(crate) fn prompt_available(
@@ -500,40 +667,114 @@ impl AppState {
         self.outcomes.push_back(observation);
     }
 
+    pub(crate) fn automation(&self) -> Option<SharedAutomation> {
+        self.automation.clone()
+    }
+
+    pub(crate) fn set_automation(&mut self, automation: SharedAutomation) {
+        self.automation = Some(automation);
+    }
+
+    pub(crate) fn apply_presentation(
+        &mut self,
+        action: &PresentationAction,
+    ) -> Result<PresentationTarget, String> {
+        let target = PresentationTarget::from_scene(&self.scene()).applying(action)?;
+        self.visible = target.visible;
+        self.passthrough = target.passthrough;
+        self.alpha_passthrough = target.alpha_passthrough;
+        self.bubble_visible = target.bubble_visible;
+        self.bubble_placement = target.bubble_placement;
+        self.scale = target.scale;
+        self.reset_position_revision = target.reset_position_revision;
+        Ok(target)
+    }
+
+    fn presentation_changed(&self) {
+        if let Some(automation) = &self.automation {
+            crate::automation::lock_automation(automation)
+                .ui_change(PresentationTarget::from_scene(&self.scene()));
+        }
+    }
+
     /// Restore an interactive character without changing the bubble or other settings.
     pub(crate) fn recover_interaction(&mut self) {
-        self.visible = true;
-        self.passthrough = false;
+        self.apply_presentation(&PresentationAction::Set {
+            patch: PresentationPatch {
+                visible: Some(true),
+                passthrough: Some(false),
+                ..PresentationPatch::default()
+            },
+        })
+        .expect("recovery target is valid");
+        self.presentation_changed();
     }
 
     pub fn apply_control(&mut self, action: &str) -> Result<(), String> {
-        match action {
-            "show" => self.visible = true,
-            "hide" => self.visible = false,
-            "toggle" => self.visible = !self.visible,
-            "toggle_passthrough" | "passthrough" => self.passthrough = !self.passthrough,
-            "alpha_passthrough" | "toggle_alpha_passthrough" => {
-                self.alpha_passthrough = !self.alpha_passthrough
+        let mut patch = PresentationPatch::default();
+        let action = match action {
+            "show" => {
+                patch.visible = Some(true);
+                PresentationAction::Set { patch }
             }
-            "show_bubble" => self.bubble_visible = true,
-            "hide_bubble" => self.bubble_visible = false,
-            "bubble_above" => self.bubble_placement = BubblePlacement::Above,
-            "bubble_below" => self.bubble_placement = BubblePlacement::Below,
-            "bubble_left" => self.bubble_placement = BubblePlacement::Left,
-            "bubble_right" => self.bubble_placement = BubblePlacement::Right,
-            "bubble_auto" => self.bubble_placement = BubblePlacement::Auto,
-            "reset_position" => {
-                self.reset_position_revision = self.reset_position_revision.saturating_add(1)
+            "hide" => {
+                patch.visible = Some(false);
+                PresentationAction::Set { patch }
+            }
+            "toggle" => {
+                patch.visible = Some(!self.visible);
+                PresentationAction::Set { patch }
+            }
+            "toggle_passthrough" | "passthrough" => {
+                patch.passthrough = Some(!self.passthrough);
+                PresentationAction::Set { patch }
+            }
+            "alpha_passthrough" | "toggle_alpha_passthrough" => {
+                patch.alpha_passthrough = Some(!self.alpha_passthrough);
+                PresentationAction::Set { patch }
+            }
+            "show_bubble" => {
+                patch.bubble_visible = Some(true);
+                PresentationAction::Set { patch }
+            }
+            "hide_bubble" => {
+                patch.bubble_visible = Some(false);
+                PresentationAction::Set { patch }
+            }
+            "bubble_above" => {
+                patch.bubble_placement = Some(BubblePlacement::Above);
+                PresentationAction::Set { patch }
+            }
+            "bubble_below" => {
+                patch.bubble_placement = Some(BubblePlacement::Below);
+                PresentationAction::Set { patch }
+            }
+            "bubble_left" => {
+                patch.bubble_placement = Some(BubblePlacement::Left);
+                PresentationAction::Set { patch }
+            }
+            "bubble_right" => {
+                patch.bubble_placement = Some(BubblePlacement::Right);
+                PresentationAction::Set { patch }
+            }
+            "bubble_auto" => {
+                patch.bubble_placement = Some(BubblePlacement::Auto);
+                PresentationAction::Set { patch }
             }
             "scale_up" => {
-                let _ = self.set_scale(self.scale + 0.05);
+                patch.scale = Some(self.scale + 0.05);
+                PresentationAction::Set { patch }
             }
             "scale_down" => {
-                let _ = self.set_scale(self.scale - 0.05);
+                patch.scale = Some(self.scale - 0.05);
+                PresentationAction::Set { patch }
             }
-            "status" => {}
+            "reset_position" => PresentationAction::ResetPosition,
+            "status" => PresentationAction::Set { patch },
             _ => return Err(format!("unsupported control action: {action}")),
-        }
+        };
+        self.apply_presentation(&action)?;
+        self.presentation_changed();
         Ok(())
     }
 
@@ -544,12 +785,19 @@ impl AppState {
         if self.scale == scale {
             return false;
         }
-        self.scale = scale;
+        self.apply_presentation(&PresentationAction::Set {
+            patch: PresentationPatch {
+                scale: Some(scale),
+                ..PresentationPatch::default()
+            },
+        })
+        .expect("normalized scale is valid");
+        self.presentation_changed();
         true
     }
 
     pub fn set_preferences(&mut self, prefs: &crate::preferences::Preferences) {
-        let _ = self.set_scale(prefs.scale());
+        self.scale = normalize_scale(prefs.scale()).unwrap_or(self.scale);
         self.visible = prefs.visible();
         self.passthrough = prefs.passthrough();
         self.alpha_passthrough = prefs.alpha_passthrough();
@@ -629,6 +877,7 @@ impl AppState {
                 connected: false,
                 coherent: false,
                 counts,
+                pane_ids: None,
             },
         );
         self.recompute_aggregate();
@@ -658,6 +907,9 @@ impl AppState {
             }
             existing.connected = connected;
             existing.coherent = if connected { existing.coherent } else { false };
+            if !connected {
+                existing.pane_ids = None;
+            }
             existing.counts = if connected {
                 counts.bounded()
             } else {
@@ -687,15 +939,15 @@ impl AppState {
             .invalidate_outcome(source, generation, terminal_id, pane_id);
     }
 
-    /// Publish a coherent snapshot and any completions observed while
-    /// converging it.  All session/detail/count/completion changes happen in
-    /// this one AppState mutation.
+    /// Publish a coherent snapshot, its complete pane list and any completions
+    /// observed while converging it. All facts change in one AppState mutation.
     pub(crate) fn publish_source_snapshot<'a, I>(
         &mut self,
         source: &str,
         generation: u64,
         records: I,
         counts: SourceCounts,
+        pane_ids: Arc<[String]>,
         completions: &[(String, String)],
         observed_at: Instant,
     ) -> bool
@@ -720,6 +972,13 @@ impl AppState {
         if let Some(existing) = self.sources.get_mut(source) {
             existing.connected = true;
             existing.coherent = true;
+            if existing
+                .pane_ids
+                .as_ref()
+                .is_none_or(|before| !Arc::ptr_eq(before, &pane_ids))
+            {
+                existing.pane_ids = Some(pane_ids);
+            }
             existing.counts = counts.bounded();
         }
         self.recompute_aggregate();
@@ -934,9 +1193,238 @@ mod tests {
             generation,
             records.iter(),
             counts,
+            Arc::from(vec!["same-pane".to_owned()]),
             &[],
             Instant::now()
         ));
+    }
+
+    fn session_request(filter: SessionFilter, limit: usize) -> SessionPageRequest {
+        SessionPageRequest {
+            instance_id: "test".into(),
+            filter,
+            cursor: None,
+            limit,
+        }
+    }
+
+    #[test]
+    fn session_wire_rejects_unknown_keys_and_invalid_filter_cursor_shapes() {
+        assert!(serde_json::from_str::<SessionPageRequest>(
+            r#"{"instance_id":"test","filter":"all","cursor":null,"limit":32,"unexpected":true}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<SessionPageRequest>(
+            r#"{"instance_id":"test","filter":"invented","cursor":null,"limit":32}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<SessionPageCursor>(
+            r#"{"instance_id":"test","revision":1,"filter":"all","position":{"source_id":0,"terminal_id":"t","extra":1}}"#
+        )
+        .is_err());
+        assert!(serde_json::from_str::<SessionKey>(
+            r#"{"source_id":0,"generation":1,"terminal_id":"t","extra":1}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn automation_pages_traverse_beyond_gui_cap_and_bind_cursor_to_instance_filter_revision() {
+        let mut state = AppState::new();
+        let automation =
+            crate::automation::test_automation(PresentationTarget::from_scene(&state.scene()));
+        state.set_automation(automation);
+        connect(&mut state, "local.sock", 1);
+        let records: Vec<_> = (0..140)
+            .map(|index| {
+                record(
+                    &format!("terminal-{index:03}"),
+                    &format!("pane-{index:03}"),
+                    AgentStatus::Working,
+                )
+            })
+            .collect();
+        assert!(state.publish_source_snapshot(
+            "local.sock",
+            1,
+            &records,
+            SourceCounts {
+                sessions: 140,
+                working: 140,
+                ..SourceCounts::default()
+            },
+            Arc::from(
+                records
+                    .iter()
+                    .map(|record| record.pane_id.clone())
+                    .collect::<Vec<_>>()
+            ),
+            &[],
+            Instant::now(),
+        ));
+        assert_eq!(
+            state
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows
+                .len(),
+            128
+        );
+        let mut request = session_request(SessionFilter::All, 32);
+        let mut ids = Vec::new();
+        let first = state.automation_session_page(&request).unwrap();
+        assert_eq!(first["matched"], 140);
+        let cursor: SessionPageCursor =
+            serde_json::from_value(first["next_cursor"].clone()).unwrap();
+        let mut altered = request.clone();
+        altered.cursor = Some(cursor.clone());
+        altered.instance_id = "old-daemon".into();
+        assert!(state.automation_session_page(&altered).is_err());
+        altered.instance_id = "test".into();
+        altered.filter = SessionFilter::Waiting;
+        assert!(state.automation_session_page(&altered).is_err());
+        altered.filter = SessionFilter::All;
+        altered.cursor.as_mut().unwrap().instance_id = "old-daemon".into();
+        assert!(state.automation_session_page(&altered).is_err());
+        loop {
+            let page = state.automation_session_page(&request).unwrap();
+            ids.extend(page["rows"].as_array().unwrap().iter().map(|row| {
+                assert_eq!(row["key"]["instance_id"], "test");
+                row["key"]["terminal_id"].as_str().unwrap().to_owned()
+            }));
+            if page["next_cursor"].is_null() {
+                break;
+            }
+            request.cursor = Some(serde_json::from_value(page["next_cursor"].clone()).unwrap());
+        }
+        assert_eq!(ids.len(), 140);
+        assert_eq!(ids.first().unwrap(), "terminal-000");
+        assert_eq!(ids.last().unwrap(), "terminal-139");
+        let mut invalid = session_request(SessionFilter::All, 0);
+        assert!(state.automation_session_page(&invalid).is_err());
+        invalid.limit = 129;
+        assert!(state.automation_session_page(&invalid).is_err());
+        assert!(state.update_source(
+            "local.sock",
+            1,
+            false,
+            SourceCounts {
+                sessions: 140,
+                working: 140,
+                ..SourceCounts::default()
+            },
+        ));
+        assert!(state.automation_session_page(&request).is_err());
+    }
+
+    #[test]
+    fn automation_detail_retains_offline_metadata_and_rejects_hidden_or_reconnected_key() {
+        use crate::agent_outcome::{AgentOutcome, OutcomeReport};
+        let mut state = AppState::new();
+        let automation =
+            crate::automation::test_automation(PresentationTarget::from_scene(&state.scene()));
+        state.set_automation(automation);
+        connect(&mut state, "local.sock", 1);
+        let mut row = record("same-terminal", "same-pane", AgentStatus::Done);
+        row.metadata.title = Some("Real title".into());
+        row.metadata.cwd = Some("/private/secret".into());
+        row.outcome_authoritative = true;
+        row.outcome = Some(OutcomeReport {
+            session: "current".into(),
+            turn: "1".into(),
+            outcome: AgentOutcome::Succeeded,
+            at_unix_ms: 1,
+        });
+        assert!(state.publish_source_snapshot(
+            "local.sock",
+            1,
+            [&row],
+            SourceCounts {
+                sessions: 1,
+                done: 1,
+                ..SourceCounts::default()
+            },
+            Arc::from(vec!["same-pane".to_owned()]),
+            &[],
+            Instant::now(),
+        ));
+        let key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
+        let identity = SessionIdentity {
+            instance_id: "test".into(),
+            source_id: key.source_id,
+            generation: key.generation,
+            terminal_id: key.terminal_id.clone(),
+        };
+        let detail = state.automation_session_detail(&identity).unwrap();
+        assert_eq!(detail["status"], "done");
+        assert_eq!(detail["metadata"]["title"], "Real title");
+        assert!(detail["metadata"].get("cwd").is_none());
+        assert_eq!(detail["outcome"], Value::Null);
+        assert_eq!(
+            state
+                .session_snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::All),
+                    Some(&key)
+                )
+                .selected,
+            Some(key.clone())
+        );
+        state.push_outcome(outcome("local.sock", 1));
+        let completed = state.automation_session_detail(&identity).unwrap();
+        assert_eq!(completed["outcome"], "succeeded");
+        assert_eq!(completed["display_status"], "succeeded");
+        assert_eq!(
+            state
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows[0]
+                .outcome,
+            Some(AgentOutcome::Succeeded)
+        );
+        assert_eq!(
+            state
+                .session_snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::All),
+                    Some(&key)
+                )
+                .selected,
+            Some(key.clone())
+        );
+        assert!(state.update_source(
+            "local.sock",
+            1,
+            false,
+            SourceCounts {
+                sessions: 1,
+                done: 1,
+                ..SourceCounts::default()
+            },
+        ));
+        let offline = state.automation_session_detail(&identity).unwrap();
+        assert_eq!(offline["availability"], "offline");
+        assert_eq!(offline["status"], "done");
+        assert_eq!(offline["metadata"]["title"], "Real title");
+        assert!(offline["metadata"].get("cwd").is_none());
+        assert_eq!(offline["outcome"], Value::Null);
+        assert_eq!(
+            state
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows[0]
+                .outcome,
+            None
+        );
+        assert_eq!(offline["display_status"], "offline");
+        state.apply_observation_preferences(policy(false, false, &[]));
+        assert!(state.automation_session_detail(&identity).is_err());
+        state.apply_observation_preferences(policy(true, false, &[]));
+        assert!(state.automation_session_detail(&identity).is_ok());
+        connect(&mut state, "local.sock", 2);
+        assert!(state.automation_session_detail(&identity).is_err());
+        let mut wrong = identity;
+        wrong.instance_id = "old-daemon".into();
+        assert!(state.automation_session_detail(&wrong).is_err());
     }
 
     fn outcome(source: &str, generation: u64) -> OutcomeObservation {
@@ -1012,7 +1500,15 @@ mod tests {
             working: 1,
             ..SourceCounts::default()
         };
-        assert!(state.publish_source_snapshot(source, 1, [&row], counts, &[], Instant::now()));
+        assert!(state.publish_source_snapshot(
+            source,
+            1,
+            [&row],
+            counts,
+            Arc::from(vec!["p".to_owned()]),
+            &[],
+            Instant::now()
+        ));
         let key = state
             .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows[0]
@@ -1038,7 +1534,15 @@ mod tests {
             state.worktree_remove_target(&key),
             Err(WorktreeRemoveTargetError::Stale)
         );
-        assert!(state.publish_source_snapshot(source, 2, [&row], counts, &[], Instant::now()));
+        assert!(state.publish_source_snapshot(
+            source,
+            2,
+            [&row],
+            counts,
+            Arc::from(vec!["p".to_owned()]),
+            &[],
+            Instant::now()
+        ));
         let new_key = state
             .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows[0]
@@ -1057,6 +1561,7 @@ mod tests {
             1,
             [&row],
             counts,
+            Arc::from(vec!["p".to_owned()]),
             &[],
             Instant::now()
         ));
@@ -1069,6 +1574,119 @@ mod tests {
             relative.worktree_remove_target(&relative_key),
             Err(WorktreeRemoveTargetError::Stale)
         );
+    }
+
+    #[test]
+    fn worktree_observation_requires_live_full_panes_and_same_registered_source() {
+        let source = "/private/worktree.sock";
+        let mut state = AppState::new();
+        let mut row = record("target-terminal", "target-pane", AgentStatus::Working);
+        row.metadata.workspace_id = Some("workspace".into());
+        row.metadata.worktree = Some(Arc::new(crate::herdr_protocol::WorkspaceWorktreeInfo {
+            repo_key: "repo".into(),
+            repo_name: "Repo".into(),
+            repo_root: "/repo".into(),
+            checkout_path: "/repo/linked".into(),
+            is_linked_worktree: true,
+            pane_count: 1,
+            tab_count: 1,
+        }));
+        connect(&mut state, source, 1);
+        let live = SourceCounts {
+            sessions: 1,
+            working: 1,
+            ..SourceCounts::default()
+        };
+        assert!(state.publish_source_snapshot(
+            source,
+            1,
+            [&row],
+            live,
+            Arc::from(vec!["target-pane".to_owned()]),
+            &[],
+            Instant::now(),
+        ));
+        let key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
+        let target = state.worktree_remove_target(&key).unwrap();
+        assert_eq!(
+            state.automation_worktree_observation(&target),
+            Some(json!({"source_id":key.source_id,"generation":1,
+                        "pane_absent":false,"session_absent":false}))
+        );
+        let empty: [AgentRecord; 0] = [];
+        assert!(state.publish_source_snapshot(
+            source,
+            1,
+            empty.iter(),
+            SourceCounts::default(),
+            Arc::from(vec!["target-pane".to_owned()]),
+            &[],
+            Instant::now(),
+        ));
+        // The agent exited, but the containing shell pane remains.
+        assert_eq!(
+            state.automation_worktree_observation(&target),
+            Some(json!({"source_id":key.source_id,"generation":1,
+                        "pane_absent":false,"session_absent":true}))
+        );
+        assert!(state.publish_source_snapshot(
+            source,
+            1,
+            [&row],
+            live,
+            Arc::from([]),
+            &[],
+            Instant::now(),
+        ));
+        assert_eq!(
+            state.automation_worktree_observation(&target),
+            Some(json!({"source_id":key.source_id,"generation":1,
+                        "pane_absent":true,"session_absent":false}))
+        );
+        assert!(state.update_source(source, 1, false, live));
+        assert_eq!(state.automation_worktree_observation(&target), None);
+        connect(&mut state, source, 2);
+        assert_eq!(state.automation_worktree_observation(&target), None);
+        assert!(!state.publish_source_snapshot(
+            source,
+            1,
+            empty.iter(),
+            SourceCounts::default(),
+            Arc::from([]),
+            &[],
+            Instant::now(),
+        ));
+        assert_eq!(state.automation_worktree_observation(&target), None);
+        assert!(state.publish_source_snapshot(
+            source,
+            2,
+            empty.iter(),
+            SourceCounts::default(),
+            Arc::from([]),
+            &[],
+            Instant::now(),
+        ));
+        assert_eq!(
+            state.automation_worktree_observation(&target),
+            Some(json!({"source_id":key.source_id,"generation":2,
+                        "pane_absent":true,"session_absent":true}))
+        );
+        assert!(state.remove_source(source, 2));
+        connect(&mut state, source, 3);
+        assert!(state.publish_source_snapshot(
+            source,
+            3,
+            empty.iter(),
+            SourceCounts::default(),
+            Arc::from([]),
+            &[],
+            Instant::now(),
+        ));
+        assert_eq!(state.automation_worktree_observation(&target), None);
     }
 
     #[test]
@@ -1085,6 +1703,7 @@ mod tests {
             1,
             empty.iter(),
             SourceCounts::default(),
+            Arc::from([]),
             &[],
             Instant::now(),
         ));
@@ -1101,6 +1720,7 @@ mod tests {
             2,
             empty.iter(),
             SourceCounts::default(),
+            Arc::from([]),
             &[],
             Instant::now(),
         ));
@@ -1132,6 +1752,7 @@ mod tests {
             1,
             [&row],
             counts,
+            Arc::from(vec!["same-pane".to_owned()]),
             &[],
             Instant::now()
         ));
@@ -1287,6 +1908,7 @@ mod tests {
             1,
             empty.iter(),
             SourceCounts::default(),
+            Arc::from([]),
             &[],
             Instant::now()
         ));
@@ -1336,6 +1958,7 @@ mod tests {
             1,
             initial_records.iter(),
             initial_counts,
+            Arc::from(vec!["pane-a".to_owned()]),
             &[],
             Instant::now(),
         ));
@@ -1399,6 +2022,7 @@ mod tests {
                 done: 1,
                 ..SourceCounts::default()
             },
+            Arc::from(vec!["pane-a".to_owned()]),
             &[],
             Instant::now(),
         ));
@@ -1446,6 +2070,7 @@ mod tests {
             3,
             empty.iter(),
             SourceCounts::default(),
+            Arc::from([]),
             &[],
             Instant::now(),
         ));
@@ -1646,6 +2271,7 @@ mod tests {
             1,
             [&east_record],
             counts,
+            Arc::from(vec!["pane-east".to_owned()]),
             &[],
             Instant::now()
         ));
@@ -1659,6 +2285,7 @@ mod tests {
             1,
             [&west_record],
             waiting,
+            Arc::from(vec!["pane-west".to_owned()]),
             &[],
             Instant::now()
         ));
@@ -1714,6 +2341,61 @@ mod tests {
                 .matched,
             1
         );
+    }
+
+    #[test]
+    fn legacy_and_recovery_revisions_precede_automation_reduction() {
+        use crate::automation::{
+            lock_automation, test_automation, PresentationAction, PresentationPatch,
+            PresentationRequest, PresentationTarget,
+        };
+
+        let mut state = AppState::new();
+        let automation = test_automation(PresentationTarget::from_scene(&state.scene()));
+        state.set_automation(automation.clone());
+        let stale = PresentationRequest {
+            instance_id: "test".into(),
+            operation_id: "stale".into(),
+            expected_revision: Some(0),
+            action: PresentationAction::Set {
+                patch: PresentationPatch {
+                    bubble_visible: Some(false),
+                    ..PresentationPatch::default()
+                },
+            },
+        };
+        lock_automation(&automation).submit(stale.clone()).unwrap();
+        state.apply_control("hide").unwrap();
+        assert_eq!(lock_automation(&automation).snapshot().revision, 1);
+        let stale_target = PresentationTarget::from_scene(&state.scene())
+            .applying(&stale.action)
+            .unwrap();
+        assert!(lock_automation(&automation)
+            .start_request("stale", stale_target)
+            .is_err());
+        assert!(state.scene().bubble_visible);
+
+        let current = PresentationRequest {
+            operation_id: "current".into(),
+            expected_revision: Some(1),
+            ..stale
+        };
+        lock_automation(&automation)
+            .submit(current.clone())
+            .unwrap();
+        let current_target = PresentationTarget::from_scene(&state.scene())
+            .applying(&current.action)
+            .unwrap();
+        lock_automation(&automation)
+            .start_request("current", current_target)
+            .unwrap();
+        state.apply_presentation(&current.action).unwrap();
+        assert_eq!(lock_automation(&automation).snapshot().revision, 2);
+        state.apply_control("hide").unwrap();
+        assert_eq!(lock_automation(&automation).snapshot().revision, 2);
+        state.recover_interaction();
+        assert_eq!(lock_automation(&automation).snapshot().revision, 3);
+        assert!(state.scene().visible);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { requiredAssetNames, type ReleaseRecord } from "./release-docs";
 import { generateWiki, publicationState, requirePublishedRelease, type WikiOptions } from "./wiki-docs";
 
@@ -195,6 +196,57 @@ describe("Wiki projection", () => {
     expect(images.filter((image) => image.src === raw && image.alt === "Art" && image.parent === null)).toHaveLength(2);
   });
 
+  test("current and frozen Wiki resolve literal quoted filenames and titleless images after invalid next-line titles", async () => {
+    const options = await fixture();
+    const tag = "v0.2.0";
+    const content = [
+      'Reviewed guidance. [Guide]( "guide.md")',
+      "",
+      "[Art]: ../../assets/icon.png",
+      "(bad ( title)",
+      "",
+      "![Art] [Art]",
+      "",
+      "[Icon]: ../../assets/icon.png (named \\( icon)",
+      "",
+      "![Icon] [Icon]",
+      "",
+      "[Unused]: ../../assets/icon.png (bad ( title)",
+      "",
+      "![Unused]",
+    ].join("\n");
+    await put(options.root, 'docs/releases/"guide.md"', "# Literal guide\n");
+    await put(options.root, "docs/releases/README.md", `# Versions\n\n${content}\n`);
+    await note(options.root, tag, content);
+    commitFixture(options.root);
+    git(options.root, "tag", tag);
+    const head = git(options.root, "rev-parse", "HEAD");
+    options.releases = [release(tag)];
+    await generateWiki(options);
+    for (const [page, ref] of [["Home.md", head], [`Release-${tag}.md`, tag]]) {
+      const { links, images } = await rendered(await readFile(join(options.output, page), "utf8"));
+      expect(links).toContainEqual({
+        href: `https://github.com/${repository}/blob/${ref}/docs/releases/%22guide.md%22`, title: null,
+      });
+      expect(links).toContainEqual({
+        href: `https://github.com/${repository}/blob/${ref}/assets/icon.png`, title: null,
+      });
+      expect(images).toContainEqual({
+        src: `https://raw.githubusercontent.com/${repository}/${ref}/assets/icon.png`,
+        title: null, alt: "Art", parent: null,
+      });
+      expect(images).toContainEqual({
+        src: `https://raw.githubusercontent.com/${repository}/${ref}/assets/icon.png`,
+        title: "named ( icon", alt: "Icon", parent: null,
+      });
+      expect(images.some((image) => image.alt === "Unused")).toBe(false);
+      expect(fromMarkdown(await readFile(join(options.output, page), "utf8")).children).toContainEqual(expect.objectContaining({
+        type: "definition", url: `https://github.com/${repository}/blob/${ref}/assets/icon.png`,
+        title: "named ( icon",
+      }));
+    }
+  });
+
   test("current and frozen Wiki resolve review regressions at HEAD and tag respectively", async () => {
     const options = await fixture();
     const tag = "v0.2.0";
@@ -217,7 +269,6 @@ describe("Wiki projection", () => {
     expect(current).not.toContain(`https://github.com/${repository}/blob/${tag}/README.md`);
     expect(frozen).not.toContain(`https://github.com/${repository}/blob/${head}/README.md`);
   });
-
   test("numeric semver determines newest; late old-tag trigger does not roll back current catalog", async () => {
     const options = await fixture();
     git(options.root, "tag", "v0.1.9");
@@ -369,6 +420,16 @@ describe("Wiki projection", () => {
       }
     }
     for (const prose of [
+      '[Guide]( "missing.md")',
+      '[Guide]( "../../../../../outside.md")',
+      "[Art]: ../../assets/missing.png\n(bad ( title)\n\n![Art] [Art]",
+      "[Art]: ../../../outside.png\n(bad ( title)\n\n![Art] [Art]",
+    ]) {
+      await put(options.root, "docs/releases/README.md", `# Versions\n\nReviewed guidance.\n\n${prose}\n`);
+      await expect(generateWiki(options)).rejects.toThrow();
+      expect(await snapshot(options.output)).toEqual(before);
+    }
+    for (const prose of [
       "[bad](https://example.test (bad ( [Guide](TARGET)))",
       '[outer [Guide](TARGET)](https://example.test "![Art]")',
       'Reviewed guidance.\n[unused]: https://example.test "[Guide](TARGET)"',
@@ -390,6 +451,23 @@ describe("Wiki projection", () => {
         expect(await snapshot(frozen.output)).toEqual(frozenBefore);
         expect(existsSync(join(frozen.output, "Release-v0.2.0.md"))).toBe(false);
       }
+    }
+    for (const prose of [
+      '[Guide]( "missing.md")',
+      '[Guide]( "../../../../../outside.md")',
+      "[Art]: ../../assets/missing.png\n(bad ( title)\n\n![Art] [Art]",
+      "[Art]: ../../../outside.png\n(bad ( title)\n\n![Art] [Art]",
+    ]) {
+      const frozen = await fixture();
+      await generateWiki(frozen);
+      const frozenBefore = await snapshot(frozen.output);
+      await note(frozen.root, "v0.2.0", prose);
+      commitFixture(frozen.root);
+      git(frozen.root, "tag", "v0.2.0");
+      frozen.releases = [release("v0.2.0")];
+      await expect(generateWiki(frozen)).rejects.toThrow();
+      expect(await snapshot(frozen.output)).toEqual(frozenBefore);
+      expect(existsSync(join(frozen.output, "Release-v0.2.0.md"))).toBe(false);
     }
   });
 

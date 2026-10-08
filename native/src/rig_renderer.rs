@@ -5,6 +5,7 @@
 //! Swift owns AppKit/Metal objects and the decoder child process.
 
 use crate::assets::{CharacterMetadata, RigAsset};
+use crate::behavior::PresentationViewport;
 use crate::character_types::RendererToken;
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
@@ -106,6 +107,41 @@ struct CAnchor {
     y1: f64,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct CSpeechAnchorSnapshot {
+    status: u32,
+    reserved: u32,
+    backend_epoch: u64,
+    input_epoch: u64,
+    anchor_epoch: u64,
+    viewport_epoch: u64,
+    canvas_width: u32,
+    canvas_height: u32,
+    viewport_width: f64,
+    viewport_height: f64,
+    backing_scale: f64,
+    anchor: CAnchor,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RigSpeechAnchorStatus {
+    Invalid,
+    TemporarilyUnavailable,
+    ReadyAnchorless,
+    ReadyAnchor((f64, f64, f64, f64)),
+}
+
+pub(crate) struct RigSpeechAnchorSnapshot {
+    pub status: RigSpeechAnchorStatus,
+    pub backend_epoch: u64,
+    pub input_epoch: Option<u64>,
+    pub anchor_epoch: Option<u64>,
+    pub viewport: Option<PresentationViewport>,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+}
+
 #[link(name = "herdr_rig")]
 extern "C" {
     fn herdr_rig_error_free(error: *mut c_char);
@@ -148,7 +184,11 @@ extern "C" {
     fn herdr_rig_set_visible(handle: *mut c_void, visible: u32);
     fn herdr_rig_input_epoch(handle: *mut c_void) -> u64;
     fn herdr_rig_input_ready(handle: *mut c_void) -> u32;
-    fn herdr_rig_speech_anchor_epoch(handle: *mut c_void) -> u64;
+    fn herdr_rig_speech_anchor_snapshot(
+        handle: *mut c_void,
+        out_snapshot: *mut CSpeechAnchorSnapshot,
+        out_error: *mut *mut c_char,
+    ) -> i32;
     fn herdr_rig_hit(
         handle: *mut c_void,
         x: f64,
@@ -157,7 +197,6 @@ extern "C" {
         out_has_hit: *mut u32,
         out_error: *mut *mut c_char,
     ) -> i32;
-    fn herdr_rig_speech_anchor(handle: *mut c_void, out_anchor: *mut CAnchor) -> u32;
     fn herdr_rig_display_bounds(handle: *mut c_void, out_bounds: *mut CAnchor) -> u32;
     fn herdr_rig_preview_png(
         handle: *mut c_void,
@@ -476,11 +515,12 @@ impl RigPreparation {
                 let view = unsafe { Retained::from_raw(raw_view.as_ptr()) }
                     .ok_or_else(|| "native rig view retain was invalid".to_owned())?;
                 let mut bounds = CAnchor::default();
-                let display_bounds = if unsafe { herdr_rig_display_bounds(handle.as_ptr(), &mut bounds) } != 0 {
-                    (bounds.x0, bounds.y0, bounds.x1, bounds.y1)
-                } else {
-                    (0.0, 0.0, 1.0, 1.0)
-                };
+                let display_bounds =
+                    if unsafe { herdr_rig_display_bounds(handle.as_ptr(), &mut bounds) } != 0 {
+                        (bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+                    } else {
+                        (0.0, 0.0, 1.0, 1.0)
+                    };
                 let prepared = PreparedRig {
                     handle,
                     _snapshot: self
@@ -544,7 +584,6 @@ impl PreparedRig {
     pub fn display_bounds(&self) -> (f64, f64, f64, f64) {
         self.display_bounds
     }
-
 
     pub fn update(&mut self, intent: RigIntent) -> Result<(), String> {
         let mut raw_error = std::ptr::null_mut();
@@ -611,17 +650,83 @@ impl PreparedRig {
     pub fn input_ready(&self) -> bool {
         unsafe { herdr_rig_input_ready(self.handle.as_ptr()) != 0 }
     }
-    pub fn speech_anchor_epoch(&self) -> Option<u64> {
-        let epoch = unsafe { herdr_rig_speech_anchor_epoch(self.handle.as_ptr()) };
-        (epoch != 0).then_some(epoch)
-    }
-
-    /// Bounded CPU scene geometry, never a synchronous GPU hit/readback.
-    /// Returns None until a fresh rendered input surface is available.
-    pub fn speech_anchor(&self) -> Option<(f64, f64, f64, f64)> {
-        let mut bounds = CAnchor::default();
-        (unsafe { herdr_rig_speech_anchor(self.handle.as_ptr(), &mut bounds) } != 0)
-            .then_some((bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+    /// One native lock acquisition owns freshness, provenance and CPU geometry.
+    pub(crate) fn speech_anchor_snapshot(
+        &self,
+        expected: PresentationViewport,
+    ) -> Result<RigSpeechAnchorSnapshot, String> {
+        let mut output = CSpeechAnchorSnapshot::default();
+        let mut raw_error = std::ptr::null_mut();
+        let code = unsafe {
+            herdr_rig_speech_anchor_snapshot(self.handle.as_ptr(), &mut output, &mut raw_error)
+        };
+        call_result(code, raw_error)?;
+        let invalid = || RigSpeechAnchorSnapshot {
+            status: RigSpeechAnchorStatus::Invalid,
+            backend_epoch: self.token.backend_epoch,
+            input_epoch: None,
+            anchor_epoch: None,
+            viewport: None,
+            canvas_width: self.width,
+            canvas_height: self.height,
+        };
+        if output.status == 0 {
+            return Ok(invalid());
+        }
+        let viewport = PresentationViewport {
+            width: output.viewport_width,
+            height: output.viewport_height,
+            backing_scale: output.backing_scale,
+            epoch: output.viewport_epoch,
+        };
+        if output.reserved != 0
+            || output.backend_epoch != self.token.backend_epoch
+            || output.input_epoch == 0
+            || output.canvas_width != self.width
+            || output.canvas_height != self.height
+            || self.width == 0
+            || self.height == 0
+            || expected.epoch != self.viewport_epoch
+            || !viewport.width.is_finite()
+            || !viewport.height.is_finite()
+            || !viewport.backing_scale.is_finite()
+            || viewport.width <= 0.0
+            || viewport.height <= 0.0
+            || !(1.0..=4.0).contains(&viewport.backing_scale)
+            || viewport != expected
+        {
+            return Ok(invalid());
+        }
+        let status = match output.status {
+            1 => RigSpeechAnchorStatus::TemporarilyUnavailable,
+            2 => RigSpeechAnchorStatus::ReadyAnchorless,
+            3 => {
+                let anchor = output.anchor;
+                if ![anchor.x0, anchor.y0, anchor.x1, anchor.y1]
+                    .iter()
+                    .all(|value| value.is_finite())
+                    || anchor.x0 < 0.0
+                    || anchor.y0 < 0.0
+                    || anchor.x0 >= anchor.x1
+                    || anchor.y0 >= anchor.y1
+                    || anchor.x1 > f64::from(self.width)
+                    || anchor.y1 > f64::from(self.height)
+                {
+                    return Ok(invalid());
+                }
+                RigSpeechAnchorStatus::ReadyAnchor((anchor.x0, anchor.y0, anchor.x1, anchor.y1))
+            }
+            _ => return Ok(invalid()),
+        };
+        Ok(RigSpeechAnchorSnapshot {
+            status,
+            backend_epoch: output.backend_epoch,
+            input_epoch: Some(output.input_epoch),
+            anchor_epoch: Some(output.anchor_epoch),
+            viewport: Some(viewport),
+            canvas_width: output.canvas_width,
+            canvas_height: output.canvas_height,
+        })
     }
 
     pub fn hit(&self, x: f64, y: f64) -> Option<RigHit> {

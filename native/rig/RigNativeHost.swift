@@ -333,6 +333,10 @@ final class RigNativeHost {
     private var surfaceReadySerial: UInt64 = 0
     private var surfaceReadyViewportEpoch: UInt64 = 0
     private var surfaceReadyAt: TimeInterval = 0
+    // Positive geometry only: an observed stale/invalid surface drops it so a
+    // same-serial recovery must sample the current evaluation, never old bounds.
+    private var cachedSpeechAnchor: (inputGeneration: UInt64, intentSerial: UInt64,
+                                     viewport: RigHostViewport, anchor: HerdrRigAnchor)?
     private var latestIntentUptime: TimeInterval = 0
     private var animatedIntent: HerdrRigIntent?
     private var displayTimer: DispatchSourceTimer?
@@ -507,6 +511,7 @@ final class RigNativeHost {
         visible = false
         surfaceReady = false
         hitsDisabled = true
+        cachedSpeechAnchor = nil
         stopDisplayDriverLocked()
         if case .ready = state {
             state = .cancelled
@@ -555,6 +560,7 @@ final class RigNativeHost {
                 intentSerial &+= 1
                 surfaceReady = false
                 hitsDisabled = true
+                cachedSpeechAnchor = nil
             }
             let currentSerial = intentSerial
             let currentViewport = viewport
@@ -627,6 +633,7 @@ final class RigNativeHost {
             intentSerial &+= 1
             surfaceReady = false
             hitsDisabled = true
+            cachedSpeechAnchor = nil
             surfaceLayer.contentsScale = scale
             surfaceLayer.drawableSize = drawableSize
         }
@@ -637,6 +644,7 @@ final class RigNativeHost {
         guard Thread.isMainThread else { return }
         stateLock.lock()
         if self.visible != visible { inputGeneration &+= 1 }
+        if self.visible != visible { cachedSpeechAnchor = nil }
         self.visible = visible
         if visible {
             if active { startDisplayDriverLocked() }
@@ -645,6 +653,7 @@ final class RigNativeHost {
             intentSerial &+= 1
             surfaceReady = false
             hitsDisabled = true
+            cachedSpeechAnchor = nil
         }
         stateLock.unlock()
         view.isHidden = !visible
@@ -663,12 +672,6 @@ final class RigNativeHost {
         let age = ProcessInfo.processInfo.systemUptime - surfaceReadyAt
         return active && visible && !cancelled
             && !hitsDisabled && surfaceReady && age >= 0 && age <= 0.08
-    }
-    func speechAnchorEpoch() -> UInt64 {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        guard active, visible, !cancelled, case .ready = state else { return 0 }
-        return intentSerial
     }
 
 
@@ -690,17 +693,60 @@ final class RigNativeHost {
         return output
     }
 
-    func speechAnchor() -> HerdrRigAnchor? {
-        guard Thread.isMainThread else { return nil }
+    func speechAnchorSnapshot() throws -> HerdrRigSpeechAnchorSnapshot {
+        guard Thread.isMainThread else {
+            throw RigNativeError.invalid("rig speech anchor snapshot must run on the AppKit main thread")
+        }
         stateLock.lock()
         defer { stateLock.unlock() }
-        let age = ProcessInfo.processInfo.systemUptime - surfaceReadyAt
-        guard active, visible, !cancelled, !hitsDisabled, surfaceReady,
-              age >= 0, age <= 0.08, let anchorGeometry, let evaluated = latestEvaluated else {
-            return nil
+        let now = ProcessInfo.processInfo.systemUptime
+        var snapshot = HerdrRigSpeechAnchorSnapshot()
+        snapshot.backend_epoch = token.backendEpoch
+        guard active, visible, !cancelled, lastError == nil,
+              case .ready = state, scene != nil, renderer != nil else {
+            cachedSpeechAnchor = nil
+            return snapshot
         }
-        return anchorGeometry.bounds(evaluated: evaluated, neutral: animatedIntent?.frozen != 0,
-                                     canvas: (canvasWidth, canvasHeight))
+        snapshot.input_epoch = inputGeneration
+        snapshot.anchor_epoch = intentSerial
+        snapshot.viewport_epoch = viewport.epoch
+        snapshot.canvas_width = UInt32(canvasWidth)
+        snapshot.canvas_height = UInt32(canvasHeight)
+        snapshot.viewport_width = viewport.width
+        snapshot.viewport_height = viewport.height
+        snapshot.backing_scale = viewport.backingScale
+        snapshot.status = 1
+        let age = now - surfaceReadyAt
+        guard pendingModelIndex == nil, let anchorGeometry, let evaluated = latestEvaluated,
+              animatedIntent != nil, !hitsDisabled, surfaceReady,
+              surfaceReadySerial == intentSerial, surfaceReadyViewportEpoch == viewport.epoch,
+              age.isFinite, age >= 0, age <= 0.08 else {
+            cachedSpeechAnchor = nil
+            return snapshot
+        }
+        // Reuse only after freshness has been established under this same lock.
+        if let cached = cachedSpeechAnchor,
+           cached.inputGeneration == inputGeneration, cached.intentSerial == intentSerial,
+           cached.viewport.width == viewport.width, cached.viewport.height == viewport.height,
+           cached.viewport.backingScale == viewport.backingScale,
+           cached.viewport.epoch == viewport.epoch {
+            snapshot.status = 3
+            snapshot.anchor = cached.anchor
+            return snapshot
+        }
+        guard let anchor = anchorGeometry.bounds(evaluated: evaluated,
+                                                  neutral: animatedIntent?.frozen != 0,
+                                                  canvas: (canvasWidth, canvasHeight)) else {
+            // Empty bounds are never cached; a later current evaluation may
+            // expose geometry without changing the semantic serial.
+            cachedSpeechAnchor = nil
+            snapshot.status = 2
+            return snapshot
+        }
+        cachedSpeechAnchor = (inputGeneration, intentSerial, viewport, anchor)
+        snapshot.status = 3
+        snapshot.anchor = anchor
+        return snapshot
     }
 
     func hit(normalizedX: Double, normalizedY: Double) -> HerdrRigHit? {
@@ -800,6 +846,7 @@ final class RigNativeHost {
             intentSerial &+= 1
             surfaceReady = false
             hitsDisabled = true
+            cachedSpeechAnchor = nil
         }
         return evaluated
     }
@@ -839,6 +886,7 @@ final class RigNativeHost {
         intentSerial &+= 1
         surfaceReady = false
         hitsDisabled = true
+        cachedSpeechAnchor = nil
         lastError = nil
     }
 
@@ -853,6 +901,7 @@ final class RigNativeHost {
         intentSerial &+= 1
         surfaceReady = false
         hitsDisabled = true
+        cachedSpeechAnchor = nil
         lastError = nil
         decodeJob?.cancel()
         let generation = modelDecodeGeneration
@@ -1074,6 +1123,7 @@ final class RigNativeHost {
         hitsDisabled = true
         surfaceReady = false
         intentSerial &+= 1
+        cachedSpeechAnchor = nil
         stateLock.unlock()
         renderQueue.async { [weak self] in
             guard let self else { return }
@@ -1090,6 +1140,7 @@ final class RigNativeHost {
                     self.intentSerial &+= 1
                     self.surfaceReady = false
                     self.surfaceReadyAt = 0
+                    self.cachedSpeechAnchor = nil
                     self.renderPending = false
                 }
                 // A superseding install does not restart the driver stopped above.
@@ -1227,6 +1278,7 @@ final class RigNativeHost {
             let message = String(describing: error)
             state = .failed(message)
             lastError = message
+            cachedSpeechAnchor = nil
             preparedModels.removeAll()
             preparedModelRGBABytes = 0
         }
@@ -1281,6 +1333,7 @@ final class RigNativeHost {
                 anchorGeometry = geometry
                 preparedDisplayBounds = displayBounds
                 renderer = next
+                cachedSpeechAnchor = nil
                 state = .ready
                 hitsDisabled = false
                 lastError = nil
@@ -1291,6 +1344,7 @@ final class RigNativeHost {
             stateLock.lock()
             if modelDecodeGeneration == generation {
                 state = .failed(String(describing: error))
+                cachedSpeechAnchor = nil
                 lastError = String(describing: error)
             }
             decodeJob = nil
@@ -1349,6 +1403,7 @@ final class RigNativeHost {
             surfaceReady = false
             surfaceReadyAt = 0
             hitsDisabled = true
+            cachedSpeechAnchor = nil
             latestEvaluated = nil
             animatedIntent = nil
             stateLock.unlock()
@@ -1364,6 +1419,7 @@ final class RigNativeHost {
                 intentSerial &+= 1
                 surfaceReady = false
                 hitsDisabled = true
+                cachedSpeechAnchor = nil
                 stopDisplayDriverLocked()
                 state = .failed(message)
             }
@@ -1400,6 +1456,7 @@ final class RigNativeHost {
         intentSerial &+= 1
         hitsDisabled = true
         surfaceReady = false
+        cachedSpeechAnchor = nil
         lastError = message
         state = .failed(message)
         return active && !cancelled && !recoveryUsed && scene != nil

@@ -2,33 +2,30 @@
 
 [Versions](README.md) · [Versioning and compatibility](policy.md) · [Unreleased](unreleased.md) · [한국어 버전 안내](README.ko.md)
 
-Reviewed Markdown in the main repository is canonical. GitHub Wiki is a generated reading view, not a second editing authority. For **new** app releases, the Release body and Wiki version page use the same note frozen by the release tag. Current indexes, policy, migrations and Unreleased use the reviewed default-branch documentation snapshot and the live GitHub release catalog. Pending native-branch guidance in those documents is not a claim that the default branch implements it.
+Reviewed Markdown in the main repository is canonical. GitHub Wiki is a generated reading view, not a second editing authority. For **new** app releases, the Release body and Wiki version page use the same note frozen by the release tag. Current indexes, policy, migrations and Unreleased use the reviewed default-branch documentation snapshot and the live GitHub release catalog. [v0.2.0](v0.2.0.md) is the current authorized stable source/release contract, including the formerly local native feature groups; publication status still requires the actual Release catalog and uploaded assets.
 
-This documentation/publishing change leaves the app at **0.1.11**. The user authorizes committing and pushing **documentation/tooling only** to `main`, plus Wiki activation, initial Home bootstrap and one local manual publication. It does not authorize merging the four native feature commits, changing native/plugin/integration code, publishing a binary, creating a tag, changing pack v5, replacing assets or updating existing Release bodies.
+The original docs/tools-only authorization for the earlier `9cbad32`-era main update has been superseded. The user now authorizes promoting exact beta3 native behavior into v0.2.0 on `main`, the stable `v0.2.0` tag, binary assets, stable Homebrew formula/default installation, and Wiki publication. Preserve historical beta1/beta2/beta3 tags, assets and the separate beta formula. This authorization does not change character-pack v5, bundled `default@0`, artwork licensing, or the independent Herdr host.
 
 ## Authorization and setup record
 
-The original **read-only setup inspection** found owner ADMIN access, Wiki disabled (`has_wiki: false`), and no repository Actions secrets. That inspection was local-only and made no setting, initial-page, secret, remote-publication, commit or push changes. It is a historical observation, not a claim that later authorized operations have already succeeded.
+The original **read-only setup inspection** found owner ADMIN access, Wiki disabled (`has_wiki: false`), and no repository Actions secrets. It made no setting, initial-page, secret, remote-publication, commit or push changes. **Later Wiki activation and initial Home occurred**: the Wiki Git remote has an initialized HEAD (`680633c28f33f264b5d532a385370e1ec5995d1a`). That confirms initialization, **not** publication of the generated v0.2.0 Wiki pages. No dedicated `WIKI_PUBLISH_TOKEN` Actions secret is configured. An authorized owner `gh` OAuth login may be used ephemerally for a **local manual Wiki publication** but must never be printed, persisted or copied into a CI secret. Local authorization/login does not provision future automation.
 
-The user now authorizes the docs/tools-only main push and Wiki activation/bootstrap/manual publication described below. **The dedicated `WIKI_PUBLISH_TOKEN` Actions secret is not configured.** An existing owner `gh` OAuth login may be used ephemerally for **this one local manual publication**, but must never be copied into a CI secret. Local authorization/login does not provision future automation. This guide records the authorized procedure; it does not assert that the remote Wiki is already enabled, initialized or published.
+The original documentation/tools-only publication used the then-main source and excluded four local native commits (`078f5c2`, `e828c77`, `f638f0c`, `bf23ced`). That is historical provenance, **not** a restriction on the current stable cutover. Render now from the reviewed, pushed v0.2.0 default-branch SHA, not the original local branch SHA or an old docs-only SHA.
 
-The publication source must be the pushed docs/tools-only default-branch commit, based on `40eaa400150fee20dca3ffc9af1bc46e1fff03ee`, not the local native feature checkout. The four commits (`078f5c2`, `e828c77`, `f638f0c`, `bf23ced`) remain unmerged on local branch `worktree/rapid-harbor-d2a6` at `bf23ced1649fd0074aec8736644c8f02aa0c492b`. They are not assumed publicly fetchable. Neither `main` nor its `--source` build nor published v0.1.11 includes their watcher-startup, independent-visibility, observation-settings or contextual-settings/rescue changes. Keep that checkout's guidance, but do not use its SHA as a public default-branch source reference.
+### Authorized stable and local Wiki publication
 
-### One-time authorized local publication
-
-1. Commit and push the reviewed docs/tools-only change to `main`, leaving all native, plugin and integration code and existing app releases unchanged. Use the resulting pushed immutable main SHA for rendering and publication.
-2. Enable **Wiki** in repository settings if still disabled. Ensure the repository/account plan supports it.
-3. Open the Wiki and create and save an initial **Home** page if no Wiki Git history exists. Merely enabling Wiki does not initialize its Git repository. This first page creates the remote and its HEAD; the generated publication replaces Home with the reviewed canonical index. Preserve any existing history and unrelated pages.
-4. Render the canonical pages from that pushed main checkout using the live Release catalog, then invoke the existing publisher with a usable Wiki-write credential in its process environment. The local command below shows the specifically authorized ephemeral owner-OAuth option; it neither creates an Actions secret nor dispatches an Actions publication.
-5. Record activation, initialization and publication as complete only after their actual remote results are observed. No app Release job, version bump, tag, binary rebuild or native-feature merge is part of this operation.
+1. Review and push the v0.2.0 source/docs to `main`, including the native code and version/installer cutover. Use the resulting immutable pushed main SHA for current Wiki rendering; use the frozen `v0.2.0` tag note for the Release body and Wiki version page.
+2. Validate the stable `v0.2.0` tag and canonical note, publish the actual arm64 app archive, `.sha256` and `SHA256SUMS` through the Release workflow, and update the stable Homebrew formula/default installer as authorized. Do not alter archived beta tags/assets or the beta formula. A completed tag or source build alone is not binary-publication proof.
+3. Wiki is enabled with initial Home and Git HEAD. Render the canonical pages from pushed main using the live Release catalog, then run the publisher with a usable Wiki-write credential **only** in the local publisher process environment. The command below shows the authorized ephemeral owner-OAuth route; it does not create an Actions secret or dispatch an Actions publication.
+4. Confirm the remote Wiki push/result and actual Release/asset publication independently. The Release job may succeed while its dependent Wiki job fails for lack of `WIKI_PUBLISH_TOKEN`; do not rerun the binary Release to repair the Wiki or claim the Wiki published before observing its remote result.
 
 ### Credential prerequisite for future automation
 
 Before relying on main-push, workflow-dispatch or post-Release Wiki synchronization:
 
-1. Ensure Wiki is enabled and its initial Home has been saved.
+1. Wiki is already enabled and its initial Home is saved; preserve that history.
 2. Provision a **dedicated** automation credential as `WIKI_PUBLISH_TOKEN` in this repository's Actions secrets. Its account must have write access to this repository's Wiki, with any organization approval/SSO requirements satisfied. Do not copy the owner's existing broad `gh` OAuth login into an automation secret.
-3. Confirm Actions can run the workflows and the ordinary `GITHUB_TOKEN` can read repository metadata, source and the Release API. The Wiki credential is not used for those reads. Until the dedicated secret is provisioned, automatic or workflow-dispatch publication lacks its required push credential; the one-time local publication does not remove that prerequisite.
+3. Confirm Actions can run the workflows and the ordinary `GITHUB_TOKEN` can read repository metadata, source and the Release API. The Wiki credential is not used for those reads. Until the dedicated secret is provisioned, automatic or workflow-dispatch publication lacks its required push credential; local manual publication does not remove that prerequisite.
 
 Choose a credential type that is actually supported for **Git-over-HTTPS Wiki push**, not merely one that can read the main repository API. A dedicated classic personal access token with `public_repo` for this public repository is one supported option; a private repository would require the corresponding broader `repo` scope. The owning automation account's repository rights still matter. These scopes are broader than a single Wiki, so use a dedicated account/credential, limit account access, set an expiry, record an owner for renewal, and revoke/rotate it if compromised. Do not assume a fine-grained token or a GitHub App installation token works for Wiki Git operations without establishing that support first. The ordinary Actions `GITHUB_TOKEN` is **not assumed to write Wiki**.
 
@@ -36,7 +33,7 @@ Recommended owner safeguards, not runtime prerequisites: protect the default bra
 
 ## Workflow and trust boundary
 
-[`.github/workflows/wiki.yml`](../../.github/workflows/wiki.yml) runs for relevant document/script changes pushed to `main`, can be run manually, and can be called after a successful Release job. It resolves the actual default branch through the GitHub API, reads that branch's current commit SHA, and checks out **that immutable SHA** with full tag history. For this authorized change that source is docs/tools-only main, not the unmerged local native branch. A caller's old release tag is never used as the current index snapshot. Only default-branch push/manual runs, or a release-tag push caller with the matching required tag, are accepted; no pull-request code is a publication source. Successful HTTPS publication still requires the separately configured dedicated credential.
+[`.github/workflows/wiki.yml`](../../.github/workflows/wiki.yml) runs for relevant document/script changes pushed to `main`, can be run manually, and can be called after a successful Release job. It resolves the actual default branch through the GitHub API, reads that branch's current commit SHA, and checks out **that immutable SHA** with full tag history. For v0.2.0 this source is the reviewed native-and-documentation main, not the historical unmerged local checkout. A caller's old release tag is never used as the current index snapshot. Only default-branch push/manual runs, or a release-tag push caller with the matching required tag, are accepted; no pull-request code is a publication source. Successful HTTPS publication still requires the separately configured dedicated Wiki write credential, or the explicitly authorized process-local owner-OAuth route for manual publication.
 
 The checkout does not persist credentials. GitHub API reads use only the ordinary `GITHUB_TOKEN` (`contents: read`). Rendering finishes and validates the full managed page set **before** the publisher is invoked. `WIKI_PUBLISH_TOKEN` is assigned only in the publishing step's environment. The workflow uses SHA-pinned actions and one repository-wide, non-cancelling publication concurrency group, shared by push, manual and reusable calls.
 
@@ -74,9 +71,9 @@ Generated pages contain source attribution with immutable source references. Pub
 
 ## Routine documentation updates and Wiki-only repair
 
-Edit canonical repository pages, review them, and merge to the default branch. After the dedicated automation credential is configured, relevant main-branch pushes synchronize Unreleased, migration guidance, policy and navigation. These documentation/tooling runs do not create a Release, merge local pending native commits, or move pending changes into a shipped version.
+Edit canonical repository pages, review them, and merge to the default branch. After the dedicated automation credential is configured, relevant main-branch pushes synchronize Unreleased, migration guidance, policy and navigation. Documentation-only sync runs do not create a Release or change an already published binary; the separately authorized v0.2.0 source/tag/binary/formula cutover is a stable Release operation, not a Wiki-only run.
 
-After Wiki initialization **and dedicated automation credential setup**, initialize the generated view or repair a failed publication by opening [the Wiki workflow](https://github.com/hanbong5938/herdr-desktop-pet/actions/workflows/wiki.yml), choosing the **default branch**, and selecting **Run workflow**. This Actions manual dispatch is distinct from the one-time local owner-OAuth publication:
+After dedicated automation credential setup, repair a failed publication by opening [the Wiki workflow](https://github.com/hanbong5938/herdr-desktop-pet/actions/workflows/wiki.yml), choosing the **default branch**, and selecting **Run workflow**. This Actions manual dispatch is distinct from the authorized local owner-OAuth publication; the Wiki already has initialized Git history:
 
 - Leave **tag** blank for a routine Wiki-only sync/backfill.
 - Set **tag** to an existing public complete release, such as `v0.1.11`, when repairing a post-Release failure and you want that publication requirement rechecked.
@@ -87,7 +84,7 @@ If a called Wiki job fails, its step summary independently checks the Release AP
 
 ## Local rendering and isolated Git publication
 
-The generator has no publishing side effects. For the authorized remote publication, run these commands from the pushed docs/tools-only main checkout at the immutable source SHA, not from the local pending native branch. `git rev-parse HEAD` below must therefore identify that pushed main snapshot; the normal public source references contain documentation/tooling changes only, with no native feature merge:
+The generator has no publishing side effects. For the authorized remote publication, run these commands from the reviewed **pushed v0.2.0 main checkout** at its immutable source SHA, not from the historical local checkout. `git rev-parse HEAD` below must identify that pushed main snapshot with promoted native groups:
 
 ```sh
 rendered="$(mktemp -d)"
@@ -110,7 +107,7 @@ bash scripts/publish-wiki.sh --source-dir "$rendered" \
   --source-ref "$(git rev-parse HEAD)"
 ```
 
-**The command above really commits and pushes to the GitHub Wiki** and is only for owner-authorized publication after Wiki initialization. It requires a usable credential as `WIKI_PUBLISH_TOKEN` in the process environment; never put a literal token in command arguments, shell history, files or the remote URL. For **this authorized one-time local publication only**, the existing owner `gh` OAuth credential may be passed ephemerally to the publisher:
+**The command above really commits and pushes to the GitHub Wiki** and is only for owner-authorized publication from reviewed pushed main. It requires a usable credential as `WIKI_PUBLISH_TOKEN` in the process environment; never put a literal token in command arguments, shell history, files or the remote URL. For **this authorized local manual publication**, the existing owner `gh` OAuth credential may be passed ephemerally to the publisher:
 
 ```sh
 set +x
@@ -128,7 +125,7 @@ bash scripts/publish-wiki.sh --source-dir "$rendered" \
   --source-ref "$(git rev-parse HEAD)"
 ```
 
-`--wiki-url` accepts only a local filesystem path or `file:///` URL. It cannot redirect a token-bearing publisher to another network host. The isolated repository must be a real Git remote with an initial commit and valid HEAD; the publisher clones it, discovers its branch and performs a real ordinary push. No token is required for this local mode. The parent verifier can seed an unrelated Wiki page, verify its preservation, repeat the command to prove no extra commit/push, change rendered content to exercise an update, and use an uninitialized remote or a rejecting Git hook to exercise failures. Those are verification scenarios, not claims they were run by this implementation agent.
+`--wiki-url` accepts only a local filesystem path or `file:///` URL. It cannot redirect a token-bearing publisher to another network host. The isolated repository must be a real Git remote with an initial commit and valid HEAD; the publisher clones it, discovers its branch and performs a real ordinary push. No token is required for this local mode. For isolated verification, seed an unrelated Wiki page, check its preservation, repeat the command to confirm unchanged content causes no extra commit/push, and exercise an update and failure paths against disposable remotes. Do not treat these scenarios as evidence that remote GitHub Wiki publication has occurred.
 
 Publisher options are exactly `--source-dir DIR` (required), `--repository OWNER/REPO` (defaults to `GITHUB_REPOSITORY`, otherwise `hanbong5938/herdr-desktop-pet`), `--source-ref COMMIT` (optional full 40-character SHA for the commit message), `--wiki-url LOCAL_PATH_OR_FILE_URL` (optional isolated local override), and `--help`. It requires Bash, Git and Bun, and the sibling generator module for shared ownership validation.
 
@@ -142,6 +139,7 @@ The generator declares the managed Wiki mappings:
 | `policy.md`, `unreleased.md`, `publishing.md` | `Versioning-and-Compatibility`, `Unreleased`, `Publishing` |
 | `X.Y.md`, `vX.Y.Z.md` | `Release-Line-X.Y`, `Release-vX.Y.Z` |
 | `docs/migrations/v0.1.4-to-v0.1.6.md` | `Migration-v0.1.4-to-v0.1.6` |
+| `docs/migrations/v0.1.11-to-v0.2.0.md` | `Migration-v0.1.11-to-v0.2.0` (one bilingual page) |
 | `docs/migrations/unreleased.md`, `unreleased.ko.md` | `Upgrade-Unreleased`, `Upgrade-Unreleased-ko` |
 | Catalog/generated navigation | `Release-Status`, `Older-Releases`, `_Sidebar` |
 
@@ -152,7 +150,7 @@ For HTTPS Git operations, an ephemeral askpass script reads the publish-step env
 | Failure | Owner action |
 | --- | --- |
 | Wiki disabled, repository missing, or Home never saved | Enable Wiki and save initial Home; then use the authorized local publication or, after dedicated credential setup, Wiki-only workflow repair. |
-| Missing, expired, revoked or insufficient automation credential | Provision/renew the dedicated token with proven Wiki Git write access and necessary account/SSO rights. Never copy broad owner OAuth into CI; the explicitly authorized one-time local use is not an automation credential. |
+| Missing, expired, revoked or insufficient automation credential | Provision/renew the dedicated token with proven Wiki Git write access and necessary account/SSO rights. Never copy broad owner OAuth into CI; authorized process-local use is not an automation credential. |
 | Source ref/tag unavailable, invalid note, missing future frozen note | Fix/review canonical source or fetch the required history; do not invent a release or fall back to unrelated content. |
 | Selected Release draft, unpublished or missing required uploaded assets | Inspect the actual Release/asset publication; a note or tag cannot make it shipped. |
 | Unsafe/invalid managed manifest or generated destination conflict | Inspect generated ownership metadata and the named Wiki path; preserve unrelated pages while resolving the conflict. |
@@ -162,10 +160,10 @@ A render error occurs before the publisher is called. Clone/validation/copy/comm
 
 ## 한국어 운영·안전 요약
 
-정본은 저장소에서 검토한 Markdown이며 Wiki는 생성된 읽기용 문서입니다. 앱 버전은 **0.1.11**로 유지됩니다. 이번 허용 범위는 main에 **문서·도구만** 커밋/푸시하고 Wiki를 활성화·첫 Home으로 초기화한 뒤 한 번 로컬 수동 발행하는 것입니다. 네이티브·플러그인·통합 코드, 앱 버전·태그·바이너리·자산·기존 Release 본문은 바꾸지 않습니다. 네 가지 네이티브 변경은 로컬 `worktree/rapid-harbor-d2a6`의 `bf23ced1649fd0074aec8736644c8f02aa0c492b`에 미병합 상태로 남으며 main의 `--source` 빌드나 공개 v0.1.11에는 없습니다. 공개 fetch를 가정하지 마세요. Wiki 소스 SHA는 푸시된 문서·도구 전용 main 커밋이어야 하며 로컬 네이티브 브랜치 SHA를 쓰지 않습니다.
+정본은 저장소에서 검토한 Markdown이며 Wiki는 생성된 읽기용 문서입니다. 현재 안정판 소스·릴리스 계약은 **0.2.0**으로, 이전 베타3의 네이티브 기능을 `main`에 포함하고 안정판 태그·바이너리·Homebrew 포뮬러·기본 설치·Wiki 발행이 허용되었습니다. 예전 `9cbad32` 시기의 문서·도구 전용 허가는 역사적 범위이지 현재의 제한이 아닙니다. beta1/2/3의 태그·자산과 별도 베타 포뮬러는 그대로 둡니다. 실제 릴리스 게시 상태는 공개 Release 카탈로그·업로드된 자산으로 판단합니다.
 
-원래 읽기 전용 점검에서는 Wiki가 꺼져 있고 Actions 비밀이 없었으며 설정·초기 페이지·원격 커밋/푸시/배포는 하지 않았습니다. 지금은 위 절차가 허용되었지만 이 문서는 원격 활성화·초기화·발행이 이미 성공했다고 주장하지 않습니다. **전용 `WIKI_PUBLISH_TOKEN` Actions 비밀은 아직 설정되지 않았습니다.** 이번 한 번의 로컬 수동 발행에는 기존 소유자 `gh` OAuth를 추적·출력·저장 없이 발행 프로세스 환경에만 일시적으로 전달할 수 있습니다. 절대로 CI 비밀에 복사하지 마세요. 이후 main 푸시·Actions 수동 실행·릴리스 후 자동 발행에는 실제 Wiki Git 쓰기 권한·만료·소유자를 확인한 **전용** 자동화 토큰을 따로 설정해야 합니다. 일반 `GITHUB_TOKEN`의 Wiki 쓰기 권한은 가정하지 않습니다.
+원래 읽기 전용 점검에서는 Wiki가 꺼져 있고 Actions 비밀이 없었으며 설정·초기 페이지·원격 커밋/푸시/배포는 하지 않았습니다. 이후 Wiki가 활성화되어 첫 Home과 HEAD `680633c28f33f264b5d532a385370e1ec5995d1a`가 확인되었습니다. 이 사실만으로 생성된 v0.2.0 Wiki 페이지가 게시됐다고 주장하지 않습니다. **전용 `WIKI_PUBLISH_TOKEN` Actions 비밀은 아직 설정되지 않았습니다.** 허가된 로컬 수동 발행에는 기존 소유자 `gh` OAuth를 추적·출력·저장 없이 발행 프로세스 환경에만 일시적으로 전달할 수 있습니다. 절대로 CI 비밀에 복사하지 마세요. 이후 main 푸시·Actions 수동 실행·릴리스 후 자동 발행에는 실제 Wiki Git 쓰기 권한·만료·소유자를 확인한 **전용** 자동화 토큰을 따로 설정해야 합니다. 일반 `GITHUB_TOKEN`의 Wiki 쓰기 권한은 가정하지 않습니다.
 
-새 릴리스의 본문과 Wiki 버전 페이지는 같은 태그의 고정된 문서를 사용하고, 인덱스·정책·Unreleased는 현재 기본 브랜치 문서와 실제 Release API 상태를 사용합니다. Markdown 병합이나 태그 존재만으로 미배포 변경을 출시 완료로 표시하지 않습니다. Wiki가 초기화되고 전용 자동화 토큰이 준비된 뒤에는 아래 Wiki 전용 워크플로로 복구할 수 있으며, 이번 로컬 수동 발행과 Actions의 수동 실행은 다른 경로입니다.
+새 릴리스의 본문과 Wiki 버전 페이지는 같은 태그의 고정된 문서를 사용하고, 인덱스·정책·Unreleased는 현재 기본 브랜치 문서와 실제 Release API 상태를 사용합니다. Markdown 병합이나 태그 존재만으로 미배포 변경을 출시 완료로 표시하지 않습니다. 전용 자동화 토큰이 준비된 뒤에는 아래 Wiki 전용 워크플로로 복구할 수 있으며, 허가된 로컬 수동 발행과 Actions의 수동 실행은 다른 경로입니다.
 
 Wiki만 실패했으면 이미 공개된 Release는 그대로 두고 [Wiki 전용 워크플로](https://github.com/hanbong5938/herdr-desktop-pet/actions/workflows/wiki.yml)를 **기본 브랜치**에서 다시 실행하세요. 일반 동기화는 tag를 비우고, 릴리스 후 복구는 해당 공개·완전 배포 태그를 넣습니다. Wiki 복구 때문에 바이너리 릴리스 작업을 다시 실행하지 마세요. 과거 v0.1.5는 태그만 있고 공개 바이너리가 없습니다. 관련 없는 Wiki 페이지와 기존 이력은 보존하고, 충돌 해결에 force push를 쓰지 않습니다. 로컬 `--wiki-url` 검증은 초기 커밋이 있는 격리된 로컬 Git 원격만 대상으로 합니다.

@@ -29,6 +29,19 @@ const WORKTREE_REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 static PROMPT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RequestOrigin {
+    Gui,
+    Cli { operation_id: String },
+}
+
+#[derive(Debug)]
+pub(crate) struct PromptSubmission {
+    pub(crate) key: SessionKey,
+    pub(crate) text: String,
+    pub(crate) origin: RequestOrigin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PromptError {
     Empty,
     TooLarge,
@@ -45,8 +58,7 @@ pub(crate) enum PromptError {
 
 #[derive(Debug)]
 pub(crate) struct PromptResult {
-    pub(crate) key: SessionKey,
-    pub(crate) text: String,
+    pub(crate) submission: Arc<PromptSubmission>,
     pub(crate) result: Result<(), PromptError>,
 }
 
@@ -54,22 +66,27 @@ pub(crate) struct PromptResult {
 /// the serial status watcher or holds the application mutex during socket I/O.
 pub(crate) struct PromptSender {
     shared: Arc<Mutex<AppState>>,
-    receiver: Option<Receiver<PromptResult>>,
+    pending: Option<(Receiver<PromptResult>, Arc<PromptSubmission>)>,
 }
 
 impl PromptSender {
     pub(crate) fn new(shared: Arc<Mutex<AppState>>) -> Self {
         Self {
             shared,
-            receiver: None,
+            pending: None,
         }
     }
 
     pub(crate) fn is_pending(&self) -> bool {
-        self.receiver.is_some()
+        self.pending.is_some()
     }
 
-    pub(crate) fn submit(&mut self, key: SessionKey, text: String) -> Result<(), PromptError> {
+    pub(crate) fn submit(
+        &mut self,
+        key: SessionKey,
+        text: String,
+        origin: RequestOrigin,
+    ) -> Result<(), PromptError> {
         if self.is_pending() {
             return Err(PromptError::Busy);
         }
@@ -83,11 +100,25 @@ impl PromptSender {
             let state = self.shared.lock().map_err(|_| PromptError::Offline)?;
             state.prompt_target(&key)?
         };
-        let frame = serde_json::json!({
-            "id": "desktop-pet-prompt-4294967295-18446744073709551615",
-            "method": "agent.prompt",
-            "params": { "target": target.pane_id, "text": text },
-        });
+        #[derive(serde::Serialize)]
+        struct PromptFrame<'a> {
+            id: &'static str,
+            method: &'static str,
+            params: PromptParams<'a>,
+        }
+        #[derive(serde::Serialize)]
+        struct PromptParams<'a> {
+            target: &'a str,
+            text: &'a str,
+        }
+        let frame = PromptFrame {
+            id: "desktop-pet-prompt-4294967295-18446744073709551615",
+            method: "agent.prompt",
+            params: PromptParams {
+                target: &target.pane_id,
+                text: &text,
+            },
+        };
         if serde_json::to_vec(&frame)
             .map_err(|error| PromptError::Other(error.to_string()))?
             .len()
@@ -96,36 +127,39 @@ impl PromptSender {
         {
             return Err(PromptError::TooLarge);
         }
+        let submission = Arc::new(PromptSubmission { key, text, origin });
         let (tx, rx) = mpsc::sync_channel(1);
         let shared = Arc::clone(&self.shared);
-        let worker_text = text;
+        let worker_submission = Arc::clone(&submission);
         thread::Builder::new()
             .name("herdr-desktop-pet-prompt".to_owned())
             .spawn(move || {
-                let result = send_prompt(&shared, &key, &worker_text);
+                let result = send_prompt(&shared, &worker_submission.key, &worker_submission.text);
                 let _ = tx.send(PromptResult {
-                    key,
-                    text: worker_text,
+                    submission: worker_submission,
                     result,
                 });
                 wake_ui();
             })
             .map_err(|error| PromptError::Other(error.to_string()))?;
-        self.receiver = Some(rx);
+        self.pending = Some((rx, submission));
         Ok(())
     }
 
     pub(crate) fn try_result(&mut self) -> Option<PromptResult> {
-        let receiver = self.receiver.as_ref()?;
+        let (receiver, _) = self.pending.as_ref()?;
         match receiver.try_recv() {
             Ok(result) => {
-                self.receiver = None;
+                self.pending = None;
                 Some(result)
             }
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
-                self.receiver = None;
-                None
+                let (_, submission) = self.pending.take()?;
+                Some(PromptResult {
+                    submission,
+                    result: Err(PromptError::UnknownDelivery),
+                })
             }
         }
     }
@@ -271,6 +305,7 @@ impl From<WorktreeRemoveTargetError> for WorktreeRemoveError {
 #[derive(Debug)]
 pub(crate) struct WorktreeRemoveResult {
     pub(crate) target: WorktreeRemoveTarget,
+    pub(crate) origin: RequestOrigin,
     pub(crate) result: Result<(), WorktreeRemoveError>,
 }
 
@@ -278,7 +313,11 @@ pub(crate) struct WorktreeRemoveResult {
 /// remains the sole publisher of subsequent authoritative observations.
 pub(crate) struct WorktreeRemoveSender {
     shared: Arc<Mutex<AppState>>,
-    pending: Option<(Receiver<WorktreeRemoveResult>, WorktreeRemoveTarget)>,
+    pending: Option<(
+        Receiver<WorktreeRemoveResult>,
+        WorktreeRemoveTarget,
+        RequestOrigin,
+    )>,
 }
 
 impl WorktreeRemoveSender {
@@ -296,6 +335,7 @@ impl WorktreeRemoveSender {
     pub(crate) fn submit(
         &mut self,
         target: WorktreeRemoveTarget,
+        origin: RequestOrigin,
     ) -> Result<(), WorktreeRemoveError> {
         if self.is_pending() {
             return Err(WorktreeRemoveError::Busy);
@@ -311,20 +351,25 @@ impl WorktreeRemoveSender {
         let (tx, rx) = mpsc::sync_channel(1);
         let shared = Arc::clone(&self.shared);
         let pending_target = target.clone();
+        let pending_origin = origin.clone();
         thread::Builder::new()
             .name("herdr-desktop-pet-worktree-remove".to_owned())
             .spawn(move || {
                 let result = send_worktree_remove(&shared, &target);
-                let _ = tx.send(WorktreeRemoveResult { target, result });
+                let _ = tx.send(WorktreeRemoveResult {
+                    target,
+                    origin,
+                    result,
+                });
                 wake_ui();
             })
             .map_err(|error| WorktreeRemoveError::Other(error.to_string()))?;
-        self.pending = Some((rx, pending_target));
+        self.pending = Some((rx, pending_target, pending_origin));
         Ok(())
     }
 
     pub(crate) fn try_result(&mut self) -> Option<WorktreeRemoveResult> {
-        let (receiver, _) = self.pending.as_ref()?;
+        let (receiver, _, _) = self.pending.as_ref()?;
         match receiver.try_recv() {
             Ok(result) => {
                 self.pending = None;
@@ -332,9 +377,10 @@ impl WorktreeRemoveSender {
             }
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
-                let (_, target) = self.pending.take()?;
+                let (_, target, origin) = self.pending.take()?;
                 Some(WorktreeRemoveResult {
                     target,
+                    origin,
                     result: Err(WorktreeRemoveError::UnknownDelivery),
                 })
             }
@@ -411,6 +457,9 @@ fn send_worktree_remove(
     if &current != target {
         return Err(WorktreeRemoveError::StaleTarget);
     }
+    // Snapshot equality does not close the race before worktree.remove. Keep
+    // force:false so Herdr performs its own dirty-worktree safety check; even
+    // a subsequent watcher disappearance certifies neither disk nor pixels.
     let response = herdr_protocol::request_with_delivery(
         path,
         &worktree_request_id(),
@@ -711,7 +760,7 @@ pub(crate) struct Endpoint {
     ambiguous_terminal_ids: HashSet<String>,
     outcome_snapshot_unix_ms: Option<u64>,
     last_sessions: usize,
-    pane_ids: Vec<String>,
+    pane_ids: Arc<[String]>,
     stream: Option<SubscriptionReader>,
     next_attempt: Instant,
     next_reconcile: Instant,
@@ -845,7 +894,7 @@ impl Endpoint {
             outcomes: HashMap::new(),
             outcome_snapshot_unix_ms: None,
             last_sessions: 0,
-            pane_ids: Vec::new(),
+            pane_ids: Arc::from([]),
             stream: None,
             next_attempt: Instant::now(),
             next_reconcile: Instant::now(),
@@ -909,7 +958,7 @@ impl Endpoint {
         self.outcomes.clear();
         self.outcome_snapshot_unix_ms = None;
         self.ambiguous_terminal_ids.clear();
-        self.pane_ids.clear();
+        self.pane_ids = Arc::from([]);
         if let Ok(mut state) = shared.lock() {
             let _ = state.begin_source(self.source.clone(), self.generation);
         }
@@ -989,6 +1038,7 @@ impl Endpoint {
                         done: counts.done,
                         unknown: counts.unknown,
                     },
+                    Arc::clone(&self.pane_ids),
                     completions,
                     observed_at,
                 )
@@ -1158,7 +1208,10 @@ impl Endpoint {
                 self.ambiguous_terminal_ids.insert(terminal_id.to_owned());
             }
         }
-        self.pane_ids = snapshot.pane_ids();
+        let panes = snapshot.pane_ids();
+        if panes.as_slice() != self.pane_ids.as_ref() {
+            self.pane_ids = Arc::from(panes);
+        }
         // Classify against the complete incoming snapshot while the previous
         // winners are still available; rebuilding below can then reuse the map.
         for record in &snapshot.agents {
@@ -1226,7 +1279,7 @@ impl Endpoint {
     /// completion.  All other snapshot changes become the new baseline.
     fn reconcile_snapshot(&mut self, snapshot: herdr_protocol::Snapshot) -> Vec<(String, String)> {
         let pane_ids = snapshot.pane_ids();
-        let completions = if pane_ids != self.pane_ids {
+        let completions = if pane_ids.as_slice() != self.pane_ids.as_ref() {
             Vec::new()
         } else {
             let mut old_pane_counts = HashMap::<&str, usize>::new();
@@ -1590,7 +1643,7 @@ fn reconcile_endpoint(
         return;
     };
     let completions;
-    if snapshot.pane_ids() != endpoint.pane_ids {
+    if snapshot.pane_ids().as_slice() != endpoint.pane_ids.as_ref() {
         completions = Vec::new();
         endpoint.replace_snapshot(snapshot.clone());
         match converge_subscription(endpoint, request_counter, snapshot) {
@@ -1704,6 +1757,78 @@ mod tests {
     use super::*;
     use crate::session_view::SessionListOptions;
 
+    #[test]
+    fn disconnected_prompt_worker_returns_matching_uncertainty_once_without_copying_text() {
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let mut sender = PromptSender::new(shared);
+        let origin = RequestOrigin::Cli {
+            operation_id: "prompt-disconnect".into(),
+        };
+        let submission = Arc::new(PromptSubmission {
+            key: SessionKey {
+                source_id: 17,
+                generation: 2,
+                terminal_id: "terminal".into(),
+            },
+            text: "x".repeat(400_000),
+            origin: origin.clone(),
+        });
+        let text_ptr = submission.text.as_ptr();
+        let (tx, rx) = mpsc::sync_channel(1);
+        sender.pending = Some((rx, Arc::clone(&submission)));
+        drop(tx);
+
+        assert!(sender.is_pending());
+        let result = sender
+            .try_result()
+            .expect("disconnected worker must report uncertainty");
+        assert_eq!(result.result, Err(PromptError::UnknownDelivery));
+        assert!(Arc::ptr_eq(&result.submission, &submission));
+        assert_eq!(result.submission.text.as_ptr(), text_ptr);
+        assert_eq!(result.submission.origin, origin);
+        assert!(!sender.is_pending());
+        assert!(sender.try_result().is_none());
+    }
+
+    #[test]
+    fn disconnected_worktree_worker_preserves_origin_and_clears_pending_once() {
+        let mut sender = WorktreeRemoveSender::new(Arc::new(Mutex::new(AppState::new())));
+        let target = WorktreeRemoveTarget {
+            key: SessionKey {
+                source_id: 17,
+                generation: 2,
+                terminal_id: "terminal".into(),
+            },
+            source: "/virtual/socket".into(),
+            pane_id: "pane".into(),
+            workspace_id: "workspace".into(),
+            worktree: Arc::new(herdr_protocol::WorkspaceWorktreeInfo {
+                repo_key: "repo".into(),
+                repo_name: "Repo".into(),
+                repo_root: "/virtual/repo".into(),
+                checkout_path: "/virtual/checkout".into(),
+                is_linked_worktree: true,
+                pane_count: 1,
+                tab_count: 1,
+            }),
+        };
+        let origin = RequestOrigin::Cli {
+            operation_id: "remove-disconnect".into(),
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        sender.pending = Some((rx, target.clone(), origin.clone()));
+        drop(tx);
+
+        let result = sender
+            .try_result()
+            .expect("disconnected worker must report uncertainty");
+        assert_eq!(result.target, target);
+        assert_eq!(result.origin, origin);
+        assert_eq!(result.result, Err(WorktreeRemoveError::UnknownDelivery));
+        assert!(!sender.is_pending());
+        assert!(sender.try_result().is_none());
+    }
+
     fn settings(exit_with_herdr: bool) -> LifecycleSettings {
         LifecycleSettings {
             auto_start: false,
@@ -1788,6 +1913,7 @@ mod tests {
             1,
             empty.iter(),
             SourceCounts::default(),
+            Arc::from([]),
             &[],
             start,
         ));
@@ -2052,6 +2178,7 @@ mod tests {
                 1,
                 empty.iter(),
                 SourceCounts::default(),
+                Arc::from([]),
                 &[],
                 now,
             ));

@@ -7,6 +7,8 @@ mod agent_outcome;
 mod alpha;
 mod animation;
 mod assets;
+mod automation;
+mod automation_cli;
 mod behavior;
 mod bubble;
 mod bundle;
@@ -20,6 +22,7 @@ mod composer_layout;
 mod control;
 mod daemon;
 mod dialogue;
+mod dialogue_automation;
 mod dialogue_editor;
 mod display_geometry;
 mod herdr;
@@ -45,6 +48,7 @@ mod status_indicator;
 #[cfg(test)]
 mod transport_tests;
 mod ui;
+mod worktree_confirmation;
 use character_service::execute_offline;
 use character_store::PackStore;
 use character_types::{validate_pack_id, PackAction, PackOperation, PackRequest};
@@ -76,7 +80,95 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOG_MODE: u32 = 0o600;
 const MAX_SOURCE_PATH_BYTES: usize = 4096;
-const USAGE: &str = concat!("Usage: herdr-desktop-pet [COMMAND] [OPTIONS]\n\nCommands:\n    ensure              Start automatically if auto_start is on; otherwise skip\n    start               Start the daemon without changing lifecycle settings\n    stop                Stop the current daemon or pending startup\n    restart             Stop, then manually start without changing settings\n    settings            Open lifecycle settings without starting the pet\n    settings get        Show lifecycle settings as JSON\n    settings set auto_start on|off\n    settings set exit_with_herdr on|off\n    status              Show daemon, registration, data, and executable status\n    show                Show character; reattach visible bubble\n    hide                Hide character; leave enabled bubble standalone\n    toggle              Toggle character visibility, independently of bubble\n    passthrough         Toggle full-window click-through for both windows\n    alpha_passthrough   Toggle alpha-mask click-through for character only\n    show_bubble         Show bubble, including when character is hidden\n    hide_bubble         Hide bubble without changing character visibility\n    bubble_above        Place bubble above pet when attached\n    bubble_below        Place bubble below pet when attached\n    bubble_left         Place bubble to the left of pet when attached\n    bubble_right        Place bubble to the right of pet when attached\n    bubble_auto         Place bubble automatically when attached\n    reset               Reset character and standalone bubble positions; keep visibility\n    bigger              Increase renderer scale\n    smaller             Decrease renderer scale\n    pack list            List managed character packs\n    pack import         Import a character pack directory or archive (--path PATH)\n    pack validate       Validate and fully prepare a character source (--path PATH)\n    pack preview        Render a deterministic source-sized PNG (--path PATH --output PATH [--phase idle|running|waiting|unknown] [--time-ms N] [--reaction head_tap|body_tap|pet|completion_observed] [--reaction-age-ms N] [--hit-overlay])\n    pack export ID      Export a managed revision or builtin ([--revision N] --output PATH)\n    pack select ID      Select the newest revision of a pack\n    pack update ID      Add a revision from a directory (--path DIR)\n    pack restore ID     Restore a historic revision (--revision N)\n    pack remove ID      Remove a pack (active selection falls back to builtin)\n    pack status OPID    Show a pack operation\n\nOptions:\n    --socket PATH       Herdr Unix socket path\n    --assets PATH       Renderer assets directory (legacy commands only)\n    --config-dir PATH   Lifecycle and preference directory\n    --state-dir PATH    Runtime state directory\n    -h, --help          Show this help\n    -V, --version       Show version\n", "\nIndependent-model preview:\n    --pose NAME         waiting, writing, failed, cancelled, disconnected, bored,\n                        happy, head-tap, torso-tap, head-pet (v5 rig packs)\n");
+const USAGE: &str = concat!(
+    "Usage: herdr-desktop-pet [COMMAND] [OPTIONS]\n\nCommands:\n",
+    "    ensure              Start automatically if auto_start is on; otherwise skip\n",
+    "    start               Start the daemon without changing lifecycle settings\n",
+    "    stop                Stop the current daemon or pending startup\n",
+    "    restart             Stop, then manually start without changing settings\n",
+    "    settings            Open lifecycle settings without starting the pet\n",
+    "    settings get        Show lifecycle settings as JSON\n",
+    "    settings set auto_start on|off\n",
+    "    settings set exit_with_herdr on|off\n",
+    "    status              Show daemon, registration, data, and executable status\n",
+    "    show                Show character; reattach visible bubble\n",
+    "    hide                Hide character; leave enabled bubble standalone\n",
+    "    toggle              Toggle character visibility, independently of bubble\n",
+    "    passthrough         Toggle full-window click-through for both windows\n",
+    "    alpha_passthrough   Toggle alpha-mask click-through for character only\n",
+    "    show_bubble         Show bubble, including when character is hidden\n",
+    "    hide_bubble         Hide bubble without changing character visibility\n",
+    "    bubble_above        Place bubble above pet when attached\n",
+    "    bubble_below        Place bubble below pet when attached\n",
+    "    bubble_left         Place bubble to the left of pet when attached\n",
+    "    bubble_right        Place bubble to the right of pet when attached\n",
+    "    bubble_auto         Place bubble automatically when attached\n",
+    "    reset               Reset character and standalone bubble positions; keep visibility\n",
+    "    bigger              Increase renderer scale\n",
+    "    smaller             Decrease renderer scale\n",
+    "    presentation get    Show desired, effective/native and persisted presentation\n",
+    "    presentation set    Set absolute presentation fields (see options below)\n",
+    "    presentation reset  Reset pet/bubble positions without changing visibility\n",
+    "    presentation status OPID --instance ID   Show an operation from this daemon instance\n",
+    "    preferences get      Show saved and effective preferences from the running daemon\n",
+    "    preferences set      Set --language system|ko|en, --theme warm_ivory|dusty_rose|moonlit_ink|custom,\n",
+    "                         --surface/--text/--muted/--border/--accent #RRGGBB (partial palette preserves saved colors),\n",
+    "                         --status-indicators on|off, --menu-bar always|recovery_only,\n",
+    "                         --observation-local/--observation-remote on|off, --machine ID (repeatable) or --clear-machines\n",
+    "                         [--expected-revision N] [--operation-id ID] [--wait SECONDS|--no-wait]\n",
+    "    preferences status   --instance ID --operation-id ID (preference operations only)\n",
+    "    sessions list        --instance ID [--filter all|idle|working|waiting|completed|unknown|offline] [--limit 1..128]\n",
+    "    sessions show        --instance ID --source N --generation N --terminal ID\n",
+    "    sessions prompt      --instance ID --source N --generation N --terminal ID\n",
+    "                         exactly one of --text TEXT, --file PATH, --stdin; [--operation-id ID] [--wait SECONDS|--no-wait]\n",
+    "    sessions status      --instance ID --operation-id ID (prompt operations only)\n",
+    "    dialogue list        List editor targets, identities, locales and slots\n",
+    "    dialogue get         --target JSON --locale ko|en --slot KEY\n",
+    "    dialogue set         --target JSON --locale ko|en --slot KEY exactly one of --text TEXT, --file PATH, --stdin\n",
+    "    dialogue reset-entry --target JSON --locale ko|en --slot KEY\n",
+    "    dialogue reset-character --target JSON\n",
+    "                         --slot KEY: idle|running|waiting|unknown|head_tap|body_tap|pet|completion_observed\n",
+    "                         --target is the serialized identity returned by dialogue list; omit --baseline to read fresh CAS first\n",
+    "                         Mutations accept [--baseline JSON] [--operation-id ID] [--wait SECONDS|--no-wait]\n",
+    "    dialogue status      --instance ID --operation-id ID (dialogue operations only)\n",
+    "    worktree inspect     --instance ID --source N --generation N --terminal ID\n",
+    "    worktree remove      --token TOKEN [--operation-id ID] [--wait SECONDS|--no-wait]\n",
+    "    worktree status      --instance ID --operation-id ID (worktree operations only)\n",
+    "    Worktree inspect issues an expiring one-use token; remove accepts that token only (no force/path).\n",
+    "    pack list            List managed character packs\n",
+    "    pack import         Import a character pack directory or archive (--path PATH)\n",
+    "    pack validate       Validate and fully prepare a character source (--path PATH)\n",
+    "    pack preview        Render a deterministic source-sized PNG (--path PATH --output PATH [--phase idle|running|waiting|unknown] [--time-ms N] [--reaction head_tap|body_tap|pet|completion_observed] [--reaction-age-ms N] [--hit-overlay])\n",
+    "    pack export ID      Export a managed revision or builtin ([--revision N] --output PATH)\n",
+    "    pack select ID      Select the newest revision of a pack\n",
+    "    pack update ID      Add a revision from a directory (--path DIR)\n",
+    "    pack restore ID     Restore a historic revision (--revision N)\n",
+    "    pack remove ID      Remove a pack (active selection falls back to builtin)\n",
+    "    pack status OPID    Show a pack operation\n\n",
+    "Pack mutation options: [--operation-id ID] [--expected-generation N] [--wait SECONDS|--no-wait].\n",
+    "Async/custom finite waits require a running daemon; offline default executes synchronously.\n\n",
+    "Presentation set fields (at least one required):\n",
+    "    --visible on|off  --passthrough on|off  --alpha-passthrough on|off\n",
+    "    --bubble-visible on|off  --bubble-placement above|below|left|right|auto\n",
+    "    --scale NUMBER       Absolute finite renderer scale\n",
+    "Presentation set/reset options:\n",
+    "    --expected-revision N   Reject a concurrent presentation change\n",
+    "    --operation-id ID       Caller-chosen unique operation ID (otherwise generated)\n",
+    "    --wait SECONDS         Wait up to SECONDS for applied (default 15; no mutation retry)\n",
+    "    --no-wait              Return acknowledged accepted/pending state without waiting\n",
+    "    An ACK confirms only acceptance, not native application or persistence.\n",
+    "    On uncertain transmission use presentation status OPID --instance ID.\n\n",
+    "Options:\n",
+    "    --socket PATH       Herdr Unix socket path\n",
+    "    --assets PATH       Renderer assets directory (not for pack/settings/presentation/preferences/sessions/dialogue/worktree)\n",
+    "    --config-dir PATH   Lifecycle and preference directory\n",
+    "    --state-dir PATH    Runtime state directory\n",
+    "    -h, --help          Show this help\n",
+    "    -V, --version       Show version\n",
+    "\nIndependent-model preview:\n",
+    "    --pose NAME         waiting, writing, failed, cancelled, disconnected, bored,\n",
+    "                        happy, head-tap, torso-tap, head-pet (v5 rig packs)\n"
+);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum CommandKind {
@@ -102,6 +194,11 @@ enum CommandKind {
     Bigger,
     Smaller,
     Daemon,
+    Presentation,
+    Preferences,
+    Sessions,
+    Dialogue,
+    Worktree,
     Pack,
     SettingsGet,
     SettingsSet,
@@ -133,6 +230,11 @@ impl CommandKind {
             "smaller" => Self::Smaller,
             "daemon" => Self::Daemon,
             "pack" => Self::Pack,
+            "presentation" => Self::Presentation,
+            "preferences" => Self::Preferences,
+            "sessions" => Self::Sessions,
+            "dialogue" => Self::Dialogue,
+            "worktree" => Self::Worktree,
             _ => return None,
         })
     }
@@ -166,6 +268,11 @@ impl CommandKind {
             Self::Smaller => "smaller",
             Self::Daemon => "daemon",
             Self::Pack => "pack",
+            Self::Presentation => "presentation",
+            Self::Preferences => "preferences",
+            Self::Sessions => "sessions",
+            Self::Dialogue => "dialogue",
+            Self::Worktree => "worktree",
             Self::SettingsGet => "settings-get",
             Self::SettingsSet => "settings-set",
         }
@@ -175,8 +282,12 @@ impl CommandKind {
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum PackCommand {
     List,
-    Import {
-        path: PathBuf,
+    Mutation {
+        action: PackAction,
+        operation_id: Option<String>,
+        expected_generation: Option<u64>,
+        wait: Option<Duration>,
+        async_requested: bool,
     },
     Validate {
         path: PathBuf,
@@ -196,20 +307,6 @@ enum PackCommand {
         revision: Option<u64>,
         output: PathBuf,
     },
-    Select {
-        id: String,
-    },
-    Update {
-        id: String,
-        path: PathBuf,
-    },
-    Restore {
-        id: String,
-        revision: u64,
-    },
-    Remove {
-        id: String,
-    },
     Status {
         operation_id: String,
     },
@@ -226,6 +323,8 @@ struct Cli {
     command: Option<CommandKind>,
     pack: Option<PackCommand>,
     settings: Option<SettingsCommand>,
+    presentation: Option<automation_cli::PresentationCommand>,
+    automation: Option<automation_cli::DomainCommand>,
     socket: Option<PathBuf>,
     assets: Option<PathBuf>,
     config_dir: Option<PathBuf>,
@@ -258,6 +357,11 @@ fn run() -> Result<(), String> {
             | CommandKind::Settings
             | CommandKind::SettingsGet
             | CommandKind::SettingsSet
+            | CommandKind::Presentation
+            | CommandKind::Preferences
+            | CommandKind::Sessions
+            | CommandKind::Dialogue
+            | CommandKind::Worktree
     ) && cli.assets.is_some()
     {
         return Err("--assets is not valid with this command".to_owned());
@@ -298,6 +402,8 @@ fn run() -> Result<(), String> {
         assets_override,
         cli.pack,
         cli.settings,
+        cli.presentation,
+        cli.automation,
     )
 }
 
@@ -309,6 +415,8 @@ fn execute_command(
     assets_override: bool,
     pack: Option<PackCommand>,
     settings: Option<SettingsCommand>,
+    presentation: Option<automation_cli::PresentationCommand>,
+    automation: Option<automation_cli::DomainCommand>,
 ) -> Result<(), String> {
     match command {
         CommandKind::Ensure => ensure(paths, herdr_socket, assets, assets_override, true),
@@ -346,14 +454,38 @@ fn execute_command(
             paths,
         ),
         CommandKind::Daemon => unreachable!(),
+        CommandKind::Presentation => automation_cli::execute(
+            presentation.ok_or_else(|| "presentation requires an operation".to_owned())?,
+            &paths.control_socket,
+        ),
+        CommandKind::Preferences
+        | CommandKind::Sessions
+        | CommandKind::Dialogue
+        | CommandKind::Worktree => automation_cli::execute_domain(
+            automation.ok_or_else(|| "automation operation missing".to_owned())?,
+            &paths.control_socket,
+        ),
     }
 }
 
 fn execute_pack(command: PackCommand, paths: Paths) -> Result<(), String> {
     match command {
         PackCommand::List => execute_pack_list(&paths),
+        PackCommand::Mutation {
+            action,
+            operation_id,
+            expected_generation,
+            wait,
+            async_requested,
+        } => execute_pack_mutation(
+            &paths,
+            action,
+            operation_id,
+            expected_generation,
+            wait,
+            async_requested,
+        ),
         PackCommand::Status { operation_id } => execute_pack_status(&paths, &operation_id),
-        PackCommand::Import { path } => execute_pack_mutation(&paths, PackAction::Import { path }),
         PackCommand::Validate { path } => pack_authoring::validate(&path),
         PackCommand::Preview {
             path,
@@ -392,14 +524,6 @@ fn execute_pack(command: PackCommand, paths: Paths) -> Result<(), String> {
                 &output,
             )
         }
-        PackCommand::Select { id } => execute_pack_mutation(&paths, PackAction::Select { id }),
-        PackCommand::Update { id, path } => {
-            execute_pack_mutation(&paths, PackAction::Update { id, path })
-        }
-        PackCommand::Restore { id, revision } => {
-            execute_pack_mutation(&paths, PackAction::Restore { id, revision })
-        }
-        PackCommand::Remove { id } => execute_pack_mutation(&paths, PackAction::Remove { id }),
     }
 }
 
@@ -467,20 +591,30 @@ fn execute_pack_status(paths: &Paths, operation_id: &str) -> Result<(), String> 
     }
 }
 
-fn execute_pack_mutation(paths: &Paths, action: PackAction) -> Result<(), String> {
+fn execute_pack_mutation(
+    paths: &Paths,
+    action: PackAction,
+    operation_id: Option<String>,
+    expected_generation: Option<u64>,
+    wait: Option<Duration>,
+    async_requested: bool,
+) -> Result<(), String> {
     let request = PackRequest {
-        operation_id: new_operation_id(),
-        expected_generation: None,
+        operation_id: operation_id.unwrap_or_else(new_operation_id),
+        expected_generation,
         action,
     };
     let socket = &paths.control_socket;
     if control::control_socket_is_live(socket, CONTROL_TIMEOUT) {
-        return submit_live_pack(socket, request);
+        return submit_live_pack(socket, request, wait);
     }
     let lock = acquire_lock_until(paths, Instant::now() + CONTROL_TIMEOUT)?;
     if control::control_socket_is_live(socket, Duration::from_millis(150)) {
         drop(lock);
-        return submit_live_pack(socket, request);
+        return submit_live_pack(socket, request, wait);
+    }
+    if async_requested {
+        return Err("pack --no-wait or explicit --wait requires a running daemon; start daemon or use the synchronous offline command".into());
     }
     let builtin_assets = resolve_assets(None)?;
     let operation = execute_offline(paths.config_dir.clone(), builtin_assets, request)?;
@@ -489,15 +623,15 @@ fn execute_pack_mutation(paths: &Paths, action: PackAction) -> Result<(), String
     operation_result(&operation)
 }
 
-fn submit_live_pack(socket: &Path, request: PackRequest) -> Result<(), String> {
+fn submit_live_pack(
+    socket: &Path,
+    request: PackRequest,
+    wait: Option<Duration>,
+) -> Result<(), String> {
     let operation_id = request.operation_id.clone();
     let reply = match send_pack_request(socket, request, CONTROL_TIMEOUT) {
         Ok(reply) => reply,
-        Err(error) => {
-            return Err(format!(
-                "pack request outcome is unknown after control disconnect: {error}"
-            ))
-        }
+        Err(error) => return Err(format!("pack operation {operation_id} outcome is unknown after control disconnect: {error}; query pack status {operation_id}")),
     };
     let operation = reply.operation.ok_or_else(|| {
         reply
@@ -505,43 +639,70 @@ fn submit_live_pack(socket: &Path, request: PackRequest) -> Result<(), String> {
             .clone()
             .unwrap_or_else(|| "pack request was not accepted".to_owned())
     })?;
+    if operation.operation_id != operation_id {
+        return Err(format!("pack operation {operation_id} outcome is unknown after a mismatched submission identity; query pack status {operation_id}"));
+    }
     print_json(&operation)?;
     if !reply.ok {
         return Err(operation
             .error
             .unwrap_or_else(|| "pack request failed".to_owned()));
     }
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
-    let mut last_state = operation.state.clone();
     if is_pack_terminal(&operation.state) {
         return operation_result(&operation);
     }
-    while Instant::now() < deadline {
-        thread::sleep(POLL_INTERVAL);
-        let reply = match send_pack_status(socket, &operation_id, CONTROL_TIMEOUT) {
-            Ok(reply) => reply,
-            Err(error) => {
-                return Err(format!(
-                "pack operation {operation_id} status is unknown after control disconnect: {error}"
-            ))
-            }
-        };
-        let operation = reply.operation.ok_or_else(|| {
-            reply
-                .error
-                .clone()
-                .unwrap_or_else(|| "pack operation status is unavailable".to_owned())
-        })?;
-        if operation.state != last_state {
-            print_json(&operation)?;
-            last_state = operation.state.clone();
+    let Some(wait) = wait else {
+        return Ok(()); // A nonterminal submission reply is only an ACK.
+    };
+    let deadline = Instant::now() + wait;
+    let mut operation = operation;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return pack_wait_expired(&operation);
         }
+        thread::sleep(POLL_INTERVAL.min(remaining));
+        if Instant::now() >= deadline {
+            return pack_wait_expired(&operation);
+        }
+        let reply = match control::send_pack_status_until(
+            socket,
+            &operation_id,
+            deadline.min(Instant::now() + CONTROL_TIMEOUT),
+        ) {
+            Ok(reply) => reply,
+            Err(control::ClientDeadlineError::Elapsed) if Instant::now() >= deadline => {
+                return pack_wait_expired(&operation);
+            }
+            Err(error) => return Err(format!("pack operation {operation_id} status is unknown after control error: {error}; query pack status {operation_id}")),
+        };
+        if Instant::now() >= deadline {
+            return pack_wait_expired(&operation);
+        }
+        let latest = reply.operation.ok_or_else(|| {
+            format!(
+                "pack operation {operation_id} status is unknown: {}; query pack status {operation_id}",
+                reply.error.unwrap_or_else(|| "operation status is unavailable".to_owned())
+            )
+        })?;
+        if latest.operation_id != operation_id {
+            return Err(format!("pack operation {operation_id} status is unknown after a mismatched operation identity; query pack status {operation_id}"));
+        }
+        if latest.state != operation.state {
+            print_json(&latest)?;
+        }
+        operation = latest;
         if is_pack_terminal(&operation.state) {
             return operation_result(&operation);
         }
     }
+}
+
+fn pack_wait_expired(operation: &PackOperation) -> Result<(), String> {
+    print_json(&serde_json::json!({"deadline_exceeded":true,"operation":operation}))?;
     Err(format!(
-        "pack operation {operation_id} remains pending; status is unknown"
+        "pack operation {} remains pending (last state {}); query pack status {}",
+        operation.operation_id, operation.state, operation.operation_id
     ))
 }
 
@@ -1084,7 +1245,52 @@ where
     let mut arguments = arguments.into_iter();
     let mut pack_tokens = Vec::new();
     let mut settings_tokens = Vec::new();
+    let mut presentation_tokens = Vec::new();
+    let mut automation_tokens = Vec::new();
     while let Some(argument) = arguments.next() {
+        if matches!(
+            cli.command,
+            Some(
+                CommandKind::Preferences
+                    | CommandKind::Sessions
+                    | CommandKind::Dialogue
+                    | CommandKind::Worktree
+            )
+        ) && automation_tokens.last().is_some_and(|last: &String| {
+            matches!(
+                last.as_str(),
+                "--text"
+                    | "--target"
+                    | "--locale"
+                    | "--slot"
+                    | "--baseline"
+                    | "--token"
+                    | "--instance"
+                    | "--operation-id"
+                    | "--wait"
+                    | "--source"
+                    | "--generation"
+                    | "--terminal"
+                    | "--file"
+                    | "--filter"
+                    | "--limit"
+                    | "--language"
+                    | "--theme"
+                    | "--surface"
+                    | "--muted"
+                    | "--border"
+                    | "--accent"
+                    | "--status-indicators"
+                    | "--menu-bar"
+                    | "--observation-local"
+                    | "--observation-remote"
+                    | "--machine"
+                    | "--expected-revision"
+            )
+        }) {
+            automation_tokens.push(argument);
+            continue;
+        }
         if parse_global_option(&argument, &mut arguments, &mut cli)? {
             continue;
         }
@@ -1094,6 +1300,22 @@ where
         }
         if cli.command == Some(CommandKind::Settings) {
             settings_tokens.push(argument);
+            continue;
+        }
+        if cli.command == Some(CommandKind::Presentation) {
+            presentation_tokens.push(argument);
+            continue;
+        }
+        if matches!(
+            cli.command,
+            Some(
+                CommandKind::Preferences
+                    | CommandKind::Sessions
+                    | CommandKind::Dialogue
+                    | CommandKind::Worktree
+            )
+        ) {
+            automation_tokens.push(argument);
             continue;
         }
         let Some(command) = CommandKind::parse(&argument) else {
@@ -1119,6 +1341,29 @@ where
             SettingsCommand::Set(_, _) => CommandKind::SettingsSet,
         });
         cli.settings = Some(operation);
+    }
+    if cli.command == Some(CommandKind::Presentation) {
+        if presentation_tokens.is_empty() && (cli.help || cli.version) {
+            return Ok(cli);
+        }
+        cli.presentation = Some(automation_cli::parse(&presentation_tokens)?);
+    }
+    if matches!(
+        cli.command,
+        Some(
+            CommandKind::Preferences
+                | CommandKind::Sessions
+                | CommandKind::Dialogue
+                | CommandKind::Worktree
+        )
+    ) {
+        if automation_tokens.is_empty() && (cli.help || cli.version) {
+            return Ok(cli);
+        }
+        cli.automation = Some(automation_cli::parse_family(
+            cli.command.unwrap().as_str(),
+            &automation_tokens,
+        )?);
     }
     Ok(cli)
 }
@@ -1224,8 +1469,52 @@ where
             )?;
             Ok(true)
         }
-        "--path" | "--output" | "--revision" | "--phase" | "--time-ms" | "--reaction"
-        | "--reaction-age-ms" | "--pose" | "--hit-overlay" => Ok(false),
+        "--path"
+        | "--output"
+        | "--revision"
+        | "--phase"
+        | "--time-ms"
+        | "--reaction"
+        | "--reaction-age-ms"
+        | "--pose"
+        | "--hit-overlay"
+        | "--visible"
+        | "--passthrough"
+        | "--alpha-passthrough"
+        | "--bubble-visible"
+        | "--bubble-placement"
+        | "--scale"
+        | "--expected-revision"
+        | "--operation-id"
+        | "--instance"
+        | "--wait"
+        | "--expected-generation"
+        | "--language"
+        | "--theme"
+        | "--surface"
+        | "--text"
+        | "--muted"
+        | "--border"
+        | "--accent"
+        | "--status-indicators"
+        | "--menu-bar"
+        | "--observation-local"
+        | "--observation-remote"
+        | "--machine"
+        | "--clear-machines"
+        | "--source"
+        | "--generation"
+        | "--terminal"
+        | "--filter"
+        | "--limit"
+        | "--file"
+        | "--stdin"
+        | "--target"
+        | "--locale"
+        | "--slot"
+        | "--baseline"
+        | "--token"
+        | "--no-wait" => Ok(false),
         value
             if value.starts_with("--path=")
                 || value.starts_with("--output=")
@@ -1234,7 +1523,45 @@ where
                 || value.starts_with("--time-ms=")
                 || value.starts_with("--reaction=")
                 || value.starts_with("--pose=")
-                || value.starts_with("--reaction-age-ms=") =>
+                || value.starts_with("--reaction-age-ms=")
+                || value.starts_with("--visible=")
+                || value.starts_with("--passthrough=")
+                || value.starts_with("--alpha-passthrough=")
+                || value.starts_with("--bubble-visible=")
+                || value.starts_with("--bubble-placement=")
+                || value.starts_with("--scale=")
+                || value.starts_with("--expected-revision=")
+                || value.starts_with("--operation-id=")
+                || value.starts_with("--instance=")
+                || value.starts_with("--wait=")
+                || [
+                    "--expected-generation=",
+                    "--language=",
+                    "--theme=",
+                    "--surface=",
+                    "--text=",
+                    "--muted=",
+                    "--border=",
+                    "--accent=",
+                    "--status-indicators=",
+                    "--menu-bar=",
+                    "--observation-local=",
+                    "--observation-remote=",
+                    "--machine=",
+                    "--source=",
+                    "--generation=",
+                    "--terminal=",
+                    "--filter=",
+                    "--limit=",
+                    "--file=",
+                    "--target=",
+                    "--locale=",
+                    "--slot=",
+                    "--baseline=",
+                    "--token=",
+                ]
+                .iter()
+                .any(|prefix| value.starts_with(prefix)) =>
         {
             Ok(false)
         }
@@ -1262,6 +1589,10 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
     let mut path = None;
     let mut output = None;
     let mut revision = None;
+    let mut operation_id = None;
+    let mut expected_generation = None;
+    let mut wait = None;
+    let mut async_requested = false;
     let mut phase = None;
     let mut time_ms = None;
     let mut reaction = None;
@@ -1272,6 +1603,79 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
     while index < tokens.len() {
         let token = &tokens[index];
         match token.as_str() {
+            "--operation-id" | "--expected-generation" | "--wait" | "--no-wait" => {
+                let name = token.as_str();
+                if name == "--no-wait" {
+                    if async_requested || wait.is_some() {
+                        return Err("duplicate or incompatible wait controls".into());
+                    }
+                    async_requested = true;
+                } else {
+                    index += 1;
+                    let value = tokens
+                        .get(index)
+                        .ok_or_else(|| format!("{name} requires a value"))?;
+                    match name {
+                        "--operation-id" => {
+                            if operation_id
+                                .replace(nonempty_operation_id(value)?)
+                                .is_some()
+                            {
+                                return Err("duplicate --operation-id".into());
+                            }
+                        }
+                        "--expected-generation" => {
+                            if expected_generation
+                                .replace(parse_revision(value)?)
+                                .is_some()
+                            {
+                                return Err("duplicate --expected-generation".into());
+                            }
+                        }
+                        _ => {
+                            if wait.replace(automation_cli::parse_wait(value)?).is_some()
+                                || async_requested
+                            {
+                                return Err("duplicate or incompatible wait controls".into());
+                            }
+                            async_requested = true;
+                        }
+                    }
+                }
+            }
+            value
+                if value.starts_with("--operation-id=")
+                    || value.starts_with("--expected-generation=")
+                    || value.starts_with("--wait=") =>
+            {
+                let (name, value) = value.split_once('=').expect("matched prefix");
+                match name {
+                    "--operation-id" => {
+                        if operation_id
+                            .replace(nonempty_operation_id(value)?)
+                            .is_some()
+                        {
+                            return Err("duplicate --operation-id".into());
+                        }
+                    }
+                    "--expected-generation" => {
+                        if expected_generation
+                            .replace(parse_revision(value)?)
+                            .is_some()
+                        {
+                            return Err("duplicate --expected-generation".into());
+                        }
+                    }
+                    _ => {
+                        if wait.replace(automation_cli::parse_wait(value)?).is_some()
+                            || async_requested
+                        {
+                            return Err("duplicate or incompatible wait controls".into());
+                        }
+                        async_requested = true;
+                    }
+                }
+            }
             "--path" => {
                 if path.is_some() {
                     return Err("duplicate --path".to_owned());
@@ -1439,7 +1843,20 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
     if operation.as_str() == "preview" && reaction.is_none() && reaction_age_ms.is_some() {
         return Err("--reaction-age-ms requires --reaction".to_owned());
     }
-    match operation.as_str() {
+    let has_mutation_controls =
+        operation_id.is_some() || expected_generation.is_some() || async_requested;
+    let mutation = |action| PackCommand::Mutation {
+        action,
+        operation_id,
+        expected_generation,
+        wait: if async_requested {
+            wait
+        } else {
+            Some(STARTUP_TIMEOUT)
+        },
+        async_requested,
+    };
+    let parsed = match operation.as_str() {
         "list"
             if positional.is_empty()
                 && path.is_none()
@@ -1456,9 +1873,9 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
                 && revision.is_none()
                 && !has_preview_options =>
         {
-            Ok(PackCommand::Import {
+            Ok(mutation(PackAction::Import {
                 path: path.expect("checked above"),
-            })
+            }))
         }
         "validate"
             if positional.is_empty()
@@ -1507,9 +1924,9 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
                 && revision.is_none()
                 && !has_preview_options =>
         {
-            Ok(PackCommand::Select {
+            Ok(mutation(PackAction::Select {
                 id: select_id(&positional[0])?,
-            })
+            }))
         }
         "update"
             if positional.len() == 1
@@ -1518,10 +1935,10 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
                 && revision.is_none()
                 && !has_preview_options =>
         {
-            Ok(PackCommand::Update {
+            Ok(mutation(PackAction::Update {
                 id: nonempty_id(&positional[0])?,
                 path: path.expect("checked above"),
-            })
+            }))
         }
         "restore"
             if positional.len() == 1
@@ -1530,10 +1947,10 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
                 && revision.is_some()
                 && !has_preview_options =>
         {
-            Ok(PackCommand::Restore {
+            Ok(mutation(PackAction::Restore {
                 id: nonempty_id(&positional[0])?,
                 revision: revision.expect("checked above"),
-            })
+            }))
         }
         "remove"
             if positional.len() == 1
@@ -1542,9 +1959,9 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
                 && revision.is_none()
                 && !has_preview_options =>
         {
-            Ok(PackCommand::Remove {
+            Ok(mutation(PackAction::Remove {
                 id: nonempty_id(&positional[0])?,
-            })
+            }))
         }
         "status"
             if positional.len() == 1
@@ -1558,7 +1975,15 @@ fn parse_pack_tokens(tokens: &[String]) -> Result<PackCommand, String> {
             })
         }
         _ => Err(format!("invalid pack operation arguments\n\n{USAGE}")),
+    };
+    let command = parsed?;
+    if !matches!(command, PackCommand::Mutation { .. }) && has_mutation_controls {
+        return Err(
+            "pack operation controls require an import/select/update/restore/remove mutation"
+                .into(),
+        );
     }
+    Ok(command)
 }
 fn parse_revision(value: &str) -> Result<u64, String> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -1736,6 +2161,52 @@ mod tests {
     }
 
     #[test]
+    fn grouped_dialogue_and_worktree_accept_raw_value_tokens_without_global_interception() {
+        let target = r#"{"target":{"kind":"character","id":"default"},"reference":{"id":"default","revision":0},"generation":3}"#;
+        let dialogue = parse_cli(
+            [
+                "dialogue",
+                "set",
+                "--target",
+                target,
+                "--locale",
+                "ko",
+                "--slot",
+                "idle",
+                "--text",
+                "--help",
+                "--no-wait",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(matches!(dialogue.automation,
+            Some(automation_cli::DomainCommand::DialogueSet {
+                text:automation_cli::PromptText::Literal(value), wait:None,..
+            }) if value=="--help"));
+        let worktree =
+            parse_cli(["worktree", "remove", "--token=opaque", "--no-wait"].map(str::to_owned))
+                .unwrap();
+        assert!(matches!(
+            worktree.automation,
+            Some(automation_cli::DomainCommand::WorktreeRemove { wait: None, .. })
+        ));
+        assert!(parse_cli(
+            [
+                "preferences",
+                "status",
+                "--instance",
+                "daemon",
+                "--operation-id",
+                "op"
+            ]
+            .map(str::to_owned)
+        )
+        .is_ok());
+        assert!(parse_cli(["orchestrate", "status"].map(str::to_owned)).is_err());
+    }
+
+    #[test]
     fn assets_never_use_legacy_omp_paths() {
         let source = resolve_assets(Some(Path::new("/tmp/not-a-real-assets-path")));
         assert!(source.is_err());
@@ -1752,14 +2223,17 @@ mod tests {
         .expect("pack import");
         assert_eq!(cli.command, Some(CommandKind::Pack));
         match cli.pack {
-            Some(PackCommand::Import { path }) => assert!(path.is_absolute()),
+            Some(PackCommand::Mutation {
+                action: PackAction::Import { path },
+                ..
+            }) => assert!(path.is_absolute()),
             other => panic!("unexpected pack command: {other:?}"),
         }
         let cli = parse_cli(["pack".to_owned(), "select".to_owned(), "default".to_owned()])
             .expect("builtin select");
         assert!(matches!(
             cli.pack,
-            Some(PackCommand::Select { id }) if id == "default"
+            Some(PackCommand::Mutation { action: PackAction::Select { id }, .. }) if id == "default"
         ));
         assert!(parse_cli(["pack".to_owned(), "select".to_owned(), "@png".to_owned()]).is_err());
         assert!(
@@ -1781,6 +2255,123 @@ mod tests {
             "two".to_owned(),
         ])
         .is_err());
+    }
+
+    #[test]
+    fn every_pack_mutation_uses_one_command_with_controls() {
+        let cases = [
+            (
+                vec!["import", "--path", "/tmp/example"],
+                PackAction::Import {
+                    path: PathBuf::from("/tmp/example"),
+                },
+            ),
+            (
+                vec!["select", "default"],
+                PackAction::Select {
+                    id: "default".to_owned(),
+                },
+            ),
+            (
+                vec!["update", "example", "--path", "/tmp/example"],
+                PackAction::Update {
+                    id: "example".to_owned(),
+                    path: PathBuf::from("/tmp/example"),
+                },
+            ),
+            (
+                vec!["restore", "example", "--revision", "2"],
+                PackAction::Restore {
+                    id: "example".to_owned(),
+                    revision: 2,
+                },
+            ),
+            (
+                vec!["remove", "example"],
+                PackAction::Remove {
+                    id: "example".to_owned(),
+                },
+            ),
+        ];
+        for (args, expected_action) in cases {
+            let tokens = args
+                .into_iter()
+                .chain([
+                    "--operation-id=mutation_1",
+                    "--expected-generation=42",
+                    "--wait=2",
+                ])
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let command = parse_pack_tokens(&tokens).expect("pack mutation");
+            assert_eq!(
+                command,
+                PackCommand::Mutation {
+                    action: expected_action,
+                    operation_id: Some("mutation_1".to_owned()),
+                    expected_generation: Some(42),
+                    wait: Some(Duration::from_secs(2)),
+                    async_requested: true,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn pack_mutation_controls_are_strict_and_preserve_offline_synchronous_default() {
+        let parse = |tokens: &[&str]| parse_cli(tokens.iter().map(|value| (*value).to_owned()));
+        let cli = parse(&[
+            "pack",
+            "select",
+            "sample",
+            "--operation-id",
+            "chosen_1",
+            "--expected-generation",
+            "42",
+            "--no-wait",
+        ])
+        .expect("controlled mutation");
+        assert!(
+            matches!(cli.pack,Some(PackCommand::Mutation { operation_id:Some(id),expected_generation:Some(42),wait:None,async_requested:true,.. }) if id=="chosen_1")
+        );
+        let cli = parse(&["pack", "select", "sample"]).expect("synchronous mutation");
+        assert!(matches!(
+            cli.pack,
+            Some(PackCommand::Mutation {
+                wait: Some(_),
+                async_requested: false,
+                ..
+            })
+        ));
+        for tokens in [
+            vec!["pack", "list", "--no-wait"],
+            vec!["pack", "status", "op", "--operation-id", "other"],
+            vec!["pack", "validate", "--path", "/tmp/example", "--wait", "2"],
+            vec![
+                "pack",
+                "preview",
+                "--path",
+                "/tmp/example",
+                "--output",
+                "/tmp/example.png",
+                "--no-wait",
+            ],
+            vec![
+                "pack",
+                "export",
+                "default",
+                "--output",
+                "/tmp/example",
+                "--expected-generation",
+                "2",
+            ],
+            vec!["pack", "select", "sample", "--wait", "0"],
+            vec!["pack", "select", "sample", "--wait", "nan"],
+            vec!["pack", "select", "sample", "--wait", "1", "--no-wait"],
+            vec!["pack", "select", "sample", "--expected-generation", "-1"],
+        ] {
+            assert!(parse(&tokens).is_err(), "{tokens:?}");
+        }
     }
 
     #[test]
@@ -1806,6 +2397,154 @@ mod tests {
             assert!(pack_status_result(&operation(state)).is_err());
         }
         assert!(pack_status_result(&operation("completed")).is_ok());
+    }
+
+    #[test]
+    fn live_pack_submission_replays_terminal_verdict_before_no_wait_ack() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        static NEXT_PACK_PEER: AtomicU64 = AtomicU64::new(0);
+        for (state, success) in [
+            ("completed", true),
+            ("failed", false),
+            ("canceled", false),
+            ("durability_unknown", false),
+            ("committed_pending_apply", false),
+            ("unknown", false),
+            ("accepted", true),
+            ("preparing", true),
+            ("applying", true),
+        ] {
+            let root = std::env::temp_dir().join(format!(
+                "herdr-pack-replay-{}-{}",
+                std::process::id(),
+                NEXT_PACK_PEER.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).unwrap();
+            fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+            let socket = root.join("control.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
+            let operation_id = format!("replayed_{state}");
+            let reply = PackReplyEnvelope {
+                version: control::PACK_PROTOCOL_VERSION,
+                kind: "pack".into(),
+                command: "submit".into(),
+                ok: true,
+                listing: None,
+                operation: Some(PackOperation {
+                    operation_id: operation_id.clone(),
+                    state: state.into(),
+                    committed: state != "accepted",
+                    ui_applied: state == "completed",
+                    generation: None,
+                    error: (!success).then(|| "retained operation failed".into()),
+                }),
+                error: None,
+            };
+            let peer = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(&stream).read_line(&mut request).unwrap();
+                let submitted: control::PackRequestEnvelope =
+                    serde_json::from_str(&request).unwrap();
+                assert_eq!(submitted.command, "submit");
+                assert_eq!(
+                    submitted.request.unwrap().operation_id,
+                    reply.operation.as_ref().unwrap().operation_id
+                );
+                serde_json::to_writer(&mut stream, &reply).unwrap();
+                stream.write_all(b"\n").unwrap();
+                listener
+            });
+            let result = submit_live_pack(
+                &socket,
+                PackRequest {
+                    operation_id,
+                    expected_generation: None,
+                    action: PackAction::Select {
+                        id: "sample".into(),
+                    },
+                },
+                None,
+            );
+            let listener = peer.join().unwrap();
+            listener.set_nonblocking(true).unwrap();
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock),
+                "terminal submission must not poll status"
+            );
+            assert_eq!(result.is_ok(), success, "{state}: {result:?}");
+            drop(listener);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn live_pack_wait_starts_after_ack_and_short_wait_does_not_poll() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        static NEXT_PACK_WAIT_PEER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "herdr-pack-wait-{}-{}",
+            std::process::id(),
+            NEXT_PACK_WAIT_PEER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let socket = root.join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&stream).read_line(&mut request).unwrap();
+            let request: control::PackRequestEnvelope = serde_json::from_str(&request).unwrap();
+            let operation_id = request.request.unwrap().operation_id;
+            thread::sleep(Duration::from_millis(110));
+            let reply = PackReplyEnvelope {
+                version: control::PACK_PROTOCOL_VERSION,
+                kind: "pack".into(),
+                command: "submit".into(),
+                ok: true,
+                listing: None,
+                operation: Some(PackOperation {
+                    operation_id,
+                    state: "accepted".into(),
+                    committed: false,
+                    ui_applied: false,
+                    generation: None,
+                    error: None,
+                }),
+                error: None,
+            };
+            serde_json::to_writer(&mut stream, &reply).unwrap();
+            stream.write_all(b"\n").unwrap();
+            listener
+        });
+        let started = Instant::now();
+        let result = submit_live_pack(
+            &socket,
+            PackRequest {
+                operation_id: "delayed_ack".into(),
+                expected_generation: None,
+                action: PackAction::Select {
+                    id: "sample".into(),
+                },
+            },
+            Some(Duration::from_millis(30)),
+        );
+        let listener = peer.join().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        assert!(result.unwrap_err().contains("remains pending"));
+        assert!(started.elapsed() >= Duration::from_millis(110));
+        drop(listener);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -87,29 +87,38 @@ type DefinitionSpan = Span & {
   url: string;
 };
 
-// Keep micromark's definition grammar and token spans. Its title tokenizer
-// accepts nested unescaped `(` in `(title)`, which CommonMark forbids; reject
-// only that completed construct so the original text becomes genuine prose.
+// The optional title is an attempted micromark construct. Reject invalid
+// parenthesized titles inside that attempt, so micromark can keep a preceding
+// destination-only definition when the invalid title starts on the next line.
 const guardedDefinition: typeof definition = {
   name: "herdrCommonmarkDefinition",
   tokenize(effects, ok, nok) {
     const context = this;
-    const from = context.events.length;
-    return definition.tokenize.call(context, effects, (code) => {
-      for (let index = from; index < context.events.length; index++) {
-        const [event, token] = context.events[index]!;
-        if (event !== "exit" || token.type !== "definitionTitle") continue;
-        const title = context.sliceSerialize(token);
-        if (title[0] !== "(") continue;
-        for (let at = 1; at < title.length - 1; at++) {
-          if (title[at] === "(" && !escaped(title, at)) {
-            if (context.parser.defined.pop() === undefined) throw new Error("Missing parsed Markdown definition identifier");
-            return nok(code);
-          }
-        }
-      }
-      return ok(code);
-    }, nok);
+    return definition.tokenize.call(context, {
+      ...effects,
+      attempt(construct, success, failure) {
+        // The definition grammar has one attempt: its optional title.
+        const titleConstruct = construct as typeof definition;
+        return effects.attempt({
+          ...titleConstruct,
+          tokenize(titleEffects, titleOk, titleNok) {
+            const from = context.events.length;
+            return titleConstruct.tokenize.call(context, titleEffects, (code) => {
+              for (let index = from; index < context.events.length; index++) {
+                const [event, token] = context.events[index]!;
+                if (event !== "exit" || token.type !== "definitionTitle") continue;
+                const title = context.sliceSerialize(token);
+                if (title[0] !== "(") continue;
+                for (let at = 1; at < title.length - 1; at++) {
+                  if (title[at] === "(" && !escaped(title, at)) return titleNok(code);
+                }
+              }
+              return titleOk(code);
+            }, titleNok);
+          },
+        }, success, failure);
+      },
+    }, ok, nok);
   },
 };
 
@@ -226,38 +235,47 @@ function inlineWhitespaceEnd(text: string, start: number): number {
 }
 
 // Recognize an entire inline suffix before masking it or resolving its target.
-// An invalid title must leave the suffix as ordinary Markdown for the scanner.
+// Try a bare destination first, including quote-prefixed names. Only if that
+// cannot complete the suffix may a quoted title follow an empty destination.
 function inlineTailAt(text: string, open: number): { destination: Destination; end: number } | undefined {
   if (text[open] !== "(") return undefined;
   const destinationStart = inlineWhitespaceEnd(text, open + 1);
   if (destinationStart < 0) return undefined;
-  const destination = text[destinationStart] === ")" || (["\"", "'"].includes(text[destinationStart] ?? "") && destinationStart > open + 1)
-    ? { start: destinationStart, end: destinationStart, after: destinationStart }
-    : destinationAt(text, destinationStart);
-  if (!destination) return undefined;
-  let close = inlineWhitespaceEnd(text, destination.after);
-  if (close < 0) return undefined;
-  if (["\"", "'", "("].includes(text[close] ?? "")) {
-    // A bare destination requires separating whitespace; <angle> destinations
-    // may be followed immediately by a title.
-    if (close === destination.after && text[destination.start - 1] !== "<" && destination.start !== destination.end) return undefined;
-    const delimiter = text[close]!;
-    const closing = delimiter === "(" ? ")" : delimiter;
-    let titleEnd = close + 1;
-    for (; titleEnd < text.length; titleEnd++) {
-      if (text[titleEnd] === "\n") {
-        let previous = titleEnd - 1;
-        while (previous > close && /[ \t\r]/.test(text[previous]!)) previous--;
-        if (text[previous] === "\n") return undefined;
+  const suffix = (destination: Destination): { destination: Destination; end: number } | undefined => {
+    let close = inlineWhitespaceEnd(text, destination.after);
+    if (close < 0) return undefined;
+    if (["\"", "'", "("].includes(text[close] ?? "")) {
+      // A bare destination requires separating whitespace; <angle> destinations
+      // may be followed immediately by a title.
+      if (close === destination.after && text[destination.start - 1] !== "<" && destination.start !== destination.end) return undefined;
+      const delimiter = text[close]!;
+      const closing = delimiter === "(" ? ")" : delimiter;
+      let titleEnd = close + 1;
+      for (; titleEnd < text.length; titleEnd++) {
+        if (text[titleEnd] === "\n") {
+          let previous = titleEnd - 1;
+          while (previous > close && /[ \t\r]/.test(text[previous]!)) previous--;
+          if (text[previous] === "\n") return undefined;
+        }
+        if (escaped(text, titleEnd)) continue;
+        if (delimiter === "(" && text[titleEnd] === "(") return undefined;
+        if (text[titleEnd] === closing) break;
       }
-      if (escaped(text, titleEnd)) continue;
-      if (delimiter === "(" && text[titleEnd] === "(") return undefined;
-      if (text[titleEnd] === closing) break;
+      if (titleEnd === text.length) return undefined;
+      close = inlineWhitespaceEnd(text, titleEnd + 1);
     }
-    if (titleEnd === text.length) return undefined;
-    close = inlineWhitespaceEnd(text, titleEnd + 1);
+    return close >= 0 && text[close] === ")" ? { destination, end: close + 1 } : undefined;
+  };
+  if (text[destinationStart] === ")") {
+    return suffix({ start: destinationStart, end: destinationStart, after: destinationStart });
   }
-  return close >= 0 && text[close] === ")" ? { destination, end: close + 1 } : undefined;
+  const bare = destinationAt(text, destinationStart);
+  const completed = bare && suffix(bare);
+  if (completed) return completed;
+  if (destinationStart > open + 1 && ["\"", "'"].includes(text[destinationStart] ?? "")) {
+    return suffix({ start: destinationStart, end: destinationStart, after: destinationStart });
+  }
+  return undefined;
 }
 
 function labelEnd(text: string, start: number, mask: Uint8Array): number {

@@ -4,9 +4,9 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 **English** · [한국어](readme.ko.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **Public `main` source builds and the pinned public app v0.1.11 use the baseline menu-bar UI described below.** The four pending native commits are local-branch previews only: they are **not merged into `main` and not included in any public v0.1.11 binary**. The menu-bar additions and worktree removal described as current-working-copy features below are later, uncommitted changes, not part of those four commits. `--source` builds the checkout you already have; it does not obtain these changes. See [v0.1.11 notes](docs/releases/v0.1.11.md), [local pending notes](docs/releases/unreleased.md), and the [local-checkout guide](docs/migrations/unreleased.md) ([한국어](docs/migrations/unreleased.ko.md)).
+> **Stable v0.2.0 is the current release and default/prebuilt installation target; this checkout also carries the unreleased additions below.** Its released native feature groups include independent character/bubble visibility, compact observation settings, standalone/remote-only watcher startup, contextual Settings, configurable menu-bar recovery and image, linked-worktree removal, reply layout and clipboard shortcuts, and malformed-link scanner fixes. The earlier v0.1.11 binary and immutable beta1/beta2/beta3 releases remain historical, separate channels. Consult the [v0.2.0 release notes](docs/releases/v0.2.0.md), [upgrade guide](docs/migrations/v0.1.11-to-v0.2.0.md), and [historical local-preview guide](docs/migrations/unreleased.md). Release-catalog assets, rather than this source guide, establish publication availability.
 
-The published [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3) and the separate rolling beta Homebrew formula include these local-preview features, later menu-bar/worktree additions, and the reply clipboard shortcut fix from this working copy. They remain separate from public `main` and stable v0.1.11; “current working copy only” for those historical features denotes local provenance and absence from the **stable** installer/Homebrew app, not absence from beta3. The session-list search and ordering described below were added later and are absent from beta3.
+> **Unreleased checkout only:** This working copy adds session-list Search/Sort/Running first, native automation commands, and conflict-aware dialogue drafts. They are **not** part of the pinned published v0.2.0 or historical beta1/2/3 binaries, even though this checkout still reports version `0.2.0`. The four older native preview groups, menu-bar/worktree additions, and beta3 reply fixes **are already in stable v0.2.0**. Build this checkout explicitly with `bash scripts/install.sh --source`; the default installer and `--prebuilt` use the pinned release. Stop an older daemon before running the source executable (or use matching isolated config **and** state directories), and inspect `status` for the actual running executable rather than trusting `--version`. See [unreleased changes](docs/releases/unreleased.md#current-unreleased-checkout--현재-미출시-체크아웃) and the [native CLI contract](docs/cli.md#english). No new beta publication or physical GUI/IME acceptance is established by this checkout documentation.
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
@@ -23,6 +23,9 @@ The published [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop
 - Full-window and alpha-mask click-through modes.
 - English and Korean UI options.
 - Importable PNG and rig character packs with revision history.
+- Independent character and bubble visibility, with a standalone bubble and selectable always-visible/recovery-only menu-bar icon and custom PNG artwork.
+- Compact local/remote observation settings, copy-only reconnect guidance, and standalone remote-only watcher support.
+- Contextual Settings and guarded linked-worktree removal for eligible local worktrees; removal deletes ignored files too.
 - Edit per-character Korean and English dialogue without modifying character packs.
 
 Rubelia is the only bundled character and the default model (`default@0`). Optional characters and wardrobe packs are maintained in the separate [character repository](https://github.com/hanbong5938/herdr-characters) and must be imported. The bubble reports observed Herdr session status; it does not infer provider results. A successful message submission means Herdr acknowledged the prompt, not that the agent finished processing it.
@@ -31,17 +34,17 @@ Session cards use the observed terminal title, then a named tab, then workspace/
 
 Opening the menu-bar control panel requests app activation using the current macOS API, with a compatible activation path on macOS 13. macOS decides whether to grant activation; opening the panel does not guarantee a keyboard-focus transfer from another app.
 
-### Session list search and ordering (current local working copy only)
+### Session list search and ordering (unreleased source checkout only)
 
-This newer native control in the expanded bubble is **not in public `main`, stable v0.1.11, or the previously frozen beta1, beta2, and beta3**. See the [local pending notes](docs/releases/unreleased.md); building an older checkout or using the public installer does not add it. Existing inline replies below remain available in their previously shipped versions.
+This newer native control in the expanded bubble is **not in stable v0.2.0 or the immutable beta1, beta2, and beta3 binaries**. Build this checkout explicitly with `--source`; the public default/prebuilt installer still selects stable v0.2.0. The historical inline replies below remain available in their shipped versions. No `beta/0.3.0-beta.1` asset or hands-on GUI/IME acceptance is claimed here.
 
-Use **Search** to narrow cards by a case-insensitive substring of their title, tab or workspace name, agent name, source display name, working directory, or fallback name. The **Status** filter and search intersect; neither changes the observed overall status summary or reactions. Choose **Sort → Stable** (original order), **Name**, or **Source**. **Running first** is an independent switch: when on, running cards from all observed sources come ahead of other cards *before* the selected sort orders each group. The list displays at most 128 cards after filtering and sorting; the matched/omitted indicator counts all matches and those beyond the visible limit.
+Use **Search** to narrow cards by a case-insensitive substring of their title, tab or workspace name, agent name, source display name, full working directory, or fallback name (surrounding search whitespace is trimmed). IDs and socket paths are not searchable. The **Status** filter and search intersect; neither changes the observed overall status summary or reactions. Choose **Sort → Stable** (original order), **Name**, or **Source**. **Running first** is an independent switch: when on, running cards from all observed sources come ahead of other cards *before* the selected sort orders each group. The GUI displays at most 128 cards after filtering and sorting; the matched/omitted indicator counts all matches and those beyond the visible limit. Unlike that GUI cap, the unreleased `sessions list --limit` CLI option sets page size and collects all coherent pages.
 
 Search starts empty, Status at **All**, Sort at **Stable**, and Running first off. Only a successfully saved Sort/Running first choice survives restart; if saving fails, the controls revert. Search and Status are memory-only. Filtering a selected reply out folds its field but preserves its session draft in memory; clearing search does not reopen it automatically. While Search has focus, **Enter** and **Command+Enter** never send a reply. **Escape** cancels active search IME composition first, then clears a nonempty query, then leaves the empty Search field without collapsing the bubble. Search and reply composition separately defer structural list changes until composition ends; live statuses continue updating.
 
 ### Inline replies
 
-The following inline-card behavior is included in the v0.1.6 prebuilt and source builds.
+Inline-card replies shipped in v0.1.6 and remain in stable v0.2.0, whose native layout fixes clipped reply glyphs and whose responder handles Command-A/C/X/V clipboard shortcuts. Actual physical keyboard and IME behavior depends on the local GUI session; programmatic AppKit checks are not physical-input certification.
 
 Expand the bubble to see session cards; the reply field is initially hidden, including in the **All** view. Click a local agent session card to open a one-line reply beneath it; clicking another session folds the previous field and opens the new one. Remote cards show read-only feedback instead of a reply field or Send button. Line breaks in any committed input (typing, paste, or text import) become spaces in the one-line reply; active IME preedit remains untouched until committed. Press **Enter** or **Command+Enter**, or click **Send**, to submit. IME composition does not submit; **Escape** cancels active composition first, otherwise it folds only the reply field. Clicking outside the bubble folds the reply unless IME composition is active; clicking elsewhere inside the bubble does not automatically fold it. Neither action collapses the bubble. Drafts are kept in memory per session through folding and bubble collapse, but not across app restarts. Success clears and folds only the matching current reply; if the text was edited or another session selected during sending, the new draft or open field remains. Failure or uncertain delivery preserves the draft and reply state.
 
@@ -59,7 +62,7 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | Pinned prebuilt v0.1.11 (downloaded by the plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
+| App | Pinned stable v0.2.0 prebuilt (plugin installer or Homebrew; no build toolchain), or build this checkout with Rust/Cargo, Bun, Node.js/npm, and Xcode Command Line Tools |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
 
@@ -72,28 +75,32 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to the manifest `version` (v0.1.11) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl` rather than a browser or cask download, no quarantine attribute is set and macOS shows no Gatekeeper prompt. Client-attach auto-start still needs the supplied host patch: run these commands against the patched Herdr host described above.
+Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The installer downloads the release pinned to the manifest `version` (v0.2.0) anonymously over HTTPS with `curl`, verifies its SHA-256, archive paths and entry types, arm64 architecture, code signature, and default character, and installs it into the plugin directory's `dist/`. No GitHub login or build toolchain is needed in the normal case, and nothing is installed outside the plugin directory. If the pinned prebuilt is unavailable or fails verification, the installer prints a notice and falls back to a source build, which requires the source toolchain listed above. The app is **ad-hoc signed, not notarized**; because it is fetched by `curl`, not a browser or cask download, it has no quarantine attribute and macOS shows no Gatekeeper prompt. For client-attach auto-start, run these commands against the patched Herdr host described above.
 
 The repository is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing.
 
 ## Install with Homebrew
 
-Install the prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap) formula; no GitHub login or source-build toolchain is required:
+Install the stable v0.2.0 prebuilt app and `herdr-desktop-pet` CLI from the [personal tap](https://github.com/hanbong5938/homebrew-tap) formula; no GitHub login or source-build toolchain is required. Check the [release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.2.0) for published assets before relying on a prebuilt:
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
+herdr-desktop-pet --version
 herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-The Homebrew formula installs `HerdrDesktopPet.app` inside Homebrew's prefix, not the system Applications folder, and puts the `herdr-desktop-pet` CLI on `PATH`. This installs the app only: it does not register the Herdr plugin or install a patched Herdr host. Use the plugin installation above (or the source installation below) for plugin startup hooks; client-attach auto-start still requires the supplied host patch. The app is **ad-hoc signed, not notarized**; because the formula is not a cask download, Homebrew does not quarantine it and macOS shows no Gatekeeper prompt.
+For an existing stable installation, **stop the running daemon first**; `start` reuses a running daemon, so `--version` alone does not prove the app was replaced:
 
 ```sh
-brew upgrade herdr-desktop-pet
-brew uninstall herdr-desktop-pet
+herdr-desktop-pet stop
+brew update && brew upgrade herdr-desktop-pet
+herdr-desktop-pet --version
+herdr-desktop-pet start
+herdr-desktop-pet status
 ```
 
-Uninstalling keeps your character packs, preferences, and lifecycle state.
+Confirm `--version` is `0.2.0` and `status` reports `app_version` and the running executable as stable v0.2.0, not the previous binary. If Homebrew refuses to load the formula, scope trust to this formula: `brew trust --formula hanbong5938/tap/herdr-desktop-pet`. The formula installs `HerdrDesktopPet.app` inside Homebrew's prefix, not `/Applications`, and puts the CLI on `PATH`. It installs only the app, not the Herdr plugin or patched host; use plugin installation above for lifecycle hooks, and the host patch for client-attach auto-start. The app is ad-hoc signed, not notarized; formula installation does not quarantine it. `brew uninstall herdr-desktop-pet` keeps character packs, preferences, and lifecycle state. See the [upgrade and rollback guide](docs/migrations/v0.1.11-to-v0.2.0.md).
 
 Earlier versions shipped a Homebrew cask that copied the app to `/Applications`. To migrate a previous cask install, remove it and install the formula (your data is kept):
 
@@ -102,48 +109,25 @@ brew uninstall --cask herdr-desktop-pet
 brew install hanbong5938/tap/herdr-desktop-pet
 ```
 
-## Opt-in beta UI test (not the stable install)
+## Historical beta channel (not the stable install)
 
-For Apple Silicon on macOS 13+, [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3) is the published opt-in test release, and the separate rolling beta Homebrew formula installs it. Neither changes public `main`, stable v0.1.11, the manifest, `--prebuilt`, the stable Homebrew formula, or normal plugin install. Immutable beta1 has reply clipping; historical beta2 fixes clipping and the malformed-link scanner but lacks reply Command-A/C/X/V clipboard dispatch. Beta3 retains those fixes and adds native reply clipboard shortcuts. Programmatic AppKit input checks do not certify physical keyboard/IME, picker, alert-key, pointer, or VoiceOver behavior.
+For Apple Silicon on macOS 13+, immutable [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3) and the separate rolling beta Homebrew formula remain a **historical test channel**, not the stable v0.2.0 formula or default installer. Beta1 contained reply clipping; beta2 fixed clipping and malformed-link scanning but lacked reply Command-A/C/X/V dispatch; beta3 added those shortcuts. Stable v0.2.0 includes the beta3 native fixes. For beta3 → stable, stop beta, back up the shared profile, and install/upgrade **the stable formula**, not the beta formula; follow the [migration guide](docs/migrations/v0.1.11-to-v0.2.0.md). Programmatic AppKit checks do not certify physical keyboard/IME, picker, alert-key, pointer, or VoiceOver behavior.
 
-```sh
-brew install hanbong5938/tap/herdr-desktop-pet-beta
-herdr-desktop-pet-beta --version
-herdr-desktop-pet-beta start
-herdr-desktop-pet-beta status
-```
-
-Existing Homebrew beta users: quit or stop the running beta **before** upgrading, then verify the installed CLI and start the new app. A `--version` result alone does not replace an already-running beta2 daemon. Quit stable and back up your profile before starting beta3, as described below.
-If using an isolated profile, use the same configuration and state directories for stop and start.
+The historical beta formula installs `HerdrDesktopPetBeta.app` inside Homebrew's prefix, not `/Applications`; `herdr-desktop-pet-beta` is separate from stable `herdr-desktop-pet`. If you are currently running beta3 on the shared profile, stop it before installing or starting stable:
 
 ```sh
 herdr-desktop-pet-beta stop
-brew update && brew upgrade herdr-desktop-pet-beta
-herdr-desktop-pet-beta --version
-herdr-desktop-pet-beta start
-herdr-desktop-pet-beta status
+brew install hanbong5938/tap/herdr-desktop-pet
+herdr-desktop-pet --version
+herdr-desktop-pet start
+herdr-desktop-pet status
 ```
 
-The beta formula installs `HerdrDesktopPetBeta.app` inside Homebrew's prefix, **not** `/Applications`; `herdr-desktop-pet-beta` is separate from the stable CLI and `--version` reports `0.2.0-beta.3`. New users can use the install command above; existing beta users can run `brew update && brew upgrade herdr-desktop-pet-beta` (not upgrade the stable formula). Remove only beta with `brew uninstall herdr-desktop-pet-beta`. For a manual install, download the published `HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz` and its `.sha256` (or `SHA256SUMS`) from the linked beta3 release and verify SHA-256 before unpacking:
-
-```sh
-mkdir -p "$HOME/HerdrBeta"
-printf '%s  %s\n' '14bf452aa492fa520a4979ca3e18711e505c52c178c1e1e2edb355b2b07b0920' "$HOME/Downloads/HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz" | shasum -a 256 -c - &&
-  tar -xzf "$HOME/Downloads/HerdrDesktopPet-v0.2.0-beta.3-macos-arm64.tar.gz" -C "$HOME/HerdrBeta"
-BETA="$HOME/HerdrBeta/HerdrDesktopPetBeta.app/Contents/MacOS/herdr-desktop-pet"
-"$BETA" --version
-"$BETA" start
-```
-
-Adjust the download path if necessary. Before either beta `start`, quit the running stable pet and back up its configuration and state, including `preferences.json`, `lifecycle.json`, `characters/`, and managed `menu-bar-icons/`. Unless explicitly using isolated config **and** state directories, beta and stable share the same profile and control namespace: do not run them concurrently. The ad-hoc-signed, non-notarized manual download may require explicit macOS Gatekeeper approval. Only the isolated beta source snapshot changes version; this working copy remains v0.1.11. Follow the [manual UI checklist](docs/migrations/unreleased.md#optional-manual-beta-test) before testing deletion on a disposable linked worktree.
-
-Historical beta2 proof only (not beta3 verification): the public beta2 prerelease points to `9035c11e5acf76a1092ddf3a08d4360eac680495`; anonymous downloads confirmed its archive SHA-256 `ddb61fa2ff45aa0fcc603c175423667512b7fa043461b6ab5e9f2c37576a6432` against published checksums and GitHub digest, and its extracted app passed strict signature/version/arm64 checks. Isolated beta1 → beta2 upgrade and fresh beta2 install/test passed; extracted and upgraded beta2 reached UI/control/registration/data readiness against stock Herdr 0.9.3 with separate config and state. These are not beta3 publication/install proof or physical input, picker, alert-key, pointer, or VoiceOver verification.
-
-Published beta3 proof (separate from beta2): immutable `beta/0.2.0-beta.3` targets `7f644b10affba45957a52c361d2067439a4f1eeb`. All three release assets downloaded anonymously; the 20,467,942-byte archive SHA-256 `14bf452aa492fa520a4979ca3e18711e505c52c178c1e1e2edb355b2b07b0920` matched its checksums and GitHub digest. The extracted app passed arm64/version/strict-signature and resource-tree checks. The public beta-only tap formula was tested by an actual beta2 → beta3 Homebrew upgrade and a fresh beta3 install, each with `brew test`; stable formula and installation remained unchanged. The extracted and upgraded beta3 apps reached UI/control/registration/data readiness against stock Herdr 0.9.3. A separate production ComposerView/BubblePanel private-pasteboard AppKit probe exercised Command-A/C/X/V, Korean/emoji/CRLF paste, UTF-16 selection replacement, focus and modifier/marked-text guards without touching the user's clipboard; probe files and hooks were removed before final production checks. This is not physical GUI/IME certification.
+If the stable formula is already installed, stop that daemon too and use `brew update && brew upgrade herdr-desktop-pet` instead of `brew install`. Back up the real config **and** state directories, including `preferences.json`, `lifecycle.json`, `characters/`, and managed `menu-bar-icons/`; isolated beta profiles must use matching paths for `stop` and new `start`. Do not run beta and stable concurrently unless both config and state are isolated. The immutable beta3 archive SHA-256 `14bf452aa492fa520a4979ca3e18711e505c52c178c1e1e2edb355b2b07b0920` and publication/install evidence belong to the [historical beta guide](docs/migrations/unreleased.md#optional-manual-beta-test), not the stable asset checksum or proof. A manually downloaded beta bundle is ad-hoc signed and may require Gatekeeper approval; remove only beta with `brew uninstall herdr-desktop-pet-beta` if no longer needed. Test worktree removal only on a disposable linked checkout.
 
 ## Install this checkout from source
 
-For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. Building public `main` provides the baseline UI, not the local pending previews. For client-attach auto-start, run the patched Herdr host in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
+For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. Current public `main` includes the native stable v0.2.0 feature groups described below; `--source` builds your actual checkout, not a different release. For client-attach auto-start, run the patched Herdr host in an isolated profile (follow the [patched-host deployment guide](integrations/herdr/README.md) and use that binary explicitly, rather than an unpatched `herdr` on `PATH`):
 
 ```sh
 bash scripts/install.sh --source
@@ -153,20 +137,11 @@ bash scripts/install.sh --source
 
 The installer installs pinned JavaScript dependencies, builds the Rust executable, packages the native rig runtime and creator resources, and validates the app. Linking/enabling on an already-running server does not itself launch the pet: invoke `start` once, or wait for a subsequent successful shell/terminal client attach when `auto_start` is on. Server startup also runs automatic `ensure`. Inspect link warnings: an unknown `client.attached` hook means the host lacks the required patch. Herdr plugin actions require a running, enabled host; direct native settings commands below work without one.
 
-### Local pending preview checkout only
+For unreleased automation commands use the newly built checkout executable at `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet`, not a prebuilt or older daemon. Stop the existing pet first, or keep both config and state paths isolated and consistent for `start`, subsequent commands, and `stop`. Because both binaries may report `0.2.0`, run that source executable's `status` after starting the intended daemon and check its reported running executable.
 
-Preview guidance here applies only if you **already have the appropriate local checkout** of `worktree/rapid-harbor-d2a6` at `bf23ced1649fd0074aec8736644c8f02aa0c492b`, containing these four unmerged commits:
+### Historical local-preview provenance
 
-| Local commit | Pending change |
-| --- | --- |
-| `078f5c2` | Standalone/remote-only watcher startup |
-| `e828c77` | Independent character/bubble visibility |
-| `f638f0c` | Compact observation settings |
-| `bf23ced` | Contextual Settings and conditional recovery |
-
-This branch and these commits are local provenance, **not public checkout/download links**; their availability elsewhere is not guaranteed. They remain unmerged into `main`, and no public v0.1.11 binary contains them. Only from that existing local checkout, use the source-install commands above with your isolated patched host. Use explicit `--source` for the preview: `--prebuilt` never includes it, and optionless installation normally selects the pinned public binary (source fallback builds only the checkout already present). Do not use a public `main` checkout as a substitute.
-
-The four commits above describe the original local preview, whose status icon was conditional. The **selectable menu-bar policy, custom icon image, and worktree removal described below are later additions in this working copy**, not changes contained in `bf23ced` or stable v0.1.11; they are included in the published beta2 and beta3 snapshots. A checkout at that historical commit alone retains its original conditional recovery behavior and does not provide worktree removal.
+The standalone/remote-only watcher, independent visibility, compact observation settings, and contextual Settings/conditional recovery originated in four commits (`078f5c2`, `e828c77`, `f638f0c`, `bf23ced`) of the old local `worktree/rapid-harbor-d2a6` checkout. Later menu-bar mode/image and worktree-removal additions were not in `bf23ced`. Those features shipped in beta3 and are now part of stable v0.2.0 `main`; no special local branch or local-only fetch instructions are needed. A historical checkout at `bf23ced` alone still has conditional recovery and lacks later additions. See [historical preview provenance](docs/migrations/unreleased.md).
 
 ### Shared installer behavior
 
@@ -176,11 +151,12 @@ Version-specific changes and historical artwork limitations belong in the [relea
 
 ## Controls
 
-These controls apply to public `main` source builds and v0.1.11. Inline replies shipped in v0.1.6. The v0.1.11 bubble context menu provides **Close Bubble Window**; it hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Use the menu-bar panel for settings and visibility recovery; hiding the character does not provide a standalone bubble.
+These controls describe this checkout's native app; the menu-bar click behavior below is a checkout change, not a claim about the published stable v0.2.0 binary. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
 
 | Interaction | Effect |
 | --- | --- |
-| Menu-bar icon | Character selection and dialogue editing, observation sources, bubble and lifecycle settings, and UI language |
+| Left-click the menu-bar icon | Open the existing three-tab settings panel directly (character selection and dialogue editing, observation sources, bubble and lifecycle settings, UI language); clicking again brings the same panel forward without closing it or resetting its selected tab. Keyboard activation/AXPress also opens settings |
+| Right-click or Control-click the menu-bar icon | Open the native **Show and Enable Character** (when recovery is needed), **Settings…**, **Quit** menu; the settings panel hides before this menu opens |
 | Tap the head or body | Trigger a reaction |
 | Move back and forth on the head | Pet the character |
 | Drag the body or background | Move the character |
@@ -195,9 +171,11 @@ These controls apply to public `main` source builds and v0.1.11. Inline replies 
 
 The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Close Bubble Window** is disabled during active IME composition; finish composition and open the menu again to close. Reopen from **Bubble → Bubble visible** in the menu-bar panel. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
 
-### Local checkout: independent visibility and menu-bar recovery
+The menu-bar icon does not open the settings panel directly while the reply contains active IME marked text; finish composition first. Escape or a click outside the settings panel still closes it.
 
-The independent visibility and contextual entry points require the local commits listed above; they are **not in `main` source builds or public v0.1.11**. The selectable menu-bar policy and custom image below additionally require this current working copy or published beta3, not just the original `bf23ced` checkout. Right-click/Control-click the character or bubble background/card header and choose **Settings…** to open the same full three-tab panel; activation is requested, not guaranteed. The bubble menu also adds **Show Character** when hidden. See [local-checkout and preference-preservation guidance](docs/migrations/unreleased.md).
+### Independent visibility and menu-bar recovery
+
+Stable v0.2.0 includes the independent visibility and contextual entry points. Right-click/Control-click the character or bubble background/card header and choose **Settings…** to open the full three-tab panel; activation is requested, not guaranteed. The bubble menu offers **Show Character** when hidden. Preserve your settings and managed icon files as described in the [upgrade guide](docs/migrations/v0.1.11-to-v0.2.0.md).
 
 Character visibility (`show`/`hide`/`toggle`) and **Bubble → Bubble visible** (`show_bubble`/`hide_bubble`) are independent:
 
@@ -206,35 +184,34 @@ Character visibility (`show`/`hide`/`toggle`) and **Bubble → Bubble visible** 
 | Yes | Yes | Bubble attached to the character |
 | Yes | No | Character only |
 | No | Yes | Tailless, movable standalone bubble; session cards and replies still work |
-| No | No | Neither window shown; app and Herdr session remain running; the menu-bar icon is available for recovery in either current-working-copy mode |
+| No | No | Neither window shown; app and Herdr session remain running; the menu-bar icon is available for recovery in either v0.2.0 mode |
 
 Hiding the character does not change the saved bubble visibility preference. On first detachment without a saved origin, the standalone bubble starts where the **actually applied attached bubble body** was, not at a placement computed but never displayed. Its origin is saved separately from the character's position; a saved origin wins on later detachments, including while marked text is active. Drag its background to move only the bubble. Showing the character reattaches the visible bubble; hiding it again restores the standalone origin. Compact/expanded changes, replies, and remeasurement keep that origin unless screen clamping is needed; display removal/layout changes recover an offscreen bubble onto a remaining screen. Card selection, view/reply state, and drafts survive character hide/show within the running app; drafts are not restored after restart. Placement changes while standalone apply on reattachment without shifting the standalone bubble. **Reset** clears the old standalone position and reseeds it from the newly applied attached layout when appropriate, without changing visibility or copying the character position.
 
 If the character starts hidden without a saved standalone origin, the first position comes from normal attached layout as a fallback. While the reply contains marked text, hide/show/placement/reset postpone standalone-origin commitment until composition ends; a later reset supersedes an older saved origin. The actual composer callbacks retained its marked text, committed draft, and selection across the observed hide/show/reset transitions; physical IME and keyboard focus were not established.
 
-The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Settings…** and **Close Bubble Window** are disabled during active IME composition and rechecked when chosen; finish composition and open the menu again to use them. Reopen a closed bubble through **Bubble → Bubble visible** in the settings panel, opened from the character menu or, when the bubble is standalone, its background/card-header menu. If both windows are hidden, use the menu-bar icon's **Settings…** instead. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
+The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Settings…** and **Close Bubble Window** are disabled during active IME composition and rechecked when chosen; finish composition and open the menu again to use them. Reopen a closed bubble through **Bubble → Bubble visible** in the settings panel, opened from the character menu, the standalone bubble's background/card-header menu, or by left-clicking the visible menu-bar icon. If both windows are hidden, left-click the menu-bar icon to open settings directly, or right-click/Control-click it and choose **Settings…** or **Show and Enable Character**. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
 
-In the original `bf23ced` preview, the recovery icon was conditional: it appeared only with both windows hidden or full-window click-through on, and interactive states occupied no menu-bar slot. **In this current working copy and published beta3**, choose **Settings → Menu bar icon**: **Always show** (the default) or **Only when recovery is needed**. This choice is independent of the character and bubble visibility settings.
+In the original `bf23ced` local preview, the recovery icon was conditional; **stable v0.2.0 defaults to Always show**. Choose **Settings → Menu bar icon**: **Always show** or **Only when recovery is needed**. This choice is independent of character/bubble visibility.
 
-| Current working-copy state | Always show | Only when recovery is needed |
+| Stable v0.2.0 state | Always show | Only when recovery is needed |
 | --- | --- | --- |
 | Character only, standalone bubble only, or both visible and interactive | Icon visible | No icon |
 | Both character and bubble hidden | Icon visible | Icon visible |
 | Full-window click-through on (regardless of visibility) | Icon visible | Icon visible |
 | Alpha click-through only | Icon visible | No icon unless both windows are hidden |
 
-The default status icon is a template pawprint; a chosen image replaces its artwork without changing the status item or its menu. In either mode its menu always offers **Settings…** (the same full panel) and **Quit**; **Show and Enable Character** appears only when recovery is needed (both windows hidden or full-window click-through on). Recovery shows the character and disables full-window click-through, preserving bubble visibility and alpha click-through; a visible bubble reattaches, while a hidden bubble stays hidden. **Always show** keeps the icon after recovery; **Only when recovery is needed** removes it after the menu closes. While the app is shutting down, neither mode shows an icon. Alpha-mask pointer polling by itself does not change the recovery condition. CLI `show` still shows only the character, without turning on the bubble.
+The default status icon is a template pawprint; a chosen image replaces its artwork without changing the status item. In this checkout, left-click opens the existing three-tab panel directly; right-click/Control-click opens its native menu with **Settings…** and **Quit**, plus **Show and Enable Character** only when recovery is needed (both windows hidden or full-window click-through on). Recovery shows the character and disables full-window click-through, preserving bubble visibility and alpha click-through; a visible bubble reattaches, while a hidden bubble stays hidden. **Always show** keeps the icon after recovery; **Only when recovery is needed** removes it after the menu closes. While the app is shutting down, neither mode shows an icon. Alpha-mask pointer polling by itself does not change the recovery condition. CLI `show` still displays only the character, without turning on the bubble.
 
 The native `preferences.json` key `menu_bar_mode` stores `always` or `recovery_only`. New profiles and older profiles without this key (including those from the original conditional-icon preview) use **Always show**; this migration does not infer a saved preference for the old conditional behavior. A successfully saved choice applies immediately and survives restart and unrelated preference saves, preserving unknown preference fields. If saving fails, the previously selected mode and icon remain in effect. Changing the mode does not change window visibility, full-window or alpha click-through, character/bubble positions, reply drafts, or lifecycle settings.
 
-**Current working copy only:** in **Settings → Menu bar icon**, use **Choose image…** to import a static PNG (at most 4 MiB encoded and 1 million decoded pixels; animated, corrupt, truncated, or fully transparent images are rejected), or **Restore default icon** for the template pawprint. The chosen image keeps its original colors, aspect-fits within 18 pt, and has 1×/2× Retina representations. A successful import stores a managed copy under the configuration directory's `menu-bar-icons/`; the optional `preferences.json` field `menu_bar_icon.asset` points to it, so the external source may be moved or deleted. Back up `menu-bar-icons/` alongside `preferences.json`, `lifecycle.json`, and `characters/`. Missing icon preference uses the default pawprint. An import/save failure leaves the previous image and settings intact; a missing or corrupt managed image on restart shows the default with an error while keeping the custom-image preference for recovery. Restoring the default changes only the image, not `menu_bar_mode`, character/bubble visibility, click-through, geometry, drafts, or lifecycle.
+In stable v0.2.0, **Settings → Menu bar icon → Choose image…** imports a static PNG (at most 4 MiB encoded and 1 million decoded pixels; animated, corrupt, truncated, or fully transparent images are rejected); **Restore default icon** selects the template pawprint. The image retains original colors, aspect-fits within 18 pt, and has 1×/2× Retina representations. A successful import stores a managed copy under the configuration directory's `menu-bar-icons/`; the optional `preferences.json` field `menu_bar_icon.asset` points to it, so the external source may be moved or deleted. Back up `menu-bar-icons/` alongside `preferences.json`, `lifecycle.json`, and `characters/`. Missing icon preference uses the default pawprint. Import/save failure leaves the previous choice intact; missing/corrupt managed image on restart shows the default with an error but retains custom metadata. Restoring the default changes the image alone, not mode, visibility, passthrough, geometry, drafts, or lifecycle.
 
 PNG import verifies every chunk CRC (including ancillary chunks and IEND), the IDAT zlib Adler-32 checksum, and the exact inflated scanline length for the image's color format and interlace passes before native decoding. The existing 4 MiB/1-million-pixel limits and supported formats are unchanged. Managed copies are published atomically without replacing an existing file. If an import interrupted on an older working copy left the saved image unusable with a legacy private temporary hardlink, keep the profile and explicitly reimport the **identical valid PNG** through **Choose image…**; this can repair only a confirmed owned, private, same-inode temporary alias. Startup does not sweep old files, and reimport does not repair arbitrary hardlinks, other files, or corrupt images.
 
-In an isolated current-binary startup check, an already-installed private managed PNG stayed selected after its external source was deleted and the app restarted. Its real status-button image was non-template, 18 pt, with 18×18 and 36×36 bitmap representations; the saved choice and unknown preferences survived. This seeded-managed-asset check did **not** exercise **Choose image…**, importing, picker cancellation/rejection, or visual/VoiceOver interaction.
-After Settings opened through the actual status-menu action, the enabled **Restore default icon** button's AppKit `performClick` ran the production reset callback: the status image became a template, `preferences.json` lost only `menu_bar_icon` (all other known/unknown fields stayed identical), and the old owned managed PNG was unlinked. This was not a physical button click or chooser Cancel/valid/corrupt PNG selection or VoiceOver proof.
+Historical beta3 managed-image startup and guarded reset-callback observations are recorded in the [preview evidence](docs/releases/unreleased.md); they are not stable-release proof or physical picker/VoiceOver certification.
 
-### Current working copy and beta3: remove a linked worktree
+### Stable v0.2.0: remove an eligible linked worktree
 
 In the expanded bubble, right-click or Control-click a **card header** and choose **Remove Worktree…** to target that card, even if another card is selected. Right-click or Control-click the **bubble background** to target the selected card as it stood when the menu opened; if no eligible card is selected, the item is absent. The menu identifies the target. Native text-field, button, dropdown, and scrollbar menus/behavior remain unchanged. **Close Bubble Window** is separate: it only hides the bubble and does not remove a checkout, workspace, or session.
 
@@ -242,11 +219,11 @@ Review the confirmation before acting: it names the repository and **exact check
 
 Only a current, live, coherent local source with unambiguous valid linked-worktree metadata is eligible. Main repository roots, remote/retained/offline cards, missing or malformed optional metadata, and older servers that cannot provide the required metadata do not offer deletion. A server that does not support `worktree.remove` reports that limitation instead of falling back to Git, a shell command, SSH, or forced removal. Active IME composition disables removal and is checked again before submission. One operation may be pending at a time; the chosen target is frozen and checked again after confirmation and against a fresh server snapshot. The app sends a single `worktree.remove` request with `force: false`, never auto-trusts a changed target, retries, or optimistically removes the row. The server may reject dirty tracked/untracked files or a locked checkout. Watcher observations remain authoritative on the normal five-second refresh; feedback remains in the bubble even if its row disappears, selection changes, or the window is hidden and reopened. If delivery is uncertain after a write, **check the actual server/worktree state before any manual retry**; the app does not automatically resend.
 
-The request addresses a `workspace_id`, not an expected checkout/generation compare-and-swap: client revalidation is **not an atomic guarantee** against a server restart or workspace rebinding between the final check and removal. This current-working-copy behavior has native tests and isolated real-backend exercise. A top-layer Window Server shield obstructed app-window clicks and input, so actual alert Return/keypad Enter/Escape, focused Delete, pointer context menus, and physical IME remain unverified; do not treat the alert configuration or callback-level composer observations as keyboard/visual proof.
+The request addresses a `workspace_id`, not an expected checkout/generation compare-and-swap: client revalidation is **not an atomic guarantee** against a server restart or workspace rebinding between the final check and removal. Historical beta3 native and backend observations are recorded separately in the [preview evidence](docs/releases/unreleased.md); do not interpret them as a stable v0.2.0 validation or physical-input certification.
 
 ### Shared bubble and character settings
 
-For public `main` and v0.1.11, open these settings from the menu-bar panel; only the local preview adds the contextual entry points above.
+Open these settings through the menu-bar panel or contextual **Settings…** entry points in stable v0.2.0.
 
 The menu panel uses native dropdowns for bubble theme and UI language. Choose **System** to follow the system language, or select Korean or English explicitly. Theme and language selections are saved when changed; custom bubble colors keep their **Apply colors** action.
 
@@ -269,32 +246,35 @@ The editor uses the settings panel's dark theme, with character/language control
 - Enter multiple lines and click **Save dialogue** or press **Command+S** to save one language/event entry. Each entry allows up to 2048 UTF-8 bytes, not 2048 characters. Blank or whitespace-only text removes that override. A successful save for the active character ID refreshes applicable bubble text even when editing a historical revision; editing an inactive character does not activate it.
 - **Reset this entry** confirms loss of an unsaved draft before removing that override. **Reset all character dialogue…** always requires confirmation and removes that character's overrides in both languages. Missing entries retain the existing pack/default/status fallback; an empty entry does not suppress the bubble.
 - Drafts are isolated by character, language, and event. Switching context or UI language and closing/reopening the window preserves drafts in memory during the app session; only saved entries survive restart. **Command+Z** undoes and **Shift+Command+Z** redoes within the current editing context. A failed save keeps the draft and previously committed dialogue.
+
 - Saved entries live in `preferences.json`, not pack files. Built-in and imported characters are keyed by character ID: revisions share overrides, including after updates and restores. External `--assets` characters use a separate canonical-path namespace and do not share entries with the built-in character. The active external character remains editable under its canonical identity captured at activation even if its source folder is renamed while the app runs; on restart with a changed `--assets` path, stored dialogue remains under the original path key and is not automatically migrated.
 - If corruption of both managed registry files puts the store into its read-only fallback, the built-in original dialogue remains readable at the current listing generation without activating it or repairing the registry. Unavailable managed revisions remain unavailable.
+
+In this **unreleased checkout**, external dialogue saves no longer silently replace a local editor draft. A revision/entry conflict blocks stale Save; **Reload saved** explicitly takes the latest committed text and **Rebase draft** keeps the local text against the new baseline for revalidation before Save. The editor preserves text, selection/focus and undo history while exposing a conflict; active IME marked text defers reload/rebase until composition ends. These conflict controls are not in the pinned published v0.2.0 app. See the [CLI dialogue contract](docs/cli.md#english).
 
 Custom text replaces only the corresponding dialogue entries. It does not change observed session counts, state transitions, reaction timing, or disconnected-host notices.
 
 ## Observation sources
 
-Remote observation itself shipped in v0.1.6. Public `main` source builds and v0.1.11 use **Observation sources** in the menu-bar settings, with **Local** on and **Remote** off by default. They do not include the compact layout, contextual Settings entry points, copy-only reconnect UI, or watcher startup correction described in the explicitly local-preview guidance below.
+Remote observation first shipped in v0.1.6. In stable v0.2.0 `main`, **Observation sources** uses **This Mac** on and **Remote machines** off by default; the compact layout, contextual Settings, copy-only reconnect UI, and watcher startup correction are included.
 
 1. In an interactive terminal, add and authenticate an SSH machine with Herdr (for example, `herdr machine add workbox`). Follow [Herdr's saved-machine setup guide](https://herdr.dev/docs/0.9.2/connecting-machines/) for SSH access, remote-session selection, and any prompted server setup.
-2. Open the menu-bar panel's **Observation sources** settings, turn on **Remote**, and select the desired enabled machine profiles. Each profile observes its one saved remote Herdr session, not every session on that host. The remote host needs a compatible running Herdr server, but does **not** need the desktop-pet app or plugin installed.
+2. Open **Observation sources** through the menu-bar icon or contextual **Settings…**, turn on **Remote machines**, and select the desired enabled machine profiles under **Machines to observe**. Each profile observes one saved remote Herdr session, not every session on that host. The remote host needs a compatible running Herdr server, but does **not** need the desktop-pet app or plugin installed.
 
-**Local pending preview only — remote-only startup guidance (requires `078f5c2` in the local checkout above; not `main` or public v0.1.11):**
+**Stable v0.2.0 remote-only startup:**
 
 For a remote-only setup, run the pet on the local Mac, add/authenticate the remote saved machine in a terminal, then turn on **Remote machines** and select that enabled profile in **Observation sources**. Attaching to the remote Herdr session or adding the machine alone does not select it for observation. The remote server does not need desktop-pet installed; the local pet uses the local Herdr CLI to poll the selected profile. **This Mac** can be switched off to exclude local cards, but that switch does not disable a registered local endpoint or change lifecycle shutdown. If there is no healthy local server yet, optionally run `herdr-desktop-pet settings set exit_with_herdr off` **before starting the pet for the first time** to keep it alive while configuring the remote profile; once remote polling is healthy, turn it back on if desired. Use the installed native CLI (or the packaged executable below) for that setting; no Herdr plugin action or remote plugin installation is required.
 
 The pet refreshes Herdr's saved-machine catalog every 5 seconds, even when Remote is off, and polls only selected, enabled profiles every 5 seconds when Remote is on. It remembers profile selections across app restarts and when Remote is switched off; renaming a profile keeps its selection. Disabling or removing a saved profile excludes it from observation without stopping remote sessions or processes. Local and each remote profile have separate source labels on session cards, so matching session IDs on different servers remain distinct.
 
-**Local pending preview only — compact settings (requires `f638f0c` in the local checkout above; not `main` or public v0.1.11):** open the full panel via the preview character/bubble **Settings…** menu or the menu-bar icon when available (conditional in the original `bf23ced` preview, policy-selectable in this working copy), then use **This Mac** / **Remote machines** and select profiles under **Machines to observe**.
+For compact settings, open the full panel from the character/bubble **Settings…** menu or menu-bar icon (always visible by default, optional recovery-only policy), then use **This Mac** / **Remote machines** and select profiles under **Machines to observe**.
 
 Each machine row separates its name, saved session, and observation state. Long names and diagnostics wrap, and the card and scroll area grow with their contents. Settings distinguish the initial catalog lookup from a confirmed empty list. A failed refresh retains the previous list with an explicit stale-list warning. Switching remote observation off shows **Observation off**, not a previous successful connection status. **How to register** explains the manual terminal setup.
 Controls are reused by opaque profile ID so polling/renaming preserve focus and scroll; scrolling is clamped if the list shrinks. The layout separates right-aligned native source switches and nests profiles under **Machines to observe**, avoiding fixed notice gaps and duplicate help. It distinguishes no selection, paused, checking, observing, unavailable, and disabled states as well as catalog lookup/empty. Labels and contextual accessibility names are localized in English and Korean; registration help and folded diagnostics are read-only.
 
-On public `main` and v0.1.11, the **Local**/**Remote** switches and profile selections determine which sources contribute to cards, counts, overall phase, and completion/outcome reactions (the local preview calls them **This Mac**/**Remote machines**). The existing card status filter only narrows which included cards are displayed; it does not change which sources are observed. Turning off every source shows **Unknown**, not a disconnected warning for a source you chose to exclude.
+The **This Mac**/**Remote machines** switches and profile selections determine which sources contribute to cards, counts, overall phase, and completion/outcome reactions. The card status filter only narrows which included cards are displayed; it does not change observed sources. Turning off every source shows **Unknown**, not a disconnected warning for a source deliberately excluded.
 
-Remote snapshots are polled rather than streamed: transitions shorter than the 5-second interval can be missed, including brief completions. If a selected machine becomes unavailable, its last observed cards are marked **Offline**, and retained sessions count as unknown rather than live; check the error in the menu-bar panel's **Observation sources** on public `main`/v0.1.11. Once it reconnects, or when a source is reselected, the first fresh snapshot is a baseline and does not replay old completion reactions. For SSH authentication recovery, run `herdr machine reconnect '<profile-id>'` yourself in an interactive terminal; find the ID with `herdr machine list`. **Local pending preview UI only (`f638f0c`; not `main`/v0.1.11):** expand **Show error details** for read-only diagnostics; **Copy reconnect command** copies a safely shell-quoted command with native clipboard feedback and never executes it. The pet does not prompt for credentials, perform remote setup, or silently fall back to local observation for a failed remote request. Remote observation remains read-only; prompts never use machine forwarding.
+Remote snapshots are polled rather than streamed: transitions shorter than the 5-second interval can be missed, including brief completions. If a selected machine becomes unavailable, its last observed cards are marked **Offline**, and retained sessions count as unknown rather than live; check its status in **Observation sources**. After reconnection or reselection, the first fresh snapshot is a baseline and does not replay old completion reactions. For SSH authentication recovery, run `herdr machine reconnect '<profile-id>'` yourself in an interactive terminal; find the ID with `herdr machine list`. **Show error details** expands read-only diagnostics; **Copy reconnect command** copies a safely quoted command with native feedback but never runs it. The app does not answer credentials, install remote software, or fall back to local polling for a failed remote profile.
 
 Local observation still supports Herdr 0.9.0 or later. Remote observation additionally needs a local Herdr CLI supporting [saved-machine API forwarding](https://herdr.dev/docs/0.9.2/cli-reference/#saved-ssh-machines) (`herdr --machine <profile-id> api snapshot`) and a compatible running remote Herdr server; Herdr 0.9.2 documents that CLI capability. A missing or incompatible CLI is reported in settings rather than changing the local observation minimum requirement. **Lifecycle client-attach auto-start has the separate patched-host requirement above.**
 
@@ -304,11 +284,11 @@ The Settings tab has two independent switches: **Auto-start when Herdr starts** 
 
 `auto_start` on starts an absent pet at server startup or a successful shell/terminal client attach. Automatic `ensure` with auto-start off successfully skips an absent pet; it may register an endpoint for an already-running pet but never forces a hidden pet visible. Manual `start` works with auto-start off and does not change either setting. `stop` and the native **Quit** end only this run (including a pending startup); `restart` starts manually again and preserves settings. If auto-start remains on, the next qualifying server startup/client attach can start the pet again. Turn off `auto_start` to disable future automatic starts. Herdr plugin disable/unlink is a separate host action, not a pet setting; disabled plugins do not receive actions/hooks, and confirmed disable on all registered endpoints terminates an already-running pet immediately.
 
-**Local pending preview only — watcher startup correction (`078f5c2`; not `main` source builds or public v0.1.11):**
+**Stable v0.2.0 watcher startup correction:**
 
 A valid `plugin_list` response with no `desktop-pet` entry on a newly observed local endpoint means **not installed here**, not disabled: the pet can still connect, read local snapshots, and continue observing remote profiles. An explicit `desktop-pet` entry with `enabled: false` is confirmed disable and detaches that local endpoint. If this pet daemon has already seen an enabled **or disabled** desktop-pet entry at an endpoint, a later missing entry means observed unlink and detaches it as well. That history survives rechecks and reconnects during the same daemon run, but a new daemon starts with no such history. When **all registered local endpoints** are confirmed disabled/unlinked, the pet quits immediately even if a remote profile is healthy or `exit_with_herdr` is off; initial missing is not a confirmed disable/unlink. Otherwise the healthy-connection grace described below applies.
 
-**Baseline and preview lifecycle policy:**
+**Lifecycle policy:**
 
 When `exit_with_herdr` is on, the pet quits 30 seconds after the last **healthy server connection** disappears unless a healthy connection returns. An initial launch with no reachable server gets the same finite 30-second grace; one remaining healthy server keeps it alive. Client detach alone is not server loss; stale saved endpoints and failed retries do not extend grace. Switching exit off cancels a live countdown; switching it on while disconnected starts a fresh 30 seconds. With exit off, a manually started pet can continue without Herdr. Changing auto-start does not itself stop or show the current pet. `show`, `hide`, and `toggle` change visibility only; `restart` preserves position, scale, and preferences.
 
@@ -333,6 +313,23 @@ PET="./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"
 
 `settings get`/`set` return structured JSON; `set` accepts only `auto_start` or `exit_with_herdr` and exactly `on` or `off`, changes no other setting and does not launch the pet. Invalid keys/values, malformed arguments, and save failures return errors rather than silently resetting settings. `status` reports `auto_start` and `exit_with_herdr`. Additional action IDs: lifecycle `start`, `ensure`, `stop`, `restart`, `status`, `settings`; visibility `show`, `hide`, `toggle`; click-through `passthrough`, `alpha_passthrough`; bubble `show_bubble`, `hide_bubble`, `bubble_above`, `bubble_below`, `bubble_left`, `bubble_right`, `bubble_auto`; geometry `reset`, `bigger`, `smaller`.
 
+
+### Native automation CLI (unreleased source checkout only)
+
+Use the executable from `bash scripts/install.sh --source`, not the pinned prebuilt; `herdr plugin action invoke` remains the separate Herdr lifecycle interface. The checkout's native `herdr-desktop-pet --help` lists the actual command options. `presentation get/set/reset/status` controls absolute visibility, placement and scale; `preferences get/set/status` controls saved/effective settings; `sessions list/show/prompt/status` reads observed local sessions and submits only to a specifically identified local agent; `dialogue list/get/set/reset-entry/reset-character/status` edits per-target overrides; `worktree inspect/remove/status` requires an expiring one-use inspect token before irreversible removal. There is no public `orchestrate` command: automation uses the private same-user Unix control endpoint, not HTTP, a shell fallback or a new service.
+
+| Command shape | Important boundary |
+| --- | --- |
+| `presentation set --visible on --expected-revision N --operation-id OPID --wait 15` | At least one absolute field is required; `presentation status OPID --instance ID` checks this daemon's operation. `--scale` is an absolute finite value. Accepted explicit fields persist from the final normalized scene; a failed save does not leave a ghost field in a later request. |
+| `preferences get`; `preferences set --menu-bar always --expected-revision N --operation-id OPID` | Menu-bar mode and other preference fields use this **checkout-only** command; `preferences status --instance ID --operation-id OPID` is family-scoped. CLI `--language` accepts exactly `system|ko|en` before storage access; repeated `--machine ID` replaces the **whole** list and rejects any unknown/disabled ID. The GUI can retain/remove previously saved unavailable IDs while adding only currently enabled IDs. |
+| `sessions list --instance ID --limit 128`; `sessions show --instance ID --source N --generation N --terminal TERMINAL_ID` | 1–128 is a **page size**, not a total row cap. Each response page fits a 512 KiB encoded frame including JSON escapes, cursor and newline; a smaller prefix is returned when necessary, and the CLI collects all coherent pages. `sessions prompt` requires the same four identity flags and exactly one of `--text`, `--file`, `--stdin`; an ACK is not agent completion. |
+| `dialogue list`; `dialogue get --target 'IDENTITY_JSON' --locale ko --slot idle` | `--target` is the full serialized **identity** from `dialogue list`, not merely a pack ID. A Character(ID) override is shared across authored revisions of that ID, while the authored reference/generation and optional `--baseline` CAS remain exact; omitted baseline reads fresh once, with no mutation retry. Native application is evidenced by the active renderer token and that target's override token, not merely a successful save. |
+| `worktree inspect --instance ID --source N --generation N --terminal TERMINAL_ID` | Review the returned frozen checkout/workspace and token before separately running `worktree remove --token TOKEN`; no path, force, trash or undo. Ignored files can be deleted even with backend `force: false`. Never use a live user's checkout as a trial target. |
+
+Domain mutations can choose `--operation-id OPID` before sending and `--wait SECONDS` (finite, at most 86400; presentation also allows zero, other domain families require positive) or `--no-wait`; default wait is 15 seconds. After submission ACK, polling has one absolute wait deadline across sleep, status RPC and decoding, including domain reads and partial-color reads; it cannot restart a full poll timeout or treat a late result as success. A deadline does not cancel, roll back or resend; an early transport failure can instead leave delivery uncertain. Investigate with the matching family `status --instance ID --operation-id OPID`; presentation and pack status instead take positional `OPID`. An expired/unknown status after daemon restart is **not proof** the original mutation never ran. Acceptance, committed storage, native application, and agent completion are distinct.
+
+In the dialogue editor, first-ready metadata hydrates an untouched field even while focused; raw premetadata drafts (including whitespace and IME composition) survive, with deferred hydration settled after unmark. Selection preserves the exact authored reference or an unavailable reference and its draft rather than silently switching revisions. Cached metadata errors remain cached on automatic polls; explicit reopen/selection or a new read can retry once. The visible settings panel's quiet color-conflict checks update control eligibility without replacing draft text, focus, selection or undo, and stop when closed. See the [English contract](docs/cli.md#english) / [한국어 계약](docs/cli.md#한국어) for identity JSON, operation states and safe procedures.
+
 ## Character packs
 
 Use the menu-bar panel's **Characters** tab, or run the native CLI from the checkout:
@@ -351,6 +348,8 @@ PET="./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"
 
 Replace the example paths, `CHARACTER_ID`, and revision number with your own values.
 
+For these pack commands, `CHARACTER_ID` is positional (`pack select ID`, `pack restore ID --revision N`); there is no `--id` for selection. In the **unreleased checkout**, pack mutations also accept `--operation-id ID`, `--expected-generation N`, and `--wait SECONDS` or `--no-wait`. Default offline mutation completes its own worker synchronously; explicit async/finite waits need a running daemon and never secretly start one. After ACK, a finite wait uses one absolute deadline through sleeps, complete status replies and decoding, without resending; a late terminal reply cannot turn an elapsed wait into success. `--no-wait` does not mask a terminal failure already present in the initial reply: failed/canceled/uncertain terminal states exit nonzero, whereas accepted/pending is only an ACK. Use `pack status OPID` for uncertain outcomes; acceptance is not native application or persistence. These additional controls are not promised by pinned v0.2.0 binaries.
+
 - Import accepts a character directory or `.herdrchar` archive; importing does **not** select it.
 - In the **Characters** tab, row/revision choices only stage a candidate until **Apply**. Native CLI `pack select` immediately selects the newest revision, and `pack restore` immediately selects an existing historical revision; these commands do not require UI Apply.
 - Removing the active pack switches back to Rubelia.
@@ -365,9 +364,9 @@ For authoring, see the [character creator guide](.agents/skills/character-creato
 - `HERDR_PLUGIN_STATE_DIR`: process lock, control socket, and daemon log (`desktop-pet.log`).
 - Without injected paths, the app uses Herdr's XDG config/state plugin directories.
 - Native commands accept `--config-dir` and `--state-dir` for isolated profiles; injected environment paths take precedence.
-- On public `main` and v0.1.11, use the menu-bar panel to restore visibility or turn off full-window click-through; contextual **Settings…**, **Show Character**, and the conditional recovery icon are not available.
-- **Local checkout visibility recovery only (not `main`/v0.1.11):** with a standalone bubble visible, use its background/card-header **Show Character**; in the current working copy, the menu-bar icon also remains available in **Always show** mode. With both windows hidden or full-window click-through on, use the icon's **Show and Enable Character** in either mode. The original `bf23ced` preview instead had no icon in interactive states. These visibility states do not mean startup failed. On any version, if the daemon is stopped or did not start after linking, check unknown-hook warnings, invoke `start`, and inspect `status` and the daemon log. An off `auto_start` is an intentional automatic skip.
+- In stable v0.2.0, a standalone bubble's background/card-header menu offers **Show Character**. With both windows hidden or full-window click-through on, use the menu-bar icon's **Show and Enable Character** in either icon mode. **Always show** keeps the icon available in interactive states; recovery-only hides it there. These visibility states do not mean startup failed. If the daemon is stopped or did not start after linking, check unknown-hook warnings, invoke `start`, and inspect `status` and the daemon log. An off `auto_start` is an intentional automatic skip.
 - If `start` reports `Herdr watchers are shutting down`, check which Herdr socket the CLI inherited (`HERDR_SOCKET_PATH` / `HERDR_CLIENT_SOCKET_PATH`), which CLI executable/version is on `PATH`, and which Herdr server actually owns that socket. A `herdr plugin list` against another server does not diagnose the daemon's observed endpoint. Use the intended CLI and socket/session together; for remote errors, also check the saved-machine forwarding CLI version and the selected profile. A patched Herdr executable matters for `client.attached` auto-start, but does not install desktop-pet on any server.
+- Run the app on the Mac whose desktop you intend to display: launching it over SSH on a remote host does not display its windows on your local Mac.
 - For remote observation errors, check **Observation sources** and the saved profile's status; see [Observation sources](#observation-sources) for authentication recovery and CLI compatibility.
 - If a release download fails, check network access to github.com. `--prebuilt` does not fall back; the default mode falls back to a source build, which requires the source toolchain.
 - Use Herdr's upstream provider integrations. Restart/reload existing provider sessions after installing their upstream lifecycle hooks.

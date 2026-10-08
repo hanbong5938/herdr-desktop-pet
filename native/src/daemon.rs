@@ -1,3 +1,4 @@
+use crate::automation::{new_automation, PresentationTarget};
 use crate::character_service::PackService;
 use crate::control::ControlServer;
 use crate::herdr::Watchers;
@@ -87,6 +88,11 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
     initial_state.set_lifecycle_settings(settings);
     let prefs = Preferences::load_for_daemon()?;
     initial_state.apply_observation_preferences(prefs.observation().clone());
+    initial_state.set_preferences(&prefs);
+    let automation =
+        new_automation(PresentationTarget::from_scene(&initial_state.scene()), None)
+            .map_err(|error| format!("cannot initialize presentation automation: {error}"))?;
+    initial_state.set_automation(automation.clone());
     let shared = Arc::new(Mutex::new(initial_state));
     let watchers = Arc::new(Mutex::new(Watchers::new(Arc::clone(&shared))));
     let mut remote_watchers = RemoteWatchers::new(Arc::clone(&shared));
@@ -158,6 +164,7 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
         Arc::clone(&packs),
         prefs,
     );
+    crate::automation::lock_automation(&automation).shutdown();
     if ui_result.is_err() {
         let mut state = shared
             .lock()

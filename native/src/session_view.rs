@@ -1,6 +1,7 @@
 use crate::agent_outcome::{AgentOutcome, OutcomeReport};
 use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
 use crate::i18n::{session_local_source, text, Message, UiLocale};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -9,21 +10,26 @@ use std::sync::Arc;
 const MAX_SOURCES: usize = 64;
 const MAX_RECORDS_PER_SOURCE: usize = crate::herdr_protocol::MAX_AGENT_RECORDS;
 const MAX_ROWS: usize = 128;
+/// Maximum number of materialized rows in a single complete-session page.
+pub(crate) const MAX_PAGE_ROWS: usize = MAX_ROWS;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SessionKey {
     pub(crate) source_id: u64,
     pub(crate) generation: u64,
     pub(crate) terminal_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum Availability {
     Live,
     Offline,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum DisplayStatus {
     NoSessions,
     Idle,
@@ -37,7 +43,8 @@ pub(crate) enum DisplayStatus {
     Offline,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SessionStatusSummary {
     pub(crate) status: DisplayStatus,
     pub(crate) count: usize,
@@ -53,7 +60,8 @@ impl Default for SessionStatusSummary {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum SessionFilter {
     #[default]
     All,
@@ -165,6 +173,59 @@ pub(crate) struct SessionSnapshot {
     pub(crate) matched: usize,
     pub(crate) omitted: usize,
     pub(crate) selected: Option<SessionKey>,
+}
+
+/// Exclusive position in visible source-id/terminal-id order. The caller must
+/// also supply the revision returned by the previous page.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionCursor {
+    pub(crate) source_id: u64,
+    pub(crate) terminal_id: String,
+}
+
+/// A cursor belongs to exactly one daemon, store revision, and filter.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionPageCursor {
+    pub(crate) instance_id: String,
+    pub(crate) revision: u64,
+    pub(crate) filter: SessionFilter,
+    pub(crate) position: SessionCursor,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionPageRequest {
+    pub(crate) instance_id: String,
+    pub(crate) filter: SessionFilter,
+    pub(crate) cursor: Option<SessionPageCursor>,
+    pub(crate) limit: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionPage {
+    pub(crate) revision: u64,
+    pub(crate) rows: Vec<SessionView>,
+    pub(crate) status_summary: SessionStatusSummary,
+    pub(crate) total: usize,
+    pub(crate) matched: usize,
+    pub(crate) next_cursor: Option<SessionCursor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SessionPageError {
+    StaleRevision,
+    InvalidLimit,
+}
+
+struct CollectedRows {
+    rows: Vec<SessionView>,
+    displays: Vec<CardDisplay>,
+    status_summary: SessionStatusSummary,
+    total: usize,
+    matched: usize,
+    has_more: bool,
 }
 
 #[derive(Debug)]
@@ -594,6 +655,29 @@ impl SessionStore {
         })
     }
 
+    /// Read an identity from the retained, uncapped full source rows. A new
+    /// generation is acceptable only for the same registered source ID/path;
+    /// offline rows are never negative evidence.
+    pub(crate) fn worktree_session_absent(
+        &self,
+        source_path: &str,
+        source_id: u64,
+        generation: u64,
+        terminal_id: &str,
+    ) -> Option<bool> {
+        let source = self
+            .sources
+            .iter()
+            .find(|entry| entry.source_id == source_id)?;
+        if source.source != source_path
+            || source.generation != generation
+            || source.availability != Availability::Live
+        {
+            return None;
+        }
+        Some(!source.records.contains_key(terminal_id))
+    }
+
     /// Resolve the clicked card's retained identity, never UI selection.
     pub(crate) fn worktree_remove_target(
         &self,
@@ -753,18 +837,84 @@ impl SessionStore {
         options: &SessionListOptions<'_>,
         selected: Option<&SessionKey>,
     ) -> SessionSnapshot {
+        let collected = self.collect_rows(options.filter, None, MAX_ROWS, Some(options));
+        let selected = selected.and_then(|key| self.contains_key(key).then(|| key.clone()));
+        let omitted = collected.matched.saturating_sub(collected.rows.len());
+        SessionSnapshot {
+            revision: self.revision,
+            rows: collected.rows,
+            displays: collected.displays,
+            status_summary: collected.status_summary,
+            total: collected.total,
+            matched: collected.matched,
+            omitted,
+            selected,
+        }
+    }
+
+    /// Return an exclusive page in stable source-id/terminal-id order, without
+    /// the GUI's search, sort, running priority, or 128-row truncation. Totals
+    /// and the status summary describe *all* visible rows, not just this page.
+    pub(crate) fn page(
+        &self,
+        filter: SessionFilter,
+        expected_revision: u64,
+        after: Option<&SessionCursor>,
+        limit: usize,
+    ) -> Result<SessionPage, SessionPageError> {
+        if expected_revision != self.revision {
+            return Err(SessionPageError::StaleRevision);
+        }
+        if limit == 0 || limit > MAX_PAGE_ROWS {
+            return Err(SessionPageError::InvalidLimit);
+        }
+        let collected = self.collect_rows(filter, after, limit, None);
+        let next_cursor = if collected.has_more {
+            collected.rows.last().map(|row| SessionCursor {
+                source_id: row.key.source_id,
+                terminal_id: row.key.terminal_id.clone(),
+            })
+        } else {
+            None
+        };
+        Ok(SessionPage {
+            revision: self.revision,
+            rows: collected.rows,
+            status_summary: collected.status_summary,
+            total: collected.total,
+            matched: collected.matched,
+            next_cursor,
+        })
+    }
+
+    fn collect_rows(
+        &self,
+        filter: SessionFilter,
+        after: Option<&SessionCursor>,
+        limit: usize,
+        options: Option<&SessionListOptions<'_>>,
+    ) -> CollectedRows {
         let mut total = 0usize;
         let mut matched = 0usize;
-        let mut candidates = Vec::with_capacity(MAX_ROWS);
-        let query = options.query.trim().to_lowercase();
-        let all = self.presentation_rows();
-        let displays = presentation_displays(options.locale, &all);
+        let mut rows = Vec::with_capacity(if options.is_some() { 0 } else { limit });
+        let mut has_more = false;
+        let mut candidates = Vec::with_capacity(if options.is_some() { limit } else { 0 });
+        let query = options
+            .map(|options| options.query.trim().to_lowercase())
+            .unwrap_or_default();
+        // Names are computed against the entire visible universe before filtering;
+        // pagination does not need to materialize or sort any card displays.
+        let presentation = options.map(|options| {
+            let all = self.presentation_rows();
+            let displays = presentation_displays(options.locale, &all);
+            (all, displays)
+        });
         let mut global_index = 0usize;
         let mut buckets = [0usize; 10];
         let mut included_sources = 0usize;
         let mut disconnected = false;
         // Source and terminal iteration share the order of `presentation_rows`.
-        // Only the best 128 matching record references are retained and sorted.
+        // A snapshot retains only the best 128 matching record references.
         for source in &self.sources {
             if !source.visible {
                 continue;
@@ -790,45 +940,60 @@ impl SessionStore {
                     DisplayStatus::Offline => 9,
                 };
                 buckets[bucket_index] += 1;
-                if !filter_matches(options.filter, availability, record.status)
-                    || (!query.is_empty()
-                        && !search_matches(
-                            &query,
-                            options.locale,
-                            source,
-                            record,
-                            &displays[index],
-                        ))
-                {
+                if !filter_matches(filter, availability, record.status) {
                     continue;
                 }
-                matched = matched.saturating_add(1);
-                let running = bucket == DisplayStatus::Running;
-                let title = &displays[index].title;
-                let unnamed = displays[index].unnamed;
-                let sort_key = match options.sort {
-                    SessionSort::Stable => String::new(),
-                    SessionSort::TitleAsc => title.to_lowercase(),
-                    SessionSort::SourceAsc => {
-                        card_source_label(options.locale, &all[index]).to_lowercase()
+                if let Some((options, (_, displays))) = options.zip(presentation.as_ref()) {
+                    if !query.is_empty()
+                        && !search_matches(&query, options.locale, source, record, &displays[index])
+                    {
+                        continue;
                     }
-                };
-                let candidate = Candidate {
-                    source,
-                    terminal_id,
-                    record,
-                    index,
-                    running,
-                    unnamed,
-                    sort_key,
-                };
-                let position = candidates
-                    .binary_search_by(|existing| compare_candidates(existing, &candidate, options))
-                    .unwrap_or_else(|position| position);
-                if position < MAX_ROWS {
-                    candidates.insert(position, candidate);
-                    if candidates.len() > MAX_ROWS {
-                        candidates.pop();
+                }
+                matched = matched.saturating_add(1);
+                if let Some((options, (all, displays))) = options.zip(presentation.as_ref()) {
+                    let running = bucket == DisplayStatus::Running;
+                    let title = &displays[index].title;
+                    let unnamed = displays[index].unnamed;
+                    let sort_key = match options.sort {
+                        SessionSort::Stable => String::new(),
+                        SessionSort::TitleAsc => title.to_lowercase(),
+                        SessionSort::SourceAsc => {
+                            card_source_label(options.locale, &all[index]).to_lowercase()
+                        }
+                    };
+                    let candidate = Candidate {
+                        source,
+                        terminal_id,
+                        record,
+                        index,
+                        running,
+                        unnamed,
+                        sort_key,
+                    };
+                    let position = candidates
+                        .binary_search_by(|existing| {
+                            compare_candidates(existing, &candidate, options)
+                        })
+                        .unwrap_or_else(|position| position);
+                    if position < limit {
+                        candidates.insert(position, candidate);
+                        if candidates.len() > limit {
+                            candidates.pop();
+                        }
+                    }
+                } else {
+                    if after.is_some_and(|cursor| {
+                        source.source_id < cursor.source_id
+                            || (source.source_id == cursor.source_id
+                                && terminal_id.as_str() <= cursor.terminal_id.as_str())
+                    }) {
+                        continue;
+                    }
+                    if rows.len() < limit {
+                        rows.push(Self::view_from_record(source, terminal_id, record));
+                    } else {
+                        has_more = true;
                     }
                 }
             }
@@ -872,27 +1037,25 @@ impl SessionStore {
             count,
             total,
         };
-        let selected = selected.and_then(|key| self.contains_key(key).then(|| key.clone()));
-        let omitted = matched.saturating_sub(candidates.len());
-        let mut rows = Vec::with_capacity(candidates.len());
         let mut chosen_displays = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            rows.push(Self::view_from_record(
-                candidate.source,
-                candidate.terminal_id,
-                candidate.record,
-            ));
-            chosen_displays.push(displays[candidate.index].clone());
+        if let Some((_, displays)) = presentation {
+            rows.reserve(candidates.len());
+            for candidate in candidates {
+                rows.push(Self::view_from_record(
+                    candidate.source,
+                    candidate.terminal_id,
+                    candidate.record,
+                ));
+                chosen_displays.push(displays[candidate.index].clone());
+            }
         }
-        SessionSnapshot {
-            revision: self.revision,
+        CollectedRows {
             rows,
             displays: chosen_displays,
             status_summary,
             total,
             matched,
-            omitted,
-            selected,
+            has_more,
         }
     }
 
@@ -1743,6 +1906,13 @@ mod tests {
         let snapshot = store.snapshot(&title, None);
         assert_eq!(snapshot.rows[0].key.terminal_id, "z-later");
         assert_eq!((snapshot.matched, snapshot.omitted), (131, 3));
+        let page = store
+            .page(SessionFilter::All, snapshot.revision, None, 1)
+            .unwrap();
+        assert_eq!(page.rows[0].key.terminal_id, "a-000");
+        assert_eq!(page.rows[0].metadata.title.as_deref(), Some("Shared"));
+        assert_eq!(page.matched, snapshot.matched);
+        assert_eq!(page.status_summary, snapshot.status_summary);
         let source = store.snapshot(
             &SessionListOptions {
                 sort: SessionSort::SourceAsc,
@@ -2348,6 +2518,158 @@ mod tests {
         assert_eq!(working.matched, 50);
         assert_eq!(working.rows.len(), 50);
         assert_eq!(working.omitted, 0);
+    }
+
+    #[test]
+    fn complete_pages_reach_every_row_beyond_gui_cap_in_source_order() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("first", 1));
+        assert!(store.begin_source("second", 1));
+        assert!(store.begin_source("hidden", 1));
+        let first: Vec<_> = (0..129)
+            .map(|index| record(&format!("terminal-{index:03}"), "first", AgentStatus::Idle))
+            .collect();
+        let second = [
+            record("a", "second", AgentStatus::Idle),
+            record("b", "second", AgentStatus::Idle),
+        ];
+        let hidden = record("invisible", "hidden", AgentStatus::Idle);
+        assert!(store.replace_source("first", 1, first.iter()));
+        assert!(store.replace_source("second", 1, second.iter()));
+        assert!(store.replace_source("hidden", 1, [&hidden]));
+        store.set_visibility("hidden", false);
+        let gui = store.snapshot(&SessionListOptions::default(), None);
+        assert_eq!(gui.rows.len(), 128);
+        assert_eq!(gui.omitted, 3);
+
+        let mut cursor = None;
+        let mut all_rows = Vec::new();
+        loop {
+            let page = store
+                .page(SessionFilter::All, gui.revision, cursor.as_ref(), 17)
+                .unwrap();
+            assert_eq!(page.total, 131);
+            assert_eq!(page.matched, 131);
+            assert_eq!(page.status_summary, gui.status_summary);
+            assert!(page.rows.len() <= 17);
+            all_rows.extend(page.rows);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(all_rows.len(), 131);
+        assert_eq!(&all_rows[..128], gui.rows.as_slice());
+        assert_eq!(all_rows[128].key.terminal_id, "terminal-128");
+        assert_eq!(all_rows[129].key.terminal_id, "a");
+        assert!(all_rows[128].key.source_id < all_rows[129].key.source_id);
+        assert_eq!(all_rows[130].key.terminal_id, "b");
+
+        let boundary = store
+            .page(SessionFilter::All, gui.revision, None, MAX_PAGE_ROWS)
+            .unwrap();
+        let last_first_source = store
+            .page(
+                SessionFilter::All,
+                gui.revision,
+                boundary.next_cursor.as_ref(),
+                1,
+            )
+            .unwrap();
+        assert_eq!(last_first_source.rows, all_rows[128..129]);
+        let next = store
+            .page(
+                SessionFilter::All,
+                gui.revision,
+                last_first_source.next_cursor.as_ref(),
+                2,
+            )
+            .unwrap();
+        assert_eq!(next.rows, all_rows[129..]);
+        assert_eq!(next.next_cursor, None);
+    }
+
+    #[test]
+    fn complete_pages_preserve_filter_and_unfiltered_summary() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("live", 1));
+        assert!(store.begin_source("offline", 1));
+        let live: Vec<_> = (0..130)
+            .map(|index| {
+                record(
+                    &format!("terminal-{index:03}"),
+                    "live",
+                    if index % 2 == 0 {
+                        AgentStatus::Working
+                    } else {
+                        AgentStatus::Idle
+                    },
+                )
+            })
+            .collect();
+        let cached = record("cached", "offline", AgentStatus::Working);
+        assert!(store.replace_source("live", 1, live.iter()));
+        assert!(store.replace_source("offline", 1, [&cached]));
+        assert!(store.mark_offline("offline", 1));
+        let revision = store.revision();
+        let gui = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Working),
+            None,
+        );
+        let first = store
+            .page(SessionFilter::Working, revision, None, 32)
+            .unwrap();
+        let second = store
+            .page(
+                SessionFilter::Working,
+                revision,
+                first.next_cursor.as_ref(),
+                33,
+            )
+            .unwrap();
+        assert_eq!(first.total, 131);
+        assert_eq!(first.matched, 65);
+        assert_eq!(first.status_summary, gui.status_summary);
+        assert_eq!(first.status_summary.status, DisplayStatus::Running);
+        assert_eq!(first.status_summary.count, 65);
+        assert_eq!(second.status_summary, first.status_summary);
+        assert_eq!(second.matched, first.matched);
+        assert_eq!(second.next_cursor, None);
+        let mut rows = first.rows;
+        rows.extend(second.rows);
+        assert_eq!(rows, gui.rows);
+        assert!(rows.iter().all(|row| row.status == AgentStatus::Working));
+        let offline = store
+            .page(SessionFilter::Offline, revision, None, 1)
+            .unwrap();
+        assert_eq!(offline.matched, 1);
+        assert_eq!(offline.rows[0].key.terminal_id, "cached");
+        assert_eq!(offline.next_cursor, None);
+    }
+
+    #[test]
+    fn complete_pages_reject_stale_revision_and_invalid_limits() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("socket", 1));
+        let row = record("one", "pane", AgentStatus::Idle);
+        let other = record("two", "other-pane", AgentStatus::Idle);
+        assert!(store.replace_source("socket", 1, [&row, &other]));
+        let revision = store.revision();
+        assert_eq!(
+            store.page(SessionFilter::All, revision, None, 0),
+            Err(SessionPageError::InvalidLimit)
+        );
+        assert_eq!(
+            store.page(SessionFilter::All, revision, None, MAX_PAGE_ROWS + 1),
+            Err(SessionPageError::InvalidLimit)
+        );
+        let first = store.page(SessionFilter::All, revision, None, 1).unwrap();
+        assert!(first.next_cursor.is_some());
+        assert!(store.update_status("socket", 1, "two", "other-pane", AgentStatus::Working));
+        assert_eq!(
+            store.page(SessionFilter::All, revision, first.next_cursor.as_ref(), 1),
+            Err(SessionPageError::StaleRevision)
+        );
     }
 
     #[test]

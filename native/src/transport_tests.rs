@@ -117,7 +117,7 @@ fn empty_buffer_returns_without_waiting() {
 }
 
 mod prompt {
-    use crate::herdr::{PromptError, PromptSender};
+    use crate::herdr::{PromptError, PromptSender, RequestOrigin};
     use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata};
     use crate::session_view::{SessionFilter, SessionKey, SessionListOptions};
     use crate::sources::{
@@ -222,6 +222,12 @@ mod prompt {
             generation,
             agents,
             SourceCounts::default(),
+            Arc::from(
+                agents
+                    .iter()
+                    .map(|agent| agent.pane_id.clone())
+                    .collect::<Vec<_>>()
+            ),
             &[],
             Instant::now()
         ));
@@ -280,7 +286,7 @@ mod prompt {
         );
         let mut sender = PromptSender::new(Arc::clone(&shared));
         assert_eq!(
-            sender.submit(key.clone(), "must not send".into()),
+            sender.submit(key.clone(), "must not send".into(), RequestOrigin::Gui),
             Err(PromptError::ReadOnly)
         );
         assert!(shared
@@ -288,7 +294,11 @@ mod prompt {
             .unwrap()
             .update_source(&source, 1, false, SourceCounts::default()));
         assert_eq!(
-            sender.submit(key, "offline remote is still read-only".into()),
+            sender.submit(
+                key,
+                "offline remote is still read-only".into(),
+                RequestOrigin::Gui
+            ),
             Err(PromptError::ReadOnly)
         );
         assert!(!sender.is_pending());
@@ -323,7 +333,7 @@ mod prompt {
             Err(PromptError::StaleTarget)
         );
         assert_eq!(
-            sender.submit(key.clone(), "hidden".into()),
+            sender.submit(key.clone(), "hidden".into(), RequestOrigin::Gui),
             Err(PromptError::StaleTarget)
         );
         assert!(!sender.is_pending());
@@ -360,7 +370,9 @@ mod prompt {
             &[record("terminal", "pane")],
         );
         let mut sender = PromptSender::new(shared);
-        sender.submit(key, "never deliver".into()).unwrap();
+        sender
+            .submit(key, "never deliver".into(), RequestOrigin::Gui)
+            .unwrap();
         assert_eq!(receive(&mut sender).result, Err(PromptError::StaleTarget));
         server.listener.set_nonblocking(true).unwrap();
         assert!(
@@ -376,27 +388,37 @@ mod prompt {
         let key = publish(&shared, &server.source(), 1, &[record("terminal", "pane")]);
         let mut sender = PromptSender::new(Arc::clone(&shared));
         assert_eq!(
-            sender.submit(key.clone(), " \n ".into()),
+            sender.submit(key.clone(), " \n ".into(), RequestOrigin::Gui),
             Err(PromptError::Empty)
         );
         assert_eq!(
             sender.submit(
                 key.clone(),
-                "x".repeat(crate::herdr_protocol::MAX_FRAME_BYTES)
+                "x".repeat(crate::herdr_protocol::MAX_FRAME_BYTES),
+                RequestOrigin::Gui,
             ),
             Err(PromptError::TooLarge)
+        );
+        assert_eq!(
+            sender.submit(
+                key.clone(),
+                "\"".repeat(crate::herdr_protocol::MAX_FRAME_BYTES / 2),
+                RequestOrigin::Gui,
+            ),
+            Err(PromptError::TooLarge),
+            "escaped frame must fit the full 512 KiB wire limit"
         );
         shared
             .lock()
             .unwrap()
             .update_source(&server.source(), 1, false, SourceCounts::default());
         assert_eq!(
-            sender.submit(key.clone(), "hi".into()),
+            sender.submit(key.clone(), "hi".into(), RequestOrigin::Gui),
             Err(PromptError::Offline)
         );
         shared.lock().unwrap().begin_source(server.source(), 2);
         assert_eq!(
-            sender.submit(key.clone(), "hi".into()),
+            sender.submit(key.clone(), "hi".into(), RequestOrigin::Gui),
             Err(PromptError::StaleTarget)
         );
         let current = publish_after_generation(
@@ -406,11 +428,14 @@ mod prompt {
             &[record("terminal", "pane"), record("other", "pane")],
         );
         assert_eq!(
-            sender.submit(current, "hi".into()),
+            sender.submit(current, "hi".into(), RequestOrigin::Gui),
             Err(PromptError::StaleTarget)
         );
         shared.lock().unwrap().request_shutdown();
-        assert_eq!(sender.submit(key, "hi".into()), Err(PromptError::Offline));
+        assert_eq!(
+            sender.submit(key, "hi".into(), RequestOrigin::Gui),
+            Err(PromptError::Offline)
+        );
         assert!(!sender.is_pending());
     }
 
@@ -426,6 +451,12 @@ mod prompt {
             generation,
             agents,
             SourceCounts::default(),
+            Arc::from(
+                agents
+                    .iter()
+                    .map(|agent| agent.pane_id.clone())
+                    .collect::<Vec<_>>()
+            ),
             &[],
             Instant::now()
         ));
@@ -469,15 +500,26 @@ mod prompt {
         });
         let mut sender = PromptSender::new(shared);
         sender
-            .submit(key.clone(), "  first\nsecond  ".to_owned())
+            .submit(
+                key.clone(),
+                "  first\nsecond  ".to_owned(),
+                RequestOrigin::Gui,
+            )
             .unwrap();
         assert_eq!(
-            sender.submit(key.clone(), "again".into()),
+            sender.submit(
+                key.clone(),
+                "again".into(),
+                RequestOrigin::Cli {
+                    operation_id: "op-busy".into(),
+                },
+            ),
             Err(PromptError::Busy)
         );
         let result = receive(&mut sender);
-        assert_eq!(result.key, key);
-        assert_eq!(result.text, "  first\nsecond  ");
+        assert_eq!(result.submission.key, key);
+        assert_eq!(result.submission.text, "  first\nsecond  ");
+        assert_eq!(result.submission.origin, RequestOrigin::Gui);
         assert_eq!(result.result, Ok(()));
         assert!(!sender.is_pending());
         worker.join().unwrap();
@@ -497,7 +539,9 @@ mod prompt {
             );
         });
         let mut sender = PromptSender::new(shared);
-        sender.submit(key, "message".into()).unwrap();
+        sender
+            .submit(key, "message".into(), RequestOrigin::Gui)
+            .unwrap();
         assert_eq!(receive(&mut sender).result, Err(PromptError::StaleTarget));
         worker.join().unwrap();
     }
@@ -526,10 +570,12 @@ mod prompt {
                 .unwrap();
             });
             let mut sender = PromptSender::new(shared);
-            sender.submit(key, "text".into()).unwrap();
+            sender
+                .submit(key, "text".into(), RequestOrigin::Gui)
+                .unwrap();
             let result = receive(&mut sender);
             assert_eq!(result.result, Err(expected));
-            assert_eq!(result.text, "text");
+            assert_eq!(result.submission.text, "text");
             worker.join().unwrap();
         }
         let server = Server::new();
@@ -547,10 +593,17 @@ mod prompt {
             assert!(server.listener.accept().is_err(), "prompt was resent");
         });
         let mut sender = PromptSender::new(shared);
-        sender.submit(key, "do not duplicate".into()).unwrap();
+        let origin = RequestOrigin::Cli {
+            operation_id: "prompt-unknown".into(),
+        };
+        sender
+            .submit(key.clone(), "do not duplicate".into(), origin.clone())
+            .unwrap();
         let result = receive(&mut sender);
         assert_eq!(result.result, Err(PromptError::UnknownDelivery));
-        assert_eq!(result.text, "do not duplicate");
+        assert_eq!(result.submission.key, key);
+        assert_eq!(result.submission.origin, origin);
+        assert_eq!(result.submission.text, "do not duplicate");
         worker.join().unwrap();
     }
 
@@ -570,7 +623,9 @@ mod prompt {
             );
         });
         let mut sender = PromptSender::new(shared);
-        sender.submit(key, "identity".into()).unwrap();
+        sender
+            .submit(key, "identity".into(), RequestOrigin::Gui)
+            .unwrap();
         assert_eq!(
             receive(&mut sender).result,
             Err(PromptError::UnknownDelivery)
@@ -580,7 +635,9 @@ mod prompt {
 }
 
 mod worktree_remove {
-    use crate::herdr::{WorktreeRemoveError, WorktreeRemoveResult, WorktreeRemoveSender};
+    use crate::herdr::{
+        RequestOrigin, WorktreeRemoveError, WorktreeRemoveResult, WorktreeRemoveSender,
+    };
     use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
     use crate::session_view::{SessionFilter, SessionKey, SessionListOptions};
     use crate::state::{AppState, SourceCounts};
@@ -728,6 +785,12 @@ mod worktree_remove {
             generation,
             agents,
             SourceCounts::default(),
+            Arc::from(
+                agents
+                    .iter()
+                    .map(|agent| agent.pane_id.clone())
+                    .collect::<Vec<_>>()
+            ),
             &[],
             Instant::now()
         ));
@@ -807,10 +870,17 @@ mod worktree_remove {
             selected
         });
         let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
-        sender.submit(target.clone()).unwrap();
-        assert_eq!(sender.submit(target), Err(WorktreeRemoveError::Busy));
+        let origin = RequestOrigin::Cli {
+            operation_id: "remove-1".into(),
+        };
+        sender.submit(target.clone(), origin.clone()).unwrap();
+        assert_eq!(
+            sender.submit(target, RequestOrigin::Gui),
+            Err(WorktreeRemoveError::Busy)
+        );
         let result = receive(&mut sender);
         assert_eq!(result.target, expected);
+        assert_eq!(result.origin, origin);
         assert_eq!(result.result, Ok(()));
         assert!(
             shared.lock().unwrap().session_view_for_key(&key).is_some(),
@@ -844,10 +914,14 @@ mod worktree_remove {
             1,
             &[changed],
             SourceCounts::default(),
+            Arc::from(vec!["pane".to_owned()]),
             &[],
             Instant::now()
         ));
-        assert_eq!(sender.submit(target), Err(WorktreeRemoveError::StaleTarget));
+        assert_eq!(
+            sender.submit(target, RequestOrigin::Gui),
+            Err(WorktreeRemoveError::StaleTarget)
+        );
         assert!(!sender.is_pending());
         let current = shared.lock().unwrap().worktree_remove_target(&key).unwrap();
         assert_eq!(current.worktree.pane_count, 2);
@@ -861,11 +935,12 @@ mod worktree_remove {
                 worktree("/virtual/checkout", 1, 1, false)
             )],
             SourceCounts::default(),
+            Arc::from(vec!["pane".to_owned()]),
             &[],
             Instant::now()
         ));
         assert_eq!(
-            sender.submit(current),
+            sender.submit(current, RequestOrigin::Gui),
             Err(WorktreeRemoveError::NotLinkedWorktree)
         );
         server.assert_no_request();
@@ -922,7 +997,7 @@ mod worktree_remove {
                 server
             });
             let mut sender = WorktreeRemoveSender::new(shared);
-            sender.submit(target.clone()).unwrap();
+            sender.submit(target.clone(), RequestOrigin::Gui).unwrap();
             let result = receive(&mut sender);
             assert_eq!(result.target, target);
             assert_eq!(result.result, Err(WorktreeRemoveError::StaleTarget));
@@ -967,7 +1042,7 @@ mod worktree_remove {
             server
         });
         let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
-        sender.submit(target.clone()).unwrap();
+        sender.submit(target.clone(), RequestOrigin::Gui).unwrap();
         read_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(shared.lock().unwrap().publish_source_snapshot(
             &target.source,
@@ -979,6 +1054,7 @@ mod worktree_remove {
                 worktree("/virtual/checkout", 2, 1, true)
             )],
             SourceCounts::default(),
+            Arc::from(vec!["pane".to_owned()]),
             &[],
             Instant::now()
         ));
@@ -1013,11 +1089,14 @@ mod worktree_remove {
             SourceCounts::default()
         ));
         assert_eq!(
-            sender.submit(target.clone()),
+            sender.submit(target.clone(), RequestOrigin::Gui),
             Err(WorktreeRemoveError::Offline)
         );
         shared.lock().unwrap().begin_source(server.source(), 2);
-        assert_eq!(sender.submit(target), Err(WorktreeRemoveError::StaleTarget));
+        assert_eq!(
+            sender.submit(target, RequestOrigin::Gui),
+            Err(WorktreeRemoveError::StaleTarget)
+        );
 
         let main_key = publish(
             &shared,
@@ -1118,7 +1197,7 @@ mod worktree_remove {
                 server
             });
             let mut sender = WorktreeRemoveSender::new(shared);
-            sender.submit(target.clone()).unwrap();
+            sender.submit(target.clone(), RequestOrigin::Gui).unwrap();
             let result = receive(&mut sender);
             assert_eq!(result.target, target);
             assert_eq!(result.result, Err(WorktreeRemoveError::StaleTarget));
@@ -1174,7 +1253,7 @@ mod worktree_remove {
                 server
             });
             let mut sender = WorktreeRemoveSender::new(shared);
-            sender.submit(target.clone()).unwrap();
+            sender.submit(target.clone(), RequestOrigin::Gui).unwrap();
             let result = receive(&mut sender);
             assert_eq!(result.target, target);
             assert_eq!(result.result, Err(expected));
@@ -1238,9 +1317,13 @@ mod worktree_remove {
                 server
             });
             let mut sender = WorktreeRemoveSender::new(shared);
-            sender.submit(target.clone()).unwrap();
+            let origin = RequestOrigin::Cli {
+                operation_id: "remove-unknown".into(),
+            };
+            sender.submit(target.clone(), origin.clone()).unwrap();
             let result = receive(&mut sender);
             assert_eq!(result.target, target);
+            assert_eq!(result.origin, origin);
             assert_eq!(result.result, Err(WorktreeRemoveError::UnknownDelivery));
             worker.join().unwrap().assert_no_request();
         }
@@ -1284,7 +1367,7 @@ mod worktree_remove {
             server
         });
         let mut sender = WorktreeRemoveSender::new(Arc::clone(&shared));
-        sender.submit(target.clone()).unwrap();
+        sender.submit(target.clone(), RequestOrigin::Gui).unwrap();
         received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(shared.lock().unwrap().update_source(
             &target.source,
