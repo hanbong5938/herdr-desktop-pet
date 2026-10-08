@@ -16,6 +16,7 @@ use crate::ui::MenuTarget;
 
 const ROOT_WIDTH: f64 = 328.0;
 const ROOT_HEIGHT: f64 = 140.0;
+const IDLE_HEIGHT: f64 = 72.0;
 const CARD_RADIUS: f64 = 10.0;
 
 const PRIMARY_RED: f64 = 0.95;
@@ -38,6 +39,52 @@ const CARD_BORDER_RED: f64 = 0.28;
 const CARD_BORDER_GREEN: f64 = 0.28;
 const CARD_BORDER_BLUE: f64 = 0.32;
 const CARD_BORDER_ALPHA: f64 = 0.50;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SummaryStatus<'a> {
+    Error(&'a str),
+    Stale,
+    Operation(OperationStatus),
+    Candidate,
+}
+
+fn summary_status<'a>(
+    listing: &'a PackListing,
+    selection: &'a CharacterSelection,
+) -> Option<SummaryStatus<'a>> {
+    let operation_visible = selection.operation_visible_for_candidate();
+    let error = listing.error.as_deref().or_else(|| {
+        if operation_visible {
+            selection.operation_error().or_else(|| {
+                selection
+                    .operation()
+                    .and_then(|operation| operation.error.as_deref())
+            })
+        } else {
+            None
+        }
+    });
+    if let Some(error) = error {
+        return Some(SummaryStatus::Error(error));
+    }
+    if selection.stale() {
+        return Some(SummaryStatus::Stale);
+    }
+    if operation_visible {
+        if let Some(status) = selection.operation_status() {
+            return Some(SummaryStatus::Operation(status));
+        }
+    }
+    selection.candidate().map(|_| SummaryStatus::Candidate)
+}
+
+fn summary_height(listing: Option<&PackListing>, selection: &CharacterSelection) -> f64 {
+    if listing.is_some_and(|listing| summary_status(listing, selection).is_some()) {
+        ROOT_HEIGHT
+    } else {
+        IDLE_HEIGHT
+    }
+}
 
 fn resolve_builtin_thumbnail_path() -> Option<PathBuf> {
     if let Some(contents) = crate::bundle::contents_dir() {
@@ -187,7 +234,7 @@ pub(crate) struct CharacterMenu {
 impl CharacterMenu {
     pub(crate) fn new(target: &MenuTarget, locale: UiLocale, mtm: MainThreadMarker) -> Self {
         let root = CharacterMenuDocument::new(
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(ROOT_WIDTH, ROOT_HEIGHT)),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(ROOT_WIDTH, IDLE_HEIGHT)),
             mtm,
         );
         let hero = CharacterCardView::new(NSRect::default(), mtm);
@@ -253,15 +300,34 @@ impl CharacterMenu {
             busy: false,
             builtin_image,
         };
+        menu.set_candidate_card_visible(false);
         menu.set_frame(NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(ROOT_WIDTH, ROOT_HEIGHT),
+            NSSize::new(ROOT_WIDTH, IDLE_HEIGHT),
         ));
         menu
     }
 
     pub(crate) fn view(&self) -> &NSView {
         &self.root
+    }
+
+    pub(crate) fn natural_height(&self) -> f64 {
+        summary_height(self.listing.as_ref(), &self.selection)
+    }
+
+    fn set_candidate_card_visible(&self, visible: bool) {
+        self.candidate_card.setHidden(!visible);
+        for field in [&self.candidate, &self.status] {
+            unsafe {
+                let _: () = msg_send![&**field, setAccessibilityElement: visible];
+            }
+            if let Some(cell) = field.cell() {
+                unsafe {
+                    let _: () = msg_send![&*cell, setAccessibilityElement: visible];
+                }
+            }
+        }
     }
 
     pub(crate) fn set_frame(&mut self, frame: NSRect) {
@@ -393,69 +459,64 @@ impl CharacterMenu {
             .setStringValue(&NSString::from_str(active_state));
         set_accessibility_label(&self.active_status, active_state);
         let candidate = self.selection.candidate();
-        let candidate_name = candidate.map_or_else(
-            || i18n::text(self.locale, Message::CharacterSelectionPrompt).to_owned(),
-            |candidate| {
-                format!(
-                    "{} · {}",
-                    name(&candidate.reference),
-                    i18n::revision_label(self.locale, candidate.reference.revision),
-                )
-            },
-        );
-        self.candidate
-            .setStringValue(&NSString::from_str(&candidate_name));
-        set_tooltip(&self.candidate, &candidate_name);
-        set_accessibility_label(&self.candidate, &candidate_name);
-        let operation_visible = self.selection.operation_visible_for_candidate();
-        let error = listing.error.as_deref().or_else(|| {
-            if operation_visible {
-                self.selection.operation_error().or_else(|| {
-                    self.selection
-                        .operation()
-                        .and_then(|operation| operation.error.as_deref())
-                })
-            } else {
-                None
-            }
-        });
-        let status = if let Some(error) = error {
-            format!("⚠ {error}")
-        } else if self.selection.stale() {
-            i18n::text(self.locale, Message::CharacterSelectionStale).to_owned()
-        } else if let Some(operation) = if operation_visible {
-            self.selection.operation_status()
-        } else {
-            None
-        } {
-            i18n::text(
-                self.locale,
-                match operation {
-                    OperationStatus::AwaitingSubmission | OperationStatus::Accepted => {
-                        Message::CharacterOperationQueued
-                    }
-                    OperationStatus::Preparing => Message::CharacterOperationPreparing,
-                    OperationStatus::Applying => Message::CharacterOperationApplying,
-                    OperationStatus::Completed => Message::CharacterOperationCompleted,
-                    OperationStatus::Failed => Message::CharacterOperationFailed,
-                    OperationStatus::Canceled => Message::CharacterOperationCanceled,
-                    OperationStatus::CommittedPendingApply => {
-                        Message::CharacterOperationPendingApply
-                    }
-                    OperationStatus::MissingStatus
-                    | OperationStatus::DurabilityUnknown
-                    | OperationStatus::Unknown => Message::CharacterOperationUnknown,
+        let summary = summary_status(listing, &self.selection);
+        if let Some(summary) = summary {
+            let candidate_name = candidate.map_or_else(
+                || i18n::text(self.locale, Message::Operation).to_owned(),
+                |candidate| {
+                    format!(
+                        "{} · {}",
+                        name(&candidate.reference),
+                        i18n::revision_label(self.locale, candidate.reference.revision),
+                    )
                 },
-            )
-            .to_owned()
-        } else if candidate.is_some() {
-            i18n::text(self.locale, Message::CharacterCandidate).to_owned()
+            );
+            self.candidate
+                .setStringValue(&NSString::from_str(&candidate_name));
+            set_tooltip(&self.candidate, &candidate_name);
+            set_accessibility_label(&self.candidate, &candidate_name);
+            let status = match summary {
+                SummaryStatus::Error(error) => format!("⚠ {error}"),
+                SummaryStatus::Stale => {
+                    i18n::text(self.locale, Message::CharacterSelectionStale).to_owned()
+                }
+                SummaryStatus::Operation(operation) => i18n::text(
+                    self.locale,
+                    match operation {
+                        OperationStatus::AwaitingSubmission | OperationStatus::Accepted => {
+                            Message::CharacterOperationQueued
+                        }
+                        OperationStatus::Preparing => Message::CharacterOperationPreparing,
+                        OperationStatus::Applying => Message::CharacterOperationApplying,
+                        OperationStatus::Completed => Message::CharacterOperationCompleted,
+                        OperationStatus::Failed => Message::CharacterOperationFailed,
+                        OperationStatus::Canceled => Message::CharacterOperationCanceled,
+                        OperationStatus::CommittedPendingApply => {
+                            Message::CharacterOperationPendingApply
+                        }
+                        OperationStatus::MissingStatus
+                        | OperationStatus::DurabilityUnknown
+                        | OperationStatus::Unknown => Message::CharacterOperationUnknown,
+                    },
+                )
+                .to_owned(),
+                SummaryStatus::Candidate => {
+                    i18n::text(self.locale, Message::CharacterCandidate).to_owned()
+                }
+            };
+            self.status.setStringValue(&NSString::from_str(&status));
+            set_tooltip(&self.status, &status);
+            set_accessibility_label(&self.status, &status);
+            self.set_candidate_card_visible(true);
         } else {
-            i18n::text(self.locale, Message::CharacterSelectionPrompt).to_owned()
-        };
-        self.status.setStringValue(&NSString::from_str(&status));
-        set_tooltip(&self.status, &status);
-        set_accessibility_label(&self.status, &status);
+            self.set_candidate_card_visible(false);
+            self.candidate.setStringValue(ns_string!(""));
+            self.status.setStringValue(ns_string!(""));
+            for field in [&self.candidate, &self.status] {
+                field.setToolTip(None);
+                set_accessibility_label(field, "");
+            }
+        }
         self.portrait
             .setImage(if !listing.override_active && active.is_builtin() {
                 self.builtin_image.as_deref()
@@ -796,4 +857,227 @@ fn card_border_color() -> Retained<objc2_app_kit::NSColor> {
         CARD_BORDER_BLUE,
         CARD_BORDER_ALPHA,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character_types::{PackOperation, PackRecord};
+
+    fn listing() -> PackListing {
+        PackListing {
+            generation: 7,
+            selected: CharacterRef::builtin(),
+            active: Some(CharacterRef::builtin()),
+            override_active: false,
+            packs: vec![PackRecord {
+                id: "cat".into(),
+                name: "Cat".into(),
+                head: 3,
+                revisions: vec![1, 3],
+            }],
+            error: None,
+        }
+    }
+
+    fn operation(state: &str, error: Option<&str>) -> PackOperation {
+        PackOperation {
+            operation_id: "attempt".into(),
+            state: state.into(),
+            committed: false,
+            ui_applied: false,
+            generation: None,
+            error: error.map(str::to_owned),
+        }
+    }
+
+    fn assert_summary(
+        listing: &PackListing,
+        selection: &CharacterSelection,
+        expected: Option<SummaryStatus<'_>>,
+    ) {
+        assert_eq!(summary_status(listing, selection), expected);
+        assert_eq!(
+            summary_height(Some(listing), selection),
+            if expected.is_some() {
+                ROOT_HEIGHT
+            } else {
+                IDLE_HEIGHT
+            }
+        );
+    }
+
+    #[test]
+    fn idle_and_hero_only_states_are_compact() {
+        let mut listing = listing();
+        let mut selection = CharacterSelection::new();
+        assert_eq!(summary_height(None, &selection), IDLE_HEIGHT);
+        selection.reconcile(&listing);
+        assert!(!selection.is_busy());
+        assert_summary(&listing, &selection, None);
+        listing.error = Some(String::new());
+        assert_summary(&listing, &selection, Some(SummaryStatus::Error("")));
+        listing.error = None;
+        listing.active = None;
+        selection.reconcile(&listing);
+        assert_summary(&listing, &selection, None);
+        listing.override_active = true;
+        selection.reconcile(&listing);
+        assert_summary(&listing, &selection, None);
+        listing.override_active = false;
+        listing.active = Some(CharacterRef {
+            id: "cat".into(),
+            revision: 3,
+        });
+        selection.reconcile(&listing);
+        assert_summary(&listing, &selection, None);
+    }
+
+    #[test]
+    fn candidate_is_visible_even_when_apply_is_ineligible() {
+        let listing = listing();
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing);
+        selection.stage_head("default").unwrap();
+        assert!(!selection.can_apply());
+        assert_summary(&listing, &selection, Some(SummaryStatus::Candidate));
+        selection.stage_head("cat").unwrap();
+        assert!(selection.can_apply());
+        assert_summary(&listing, &selection, Some(SummaryStatus::Candidate));
+    }
+
+    #[test]
+    fn errors_and_stale_keep_their_precedence_including_empty_errors() {
+        let mut listing = listing();
+        let mut rejected = CharacterSelection::new();
+        rejected.reconcile(&listing);
+        rejected.stage_head("cat").unwrap();
+        rejected.request_apply("attempt".into()).unwrap();
+        rejected.submission_failed("attempt", String::new());
+        listing.generation += 1;
+        rejected.reconcile(&listing);
+        assert!(rejected.stale());
+        assert_summary(&listing, &rejected, Some(SummaryStatus::Error("")));
+        listing.error = Some("listing error".into());
+        assert_summary(
+            &listing,
+            &rejected,
+            Some(SummaryStatus::Error("listing error")),
+        );
+
+        listing.error = None;
+        let mut observed = CharacterSelection::new();
+        observed.reconcile(&listing);
+        observed.stage_head("cat").unwrap();
+        observed.request_apply("attempt".into()).unwrap();
+        observed.record_operation(&operation("failed", Some("operation error")));
+        listing.generation += 1;
+        observed.reconcile(&listing);
+        assert_summary(
+            &listing,
+            &observed,
+            Some(SummaryStatus::Error("operation error")),
+        );
+        listing.error = Some("listing error".into());
+        assert_summary(
+            &listing,
+            &observed,
+            Some(SummaryStatus::Error("listing error")),
+        );
+        listing.error = None;
+        observed.record_operation(&operation("failed", None));
+        assert_summary(&listing, &observed, Some(SummaryStatus::Stale));
+    }
+
+    #[test]
+    fn visible_operation_states_are_retained_without_a_candidate() {
+        let listing = listing();
+        let states = [
+            ("accepted", OperationStatus::Accepted),
+            ("preparing", OperationStatus::Preparing),
+            ("applying", OperationStatus::Applying),
+            ("completed", OperationStatus::Completed),
+            ("failed", OperationStatus::Failed),
+            ("canceled", OperationStatus::Canceled),
+            (
+                "committed_pending_apply",
+                OperationStatus::CommittedPendingApply,
+            ),
+            ("durability_unknown", OperationStatus::DurabilityUnknown),
+            ("unrecognized", OperationStatus::Unknown),
+        ];
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing);
+        selection.reserve_other("attempt".into());
+        assert!(selection.is_busy());
+        assert_summary(
+            &listing,
+            &selection,
+            Some(SummaryStatus::Operation(
+                OperationStatus::AwaitingSubmission,
+            )),
+        );
+        selection.reconcile_operation(None);
+        assert_summary(
+            &listing,
+            &selection,
+            Some(SummaryStatus::Operation(OperationStatus::MissingStatus)),
+        );
+        for (state, expected) in states {
+            selection.reserve_other("attempt".into());
+            selection.record_operation(&operation(state, None));
+            assert_summary(
+                &listing,
+                &selection,
+                Some(SummaryStatus::Operation(expected)),
+            );
+        }
+        selection.reserve_other("attempt".into());
+        selection.record_operation(&operation("failed", None));
+        selection.cancel().unwrap();
+        assert_summary(
+            &listing,
+            &selection,
+            Some(SummaryStatus::Operation(OperationStatus::Failed)),
+        );
+    }
+
+    #[test]
+    fn new_candidate_hides_unowned_old_result_but_not_owned_pending_apply() {
+        let listing = listing();
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing);
+        selection.reserve_other("attempt".into());
+        selection.record_operation(&operation("failed", Some("old failure")));
+        selection.stage_head("cat").unwrap();
+        assert!(!selection.operation_visible_for_candidate());
+        assert_summary(&listing, &selection, Some(SummaryStatus::Candidate));
+
+        selection.request_apply("owned".into()).unwrap();
+        assert!(selection.operation_visible_for_candidate());
+        assert_summary(
+            &listing,
+            &selection,
+            Some(SummaryStatus::Operation(
+                OperationStatus::AwaitingSubmission,
+            )),
+        );
+    }
+
+    #[test]
+    fn missing_current_observation_never_reuses_its_error() {
+        let listing = listing();
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing);
+        selection.reserve_other("attempt".into());
+        selection.record_operation(&operation("preparing", Some("previous error")));
+        selection.reconcile_operation(None);
+        assert!(selection.operation().is_none());
+        assert!(selection.last_observation().is_some());
+        assert_summary(
+            &listing,
+            &selection,
+            Some(SummaryStatus::Operation(OperationStatus::MissingStatus)),
+        );
+    }
 }
