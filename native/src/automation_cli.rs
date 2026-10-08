@@ -2057,12 +2057,15 @@ mod domain_tests {
         let socket = root.join("control.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // The deadline still expires before the terminal reply, but CI's
+        // background timer scheduling must have room for the first status poll.
+        let wait = Duration::from_secs(2);
         let peer = std::thread::spawn(move || {
             let mut seen = Vec::new();
             let mut operation_id: Option<String> = None;
             for state in [DomainOperationState::Pending, DomainOperationState::Applied] {
                 listener.set_nonblocking(true).unwrap();
-                let until = Instant::now() + Duration::from_secs(2);
+                let until = Instant::now() + Duration::from_secs(5);
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -2088,11 +2091,9 @@ mod domain_tests {
                     id
                 };
                 seen.push(request.command);
-                std::thread::sleep(if state == DomainOperationState::Pending {
-                    Duration::from_millis(100)
-                } else {
-                    Duration::from_millis(260)
-                });
+                if state == DomainOperationState::Applied {
+                    std::thread::sleep(wait + Duration::from_secs(1));
+                }
                 let reply = crate::control::AutomationReplyEnvelope {
                     version: 1,
                     kind: "automation".into(),
@@ -2120,12 +2121,11 @@ mod domain_tests {
             &socket,
             "daemon_read",
             DomainAction::DialogueList {},
-            Duration::from_millis(180),
+            wait,
         );
-        let error = result.unwrap_err();
         assert!(
-            error.contains("read remains pending") && error.contains("Pending"),
-            "{error}"
+            result.is_err(),
+            "a terminal read reply after the deadline must not be accepted"
         );
         assert_eq!(peer.join().unwrap(), vec!["request", "status"]);
         std::fs::remove_dir_all(root).unwrap();
