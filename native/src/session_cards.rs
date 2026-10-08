@@ -51,6 +51,7 @@ pub(crate) const fn minimum_selectable_height() -> f64 {
 #[derive(Default)]
 struct CardsIntent {
     composition_active: bool,
+    resize_frozen: bool,
     pending_selection: Option<SessionKey>,
     pending_filter: Option<SessionFilter>,
     pending_selection_deferred: bool,
@@ -63,6 +64,20 @@ impl CardsIntent {
         self.pending_selection_deferred = true;
         self.composition_active |= marked;
         self.deferred_refresh = true;
+    }
+
+    fn set_resize_frozen(&mut self, frozen: bool) {
+        if self.resize_frozen && !frozen {
+            self.deferred_refresh = true;
+        }
+        self.resize_frozen = frozen;
+    }
+
+    fn accept_deferred_selection(&mut self, valid: bool) -> bool {
+        let reveal = valid && self.pending_selection_deferred;
+        self.deferred_selection_applied |= reveal;
+        self.pending_selection_deferred = false;
+        reveal
     }
 }
 
@@ -139,7 +154,7 @@ define_class!(
             }
             // AppKit may reenter while the cards are borrowed.
             self.restore_popup();
-            if !marked {
+            if !marked && !self.ivars().intent.borrow().resize_frozen {
                 let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
                     if !self.ivars().intent.borrow().composition_active {
                         cards.refresh();
@@ -266,11 +281,13 @@ impl SessionCardView {
             let mut intent = self.ivars().intent.borrow_mut();
             intent.request_selection(self.ivars().key.clone(), marked);
         }
-        if marked {
+        if marked || self.ivars().intent.borrow().resize_frozen {
             return;
         }
         let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
-            if !self.ivars().intent.borrow().composition_active {
+            if !self.ivars().intent.borrow().composition_active
+                && !self.ivars().intent.borrow().resize_frozen
+            {
                 self.ivars().intent.borrow_mut().pending_selection_deferred = false;
                 cards.reveal_selection = true;
                 cards.refresh();
@@ -607,8 +624,25 @@ struct SessionCardsInner {
 
 impl SessionCardsInner {
     fn content_height(&self) -> f64 {
-        let document_height = self.rows_height();
-        (OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + document_height).min(180.0)
+        self.document_content_height().min(180.0)
+    }
+
+    fn document_content_height(&self) -> f64 {
+        OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + self.rows_height()
+    }
+
+    fn minimum_content_width(&self) -> f64 {
+        // Keep the native filter at its 82pt minimum and reserve a readable
+        // summary beside it, rather than narrowing the scroller to zero.
+        OUTER_INSET * 2.0
+            + 82.0
+            + HEADER_GAP
+            + self
+                .summary
+                .cell()
+                .map(|cell| cell.cellSize().width)
+                .unwrap_or(80.0)
+                .clamp(80.0, 154.0)
     }
 
     fn rows_height(&self) -> f64 {
@@ -773,6 +807,12 @@ impl SessionCardsInner {
     }
 
     fn refresh(&mut self) {
+        // A resize only reflows the already displayed hierarchy. In particular
+        // do not consume a pending selection or detach its reply during a drag.
+        if self.intent.borrow().resize_frozen {
+            self.intent.borrow_mut().deferred_refresh = true;
+            return;
+        }
         let scroll_origin = self.scroll.contentView().bounds().origin;
         let (marked, pending_filter, pending_selection, deferred) = {
             let intent = self.intent.borrow();
@@ -877,9 +917,7 @@ impl SessionCardsInner {
             intent.pending_filter = None;
             intent.pending_selection = None;
             intent.deferred_refresh = false;
-            intent.deferred_selection_applied |=
-                selection_valid && intent.pending_selection_deferred;
-            intent.pending_selection_deferred = false;
+            self.reveal_selection |= intent.accept_deferred_selection(selection_valid);
         }
         self.filter = filter;
         if self.selected != snapshot.selected {
@@ -1236,6 +1274,10 @@ impl SessionCards {
         intent.composition_active = active;
     }
 
+    pub(crate) fn set_resize_frozen(&self, frozen: bool) {
+        self.intent.borrow_mut().set_resize_frozen(frozen);
+    }
+
     pub(crate) fn has_deferred_refresh(&self) -> bool {
         self.intent.borrow().deferred_refresh
     }
@@ -1266,9 +1308,19 @@ impl SessionCards {
     pub(crate) fn content_height(&self) -> f64 {
         self.inner.borrow().content_height()
     }
+
+    /// Full requested viewport height, before the automatic bubble's 180pt cap.
+    pub(crate) fn document_content_height(&self) -> f64 {
+        self.inner.borrow().document_content_height()
+    }
+
+    pub(crate) fn minimum_content_width(&self) -> f64 {
+        self.inner.borrow().minimum_content_width()
+    }
+
     pub(crate) fn attach_reply(&self, key: &SessionKey, view: &NSView, height: f64) -> bool {
         let mut inner = self.inner.borrow_mut();
-        if self.intent.borrow().composition_active
+        if (self.intent.borrow().composition_active || self.intent.borrow().resize_frozen)
             && !inner
                 .reply
                 .as_ref()
@@ -1281,7 +1333,7 @@ impl SessionCards {
     }
 
     pub(crate) fn detach_reply(&self) {
-        if self.intent.borrow().composition_active {
+        if self.intent.borrow().composition_active || self.intent.borrow().resize_frozen {
             self.intent.borrow_mut().deferred_refresh = true;
             return;
         }
@@ -1802,6 +1854,33 @@ fn unsafe_identifier_char(character: char) -> bool {
 mod tests {
     use super::*;
     use crate::herdr_protocol::SessionMetadata;
+
+    #[test]
+    fn resize_freeze_retains_selection_filter_and_real_composition_intents() {
+        let selected = SessionKey {
+            source_id: 7,
+            generation: 2,
+            terminal_id: "terminal".into(),
+        };
+        let mut intent = CardsIntent::default();
+        intent.set_resize_frozen(true);
+        intent.request_selection(selected.clone(), false);
+        intent.pending_filter = Some(SessionFilter::Working);
+        assert!(intent.pending_selection_deferred);
+        assert!(!intent.composition_active);
+        intent.set_resize_frozen(false);
+        assert_eq!(intent.pending_selection, Some(selected.clone()));
+        assert_eq!(intent.pending_filter, Some(SessionFilter::Working));
+        assert!(intent.pending_selection_deferred);
+        assert!(intent.deferred_refresh);
+        assert!(intent.accept_deferred_selection(true));
+        assert!(!intent.pending_selection_deferred);
+        assert!(intent.deferred_selection_applied);
+        intent.request_selection(selected, true);
+        intent.set_resize_frozen(true);
+        intent.set_resize_frozen(false);
+        assert!(intent.composition_active);
+    }
 
     #[test]
     fn reply_slot_shifts_only_following_rows_and_extends_scroll_tail() {

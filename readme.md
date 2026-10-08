@@ -6,7 +6,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 > **Stable v0.2.0 is the current release and default/prebuilt installation target; this checkout also carries the unreleased additions below.** Its released native feature groups include independent character/bubble visibility, compact observation settings, standalone/remote-only watcher startup, contextual Settings, configurable menu-bar recovery and image, linked-worktree removal, reply layout and clipboard shortcuts, and malformed-link scanner fixes. The earlier v0.1.11 binary and immutable beta1/beta2/beta3 releases remain historical, separate channels. Consult the [v0.2.0 release notes](docs/releases/v0.2.0.md), [upgrade guide](docs/migrations/v0.1.11-to-v0.2.0.md), and [historical local-preview guide](docs/migrations/unreleased.md). Release-catalog assets, rather than this source guide, establish publication availability.
 
-> **Unreleased checkout only:** This working copy adds native automation commands and conflict-aware dialogue drafts. They are **not** part of the pinned published v0.2.0 or historical beta binaries, even though the checkout still reports version `0.2.0`. Build this checkout explicitly with `bash scripts/install.sh --source`; the default installer and `--prebuilt` use the pinned release. Stop an older daemon before running the source executable (or use matching isolated config **and** state directories), and inspect `status` for the actual running executable rather than trusting `--version`. See [unreleased changes](docs/releases/unreleased.md#current-unreleased-checkout--현재-미출시-체크아웃) and the [native CLI contract](docs/cli.md#english).
+> **Unreleased checkout only:** This working copy adds native automation commands, conflict-aware dialogue drafts, and drag-resizable status bubbles. They are **not** part of the pinned published v0.2.0 or historical beta binaries, even though the checkout still reports version `0.2.0`. Build this checkout explicitly with `bash scripts/install.sh --source`; the default installer and `--prebuilt` use the pinned release. Stop an older daemon before running the source executable (or use matching isolated config **and** state directories), and inspect `status` for the actual running executable rather than trusting `--version`. See [unreleased changes](docs/releases/unreleased.md) and the [native CLI contract](docs/cli.md#english).
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
@@ -18,7 +18,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 - Readable session cards with task titles, workspace/tab context, source labels, and a separate status label.
 - Inline replies beneath selected local agent session cards in the expanded status bubble, shipped since v0.1.6; remote cards remain read-only. See the [v0.1.4 → v0.1.6 migration](docs/migrations/v0.1.4-to-v0.1.6.md).
 - Head/body tap reactions, head petting, dragging, and resizing.
-- Configurable status bubble placement and visibility.
+- Configurable status bubble placement and visibility, plus independent drag resizing in this unreleased checkout.
 - Optional status icons and colors, with a status summary that remains visible alongside dialogue.
 - Full-window and alpha-mask click-through modes.
 - English and Korean UI options.
@@ -143,7 +143,7 @@ Version-specific changes and historical artwork limitations belong in the [relea
 
 ## Controls
 
-These controls describe this checkout's native app; the menu-bar click behavior below is a checkout change, not a claim about the published stable v0.2.0 binary. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
+These controls describe this checkout's native app; the menu-bar click behavior and bubble resizing below are checkout changes, not claims about the published stable v0.2.0 binary. Inline replies first shipped in v0.1.6. **Close Bubble Window** hides only the bubble, keeps selection/drafts for this run, and is disabled/rechecked during IME composition. Character and bubble visibility are independent; hiding the character can leave a standalone bubble.
 
 | Interaction | Effect |
 | --- | --- |
@@ -151,15 +151,21 @@ These controls describe this checkout's native app; the menu-bar click behavior 
 | Right-click or Control-click the menu-bar icon | Open the native **Show and Enable Character** (when recovery is needed), **Settings…**, **Quit** menu; the settings panel hides before this menu opens |
 | Tap the head or body | Trigger a reaction |
 | Move back and forth on the head | Pet the character |
-| Drag the body or background | Move the character |
-| Option-drag anywhere | Move the character |
-| Bottom-right grip | Resize the character |
+| Drag the character body or background | Move the character |
+| Option-drag the character window | Move the character |
+| Character bottom-right grip | Resize the character |
+| Drag the bubble background | Move the character when attached; move only the bubble when standalone |
+| Bubble bottom-right grip (unreleased checkout) | Resize the bubble width and height independently, including with Option held |
 | Expanded bubble session card (v0.1.6+) | Open a one-line reply beneath the selected local agent session; switching cards waits for active IME composition to end, while remote cards show read-only feedback |
 | Inline reply (v0.1.6+) | Enter, Command+Enter, or Send submits to the selected local session; IME composition does not submit |
 | Escape in the reply / click outside the bubble (v0.1.6+) | Escape cancels active IME composition first; otherwise either folds only the reply field. Inside-bubble clicks do not automatically fold it; outside clicks do not fold during composition |
-| Right-click / Control-click the bubble background or a card header | **Close Bubble Window** hides only the bubble, not the character, app, or Herdr session |
+| Right-click / Control-click the bubble background or a card header | **Close Bubble Window** hides only the bubble; **Restore automatic size** clears both compact and expanded size overrides |
 | Full-window click-through | Pass clicks through both the pet and bubble windows, disabling their interaction |
 | Alpha click-through | Pass clicks through transparent character artwork regions only; the bubble remains interactive |
+
+Compact and expanded bubble sizes are saved separately and shared between attached and standalone bubbles. The grip does not change character scale or font size. Expanded message and card scroll viewports use the available space instead of the automatic layout's height caps. A smaller screen limits the displayed size without discarding the requested size; it can recover when enough screen space is available.
+
+IME composition already in progress blocks starting a resize or choosing **Restore automatic size**. If composition begins after pointer-down, preview pauses; release or native cancellation clears pointer tracking but defers saving and applying pending updates until composition is safe and tracking ends. Displayed cards and reply drafts remain in place meanwhile. The final size candidate uses the latest content, locale, layout, and screen clamp, and saves only once when the gesture completes. If saving fails, previous requested sizes, the prior actual standalone origin, and pending state return without a later ghost save; newer content may still reflow the displayed minimum rather than restoring an exact old pixel size. **Restore automatic size** keeps positions, visibility, the current mode, and reply drafts; position and color resets leave size overrides intact.
 
 The bubble context menu preserves card selection and drafts when canceled. Text areas keep their native copy/paste menus, and buttons, dropdowns, and scrollbars keep their native behavior. **Close Bubble Window** is disabled during active IME composition; finish composition and open the menu again to close. Reopen from **Bubble → Bubble visible** in the menu-bar panel. Closing uses the existing saved bubble visibility setting; reply drafts remain in memory for the current app run.
 
