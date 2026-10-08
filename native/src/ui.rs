@@ -16,9 +16,10 @@ use crate::automation::{
 };
 use crate::behavior::{Behavior, Presentation, PresentationIntent, PresentationViewport, Reaction};
 use crate::bubble::{
-    place_bubble, place_resizing_bubble, place_standalone_bubble, resize_bubble_body,
-    BubbleGeometry, BubblePlacement, BubbleSide, BubbleSize, Rect as BubbleRect, BUBBLE_RADIUS,
-    BUBBLE_WINDOW_INSET,
+    bubble_resize_direction_at, fit_resizing_bubble_body, place_bubble, place_resizing_bubble,
+    place_standalone_bubble, requested_bubble_resize_size, resize_bubble_body, BubbleGeometry,
+    BubblePlacement, BubbleResizeDirection, BubbleSide, BubbleSize, Rect as BubbleRect,
+    BUBBLE_RADIUS, BUBBLE_WINDOW_INSET,
 };
 use crate::character_browser::{self, BrowserInput, CharacterBrowser};
 use crate::character_menu::{self, CharacterMenu, MenuCommand};
@@ -62,9 +63,7 @@ use crate::preferences::{
     BubbleAppearance, BubbleColor, BubblePalette, BubbleSizes, BubbleTheme, MenuBarIconPreference,
     MenuBarMode, Preferences,
 };
-use crate::session_cards::{
-    card_header_key_at_hit, maximum_cards_height, minimum_selectable_height, SessionCards,
-};
+use crate::session_cards::{card_header_key_at_hit, minimum_selectable_height, SessionCards};
 use crate::session_view::{SessionKey, SessionStatusSummary, WorktreeRemoveTarget};
 use crate::sources::ObservationPreferences;
 use crate::state::{AppState, Phase, Scene, MAX_SCALE, MIN_SCALE};
@@ -92,7 +91,7 @@ use objc2_app_kit::{
     NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton, NSScreen,
     NSScrollView, NSScrollerStyle, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment,
     NSTextContainer, NSTextField, NSTextStorage, NSTextView, NSTrackingArea, NSTrackingAreaOptions,
-    NSUserInterfaceItemIdentification, NSVariableStatusItemLength, NSView,
+    NSUserInterfaceItemIdentification, NSVariableStatusItemLength, NSView, NSWindow,
     NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
@@ -182,9 +181,7 @@ const BUBBLE_LINE_HEIGHT: f64 = 18.0;
 const BUBBLE_CONTROL_HEIGHT: f64 = 20.0;
 const BUBBLE_COLLAPSE_WIDTH: f64 = 72.0;
 const BUBBLE_CONTENT_GAP: f64 = 4.0;
-const BUBBLE_MESSAGE_MAX_HEIGHT: f64 = 116.0;
 const COMPOSER_READONLY_HEIGHT: f64 = 25.0;
-const BUBBLE_GRIP_RESERVE: f64 = GRIP_HIT_SIZE + 8.0;
 const COMPOSER_STATUS_HEIGHT: f64 = 18.0;
 
 fn menu_bar_visible(scene: &Scene, mode: MenuBarMode) -> bool {
@@ -249,6 +246,41 @@ fn expanded_height_budget(
         + if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 }
 }
 
+fn expanded_auto_height(
+    visible_height: f64,
+    body_height_cap: f64,
+    cards: f64,
+    message: f64,
+    minimum_cards: f64,
+    show_status: bool,
+) -> f64 {
+    let spacing = expanded_spacing(
+        body_height_cap,
+        cards,
+        minimum_cards,
+        show_status,
+        message > 0.0,
+    );
+    let floor = expanded_height_budget(cards, minimum_cards, show_status, message > 0.0, spacing);
+    let natural = floor
+        - cards.min(minimum_cards)
+        - (if message > 0.0 {
+            BUBBLE_LINE_HEIGHT
+        } else {
+            0.0
+        })
+        + cards
+        + message;
+    natural
+        .min(
+            (visible_height * 0.78)
+                .min(530.0)
+                .max(floor.min(body_height_cap)),
+        )
+        .min(body_height_cap)
+        .max(1.0)
+}
+
 fn expanded_message_top(
     status_bottom: f64,
     content_top: f64,
@@ -276,31 +308,38 @@ fn expanded_heights(
     show_status: bool,
     spacing: ExpandedSpacing,
 ) -> ExpandedHeights {
-    let remaining = (body_height
-        - spacing.inset * 2.0
-        - BUBBLE_CONTROL_HEIGHT
-        - spacing.gap
-            * (if show_status && desired_message == 0.0 {
-                1.0
-            } else {
-                2.0
-            })
-        - if show_status {
-            STATUS_ROW_HEIGHT
-                + if desired_message > 0.0 {
-                    spacing.gap
-                } else {
-                    0.0
-                }
-        } else {
-            0.0
-        })
-    .max(0.0);
-    let cards = desired_cards.min(minimum_cards).min(remaining);
-    let message = desired_message.min((remaining - cards).max(0.0));
+    let has_message = desired_message > 0.0;
+    let reserved_message = if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 };
+    let reserved_cards = desired_cards.min(minimum_cards);
+    let chrome = expanded_height_budget(
+        desired_cards,
+        minimum_cards,
+        show_status,
+        has_message,
+        spacing,
+    ) - reserved_cards
+        - reserved_message;
+    let remaining = (body_height - chrome).max(0.0);
+    let cards_floor = reserved_cards.min(remaining);
+    let message_floor = if has_message {
+        desired_message
+            .min(BUBBLE_LINE_HEIGHT)
+            .min((remaining - cards_floor).max(0.0))
+    } else {
+        0.0
+    };
+    let surplus = (remaining - cards_floor - message_floor).max(0.0);
+    let cards_need = (desired_cards - cards_floor).max(0.0);
+    let message_need = (desired_message - message_floor).max(0.0);
+    let cards_share = cards_need.min(surplus * 0.5);
+    let message_share = message_need.min(surplus * 0.5);
+    let cards_extra = cards_share
+        + (cards_need - cards_share).min((surplus - cards_share - message_share).max(0.0));
+    let message_extra = message_share
+        + (message_need - message_share).min((surplus - cards_extra - message_share).max(0.0));
     ExpandedHeights {
-        cards: desired_cards.min((remaining - message).max(0.0)),
-        message,
+        cards: cards_floor + cards_extra,
+        message: message_floor + message_extra,
     }
 }
 
@@ -486,6 +525,10 @@ struct BubbleResizeDrag {
     start_body: BubbleRect,
     prior_geometry: BubbleGeometry,
     mode: BubbleMode,
+    direction: BubbleResizeDirection,
+    delta: (f64, f64),
+    screen_frame: NSRect,
+    pet_frame: NSRect,
     attached: bool,
     side: Option<BubbleSide>,
     prior_sizes: BubbleSizes,
@@ -546,9 +589,6 @@ struct BubbleViewIvars {
     geometry: RefCell<Option<BubbleGeometry>>,
     path: RefCell<Option<Retained<NSBezierPath>>>,
     native_regions: RefCell<Vec<NSRect>>,
-    grip: Retained<GripView>,
-    hover_grip: Cell<bool>,
-    hover_body: Cell<bool>,
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     palette: Cell<BubblePalette>,
     opaque_surface: Cell<bool>,
@@ -1745,19 +1785,12 @@ define_class!(
             if !path.containsPoint(point) {
                 return None;
             }
-            if self.grip_hit(point) {
-                return Some(&**self);
-            }
-            if self
-                .ivars()
-                .native_regions
-                .borrow()
-                .iter()
-                .any(|region| point_in_rect(point, *region))
-            {
-                // SAFETY: This lets AppKit route events to actual native
-                // controls and the SessionCards scroll hierarchy.
+            if self.native_owner(point) {
+                // Native scroll, text and controls own their entire frames.
                 return unsafe { msg_send![super(self), hitTest: point] };
+            }
+            if self.resize_direction_at(point).is_some() {
+                return Some(&**self);
             }
             Some(&**self)
         }
@@ -1771,11 +1804,14 @@ define_class!(
                 return;
             };
             let local_point = event.locationInWindow();
+            if self.native_owner(local_point) || !self.contains_local_point(local_point) {
+                return;
+            }
             let screen_point = window.convertPointToScreen(local_point);
-            let resize = self.grip_hit(local_point);
+            let direction = self.resize_direction_at(local_point);
             let drag = Cell::new(None);
             with_ui_mut(|ui| {
-                drag.set(ui.bubble_pointer_down(screen_point, event.timestamp(), resize))
+                drag.set(ui.bubble_pointer_down(screen_point, event.timestamp(), direction))
             });
             self.ivars().drag.set(drag.get());
             self.set_drag_visuals(drag.get().map(|drag| drag.kind));
@@ -1839,19 +1875,17 @@ define_class!(
         }
 
         #[unsafe(method(mouseMoved:))]
-        fn mouse_moved(&self, event: &NSEvent) {
-            self.update_grip_hover(event.locationInWindow());
+        fn mouse_moved(&self, _event: &NSEvent) {
+            self.set_drag_visuals(self.ivars().drag.get().map(|drag| drag.kind));
         }
 
         #[unsafe(method(mouseEntered:))]
-        fn mouse_entered(&self, event: &NSEvent) {
-            self.update_grip_hover(event.locationInWindow());
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.set_drag_visuals(self.ivars().drag.get().map(|drag| drag.kind));
         }
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
-            self.ivars().hover_body.set(false);
-            self.ivars().hover_grip.set(false);
             self.set_drag_visuals(self.ivars().drag.get().map(|drag| drag.kind));
         }
 
@@ -2691,26 +2725,17 @@ impl BubblePanel {
 
 impl BubbleView {
     fn new(frame: NSRect, mtm: MainThreadMarker) -> Retained<Self> {
-        let grip = GripView::new(
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
-            mtm,
-        );
         let this = Self::alloc(mtm).set_ivars(BubbleViewIvars {
             drag: Cell::new(None),
             geometry: RefCell::new(None),
             path: RefCell::new(None),
             native_regions: RefCell::new(Vec::new()),
-            grip,
-            hover_grip: Cell::new(false),
-            hover_body: Cell::new(false),
             tracking_area: RefCell::new(None),
             palette: Cell::new(BubbleAppearance::default().palette()),
             opaque_surface: Cell::new(false),
         });
         // SAFETY: NSView's initWithFrame: has the expected signature.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
-        this.ivars().grip.setHidden(true);
-        this.addSubview(&this.ivars().grip);
         let tracking = unsafe {
             NSTrackingArea::initWithRect_options_owner_userInfo(
                 NSTrackingArea::alloc(),
@@ -2746,7 +2771,6 @@ impl BubbleView {
         let path = bubble_path(geometry.body, geometry.tail);
         self.ivars().path.replace(Some(path));
         self.setNeedsDisplay(true);
-        self.ivars().grip.setFrame(bubble_grip_rect(geometry.body));
     }
 
     fn set_native_regions(&self, regions: &[NSRect]) {
@@ -2765,51 +2789,100 @@ impl BubbleView {
             .is_some_and(|path| path.containsPoint(point))
     }
 
-    fn grip_hit(&self, point: NSPoint) -> bool {
+    fn native_owner(&self, point: NSPoint) -> bool {
+        self.ivars()
+            .native_regions
+            .borrow()
+            .iter()
+            .any(|region| point_in_rect(point, *region))
+    }
+
+    fn resize_direction_at(&self, point: NSPoint) -> Option<BubbleResizeDirection> {
+        if self.native_owner(point) || !self.contains_local_point(point) {
+            return None;
+        }
         self.ivars()
             .geometry
             .borrow()
             .as_ref()
-            .is_some_and(|geometry| {
-                point_in_rect(point, bubble_grip_rect(geometry.body))
-                    && self.contains_local_point(point)
-            })
-    }
-
-    fn update_grip_hover(&self, point: NSPoint) {
-        let hovered_body = self.contains_local_point(point);
-        let hovered_grip = hovered_body && self.grip_hit(point);
-        let body_changed = self.ivars().hover_body.replace(hovered_body) != hovered_body;
-        let grip_changed = self.ivars().hover_grip.replace(hovered_grip) != hovered_grip;
-        let changed = body_changed || grip_changed;
-        if changed {
-            self.set_drag_visuals(self.ivars().drag.get().map(|drag| drag.kind));
-        }
+            .and_then(|geometry| bubble_resize_direction_at(geometry.body, (point.x, point.y)))
     }
 
     fn set_drag_visuals(&self, kind: Option<GestureKind>) {
         if let Some(layer) = self.layer() {
             layer.setOpacity(if kind.is_some() { 0.92 } else { 1.0 });
         }
-        let resizing = matches!(kind, Some(GestureKind::Resize));
-        self.ivars()
-            .grip
-            .setHidden(!(resizing || self.ivars().hover_body.get()));
-        let cursor = if resizing || self.ivars().hover_grip.get() {
-            if *FRAME_RESIZE_CURSOR_AVAILABLE {
+        let captured_direction = self
+            .ivars()
+            .drag
+            .get()
+            .and_then(|drag| drag.bubble_resize.map(|resize| resize.direction));
+        let Some(window) = self.window() else {
+            return;
+        };
+        let point = NSEvent::mouseLocation();
+        let local = window.convertPointFromScreen(point);
+        let owns_pointer =
+            if captured_direction.is_some() || matches!(kind, Some(GestureKind::Move)) {
+                true
+            } else {
+                window.isVisible()
+                    && MainThreadMarker::new().is_some_and(|mtm| {
+                        NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(point, 0, mtm)
+                            == window.windowNumber()
+                    })
+                    && self.contains_local_point(local)
+            };
+        let native_owner = owns_pointer
+            && captured_direction.is_none()
+            && !matches!(kind, Some(GestureKind::Move))
+            && self.native_owner(local);
+        let direction = if owns_pointer && !native_owner {
+            captured_direction.or_else(|| self.resize_direction_at(local))
+        } else {
+            None
+        };
+        if !owns_pointer {
+            return;
+        }
+        if let Some(direction) =
+            direction.filter(|_| matches!(kind, None | Some(GestureKind::Resize)))
+        {
+            let cursor = if *FRAME_RESIZE_CURSOR_AVAILABLE {
+                let position = match direction {
+                    BubbleResizeDirection::Left => NSCursorFrameResizePosition::Left,
+                    BubbleResizeDirection::Right => NSCursorFrameResizePosition::Right,
+                    BubbleResizeDirection::Top => NSCursorFrameResizePosition::Top,
+                    BubbleResizeDirection::Bottom => NSCursorFrameResizePosition::Bottom,
+                    BubbleResizeDirection::TopLeft => NSCursorFrameResizePosition::TopLeft,
+                    BubbleResizeDirection::TopRight => NSCursorFrameResizePosition::TopRight,
+                    BubbleResizeDirection::BottomLeft => NSCursorFrameResizePosition::BottomLeft,
+                    BubbleResizeDirection::BottomRight => NSCursorFrameResizePosition::BottomRight,
+                };
                 NSCursor::frameResizeCursorFromPosition_inDirections(
-                    NSCursorFrameResizePosition::BottomRight,
+                    position,
                     NSCursorFrameResizeDirections::All,
                 )
             } else {
-                NSCursor::crosshairCursor()
-            }
+                match direction {
+                    BubbleResizeDirection::Left | BubbleResizeDirection::Right => {
+                        NSCursor::columnResizeCursor()
+                    }
+                    BubbleResizeDirection::Top | BubbleResizeDirection::Bottom => {
+                        NSCursor::rowResizeCursor()
+                    }
+                    _ => NSCursor::crosshairCursor(),
+                }
+            };
+            cursor.set();
         } else if matches!(kind, Some(GestureKind::Move)) {
-            NSCursor::closedHandCursor()
+            NSCursor::closedHandCursor().set();
+        } else if native_owner {
+            // Native text, scroll and controls retain their own cursor rects.
+            window.resetCursorRects();
         } else {
-            NSCursor::arrowCursor()
-        };
-        cursor.set();
+            NSCursor::arrowCursor().set();
+        }
     }
 }
 
@@ -6044,22 +6117,6 @@ impl Ui {
             }
     }
 
-    fn bubble_size_for_mode(&self) -> Option<BubbleSize> {
-        match self.bubble_mode {
-            BubbleMode::Compact => self.bubble_sizes.compact,
-            BubbleMode::Expanded => self.bubble_sizes.expanded,
-        }
-    }
-
-    fn desired_cards_height(&self) -> f64 {
-        let desired = self.cards.content_height().min(maximum_cards_height());
-        if self.reply_open {
-            desired.max(self.minimum_cards_height())
-        } else {
-            desired
-        }
-    }
-
     fn layout_reply_children(&mut self) {
         if self.composer_marked() || self.cards.is_composing() {
             self.pending_bubble_scene = Some(self.last_scene.clone());
@@ -7193,7 +7250,7 @@ impl Ui {
         &mut self,
         screen_point: NSPoint,
         event_timestamp: f64,
-        resize: bool,
+        direction: Option<BubbleResizeDirection>,
     ) -> Option<DragState> {
         if self.interaction.is_active()
             || self.root.ivars().drag.get().is_some()
@@ -7202,8 +7259,12 @@ impl Ui {
         {
             return None;
         }
-        let target = if resize {
+        if direction.is_some() {
+            self.cards.sync_search_composition();
+        }
+        let target = if direction.is_some() {
             if self.composer_marked()
+                || self.cards.is_composing()
                 || self.bubble_fade.is_some()
                 || self.bubble_geometry_attached != self.last_scene.visible
             {
@@ -7217,7 +7278,7 @@ impl Ui {
         };
         let frame = self.drag_frame(target);
         let mut drag = self.begin_gesture(
-            if resize {
+            if direction.is_some() {
                 GestureKind::Resize
             } else {
                 GestureKind::Move
@@ -7227,7 +7288,7 @@ impl Ui {
             None,
             target,
         )?;
-        if resize {
+        if let Some(direction) = direction {
             let geometry = self.bubble_geometry?;
             let (start_body, prior_geometry) =
                 capture_bubble_resize_geometry(drag.start_frame, geometry)?;
@@ -7235,6 +7296,10 @@ impl Ui {
                 start_body,
                 prior_geometry,
                 mode: self.bubble_mode,
+                direction,
+                delta: (0.0, 0.0),
+                screen_frame: pinned_screen_frame(self.mtm, drag.start_frame, drag.screen_visible)?,
+                pet_frame: self.panel.frame(),
                 attached: self.bubble_geometry_attached,
                 side: geometry.side,
                 prior_sizes: self.bubble_sizes,
@@ -7247,7 +7312,7 @@ impl Ui {
             self.cards.set_resize_frozen(true);
         }
         self.pointer_event_started_at = Some(event_timestamp);
-        if !resize {
+        if direction.is_none() {
             self.suspend_transform();
         }
         Some(drag)
@@ -7516,6 +7581,7 @@ impl Ui {
         self.pointer_press = None;
         self.root.ivars().drag.set(None);
         self.bubble_root.ivars().drag.set(None);
+        self.bubble_root.set_drag_visuals(None);
         self.set_hover(false, false);
         self.panel.setIgnoresMouseEvents(true);
         self.bubble_panel.setIgnoresMouseEvents(true);
@@ -7566,7 +7632,9 @@ impl Ui {
         if scene.shutdown
             || scene.passthrough
             || (target == DragTarget::BubbleResize
-                && (self.bubble_fade.is_some() || self.composer_marked()))
+                && (self.bubble_fade.is_some()
+                    || self.composer_marked()
+                    || self.cards.is_composing()))
             || match target {
                 DragTarget::Character => !scene.visible,
                 DragTarget::StandaloneBubble => {
@@ -7655,20 +7723,18 @@ impl Ui {
             return Some(drag);
         }
         if drag.target == DragTarget::BubbleResize {
-            let Some(current_screen) = standalone_visible_frame(self.mtm, drag.expected_frame)
-            else {
-                self.cancel_gesture_for(Some(drag), false);
-                return None;
-            };
-            if !rect_nearly_equal(current_screen, drag.screen_visible)
+            if !pinned_screen_valid(self.mtm, drag.bubble_resize?, drag.screen_visible)
                 || self.bubble_mode != drag.bubble_resize?.mode
                 || self.bubble_geometry_attached != drag.bubble_resize?.attached
+                || (drag.bubble_resize?.attached
+                    && !rect_nearly_equal(self.panel.frame(), drag.bubble_resize?.pet_frame))
             {
                 self.cancel_gesture_for(Some(drag), false);
                 self.refresh();
                 return None;
             }
-            if self.composer_marked() {
+            self.cards.sync_search_composition();
+            if self.composer_marked() || self.cards.is_composing() {
                 return Some(drag);
             }
         }
@@ -7678,52 +7744,21 @@ impl Ui {
             (DragTarget::BubbleResize, GestureKind::Resize) => {
                 let payload = drag.bubble_resize?;
                 let delta = (mouse.x - drag.start_mouse.x, mouse.y - drag.start_mouse.y);
-                if delta == (0.0, 0.0) {
-                    if self.bubble_sizes != payload.prior_sizes {
+                if !delta.0.is_finite() || !delta.1.is_finite() {
+                    return Some(drag);
+                }
+                if payload.direction.size_delta(delta) == (0.0, 0.0) {
+                    if payload.direction.size_delta(payload.delta) != (0.0, 0.0)
+                        || self.bubble_sizes != payload.prior_sizes
+                    {
                         self.restore_bubble_resize(payload);
                         updated.expected_frame = self.bubble_panel.frame();
                     }
+                    updated.bubble_resize.as_mut()?.delta = delta;
                     return Some(updated);
                 }
-                let raw = BubbleSize {
-                    width: (payload.start_body.width + delta.0).max(1.0),
-                    height: (payload.start_body.height - delta.1).max(1.0),
-                };
-                if !raw.is_valid() {
-                    return Some(drag);
-                }
-                let max_width_at_origin = (drag.screen_visible.origin.x
-                    + drag.screen_visible.size.width
-                    - BUBBLE_WINDOW_INSET
-                    - payload.start_body.x)
-                    .max(1.0);
-                self.set_mode_bubble_size(
-                    payload.mode,
-                    Some(BubbleSize {
-                        width: raw.width.min(max_width_at_origin),
-                        height: 1.0,
-                    }),
-                );
-                self.measure_bubble(&scene);
-                let minimum = BubbleSize {
-                    width: self.bubble_layout.body_size.width,
-                    height: self.bubble_layout.body_size.height,
-                };
-                let body = resize_bubble_body(
-                    payload.start_body,
-                    delta,
-                    minimum,
-                    bubble_rect(drag.screen_visible),
-                );
-                let requested = requested_bubble_resize_size(
-                    payload.start_body,
-                    delta,
-                    minimum,
-                    match payload.mode {
-                        BubbleMode::Compact => payload.prior_sizes.compact,
-                        BubbleMode::Expanded => payload.prior_sizes.expanded,
-                    },
-                );
+                let (body, requested) =
+                    self.resize_bubble_proposal(&scene, payload, delta, drag.screen_visible);
                 self.set_mode_bubble_size(payload.mode, Some(requested));
                 self.bubble_layout.body_size = NSSize::new(body.width, body.height);
                 let geometry = place_resizing_bubble(
@@ -7731,10 +7766,11 @@ impl Ui {
                     bubble_rect(drag.screen_visible),
                     payload
                         .attached
-                        .then_some((bubble_rect(self.panel.frame()), payload.side)),
+                        .then_some((bubble_rect(payload.pet_frame), payload.side)),
                 );
                 self.apply_resizing_bubble_geometry(geometry, payload.attached);
                 updated.expected_frame = self.bubble_panel.frame();
+                updated.bubble_resize.as_mut()?.delta = delta;
             }
             (target, GestureKind::Move) => {
                 let origin = NSPoint::new(
@@ -7974,10 +8010,10 @@ impl Ui {
             && (scene.phase == self.last_scene.phase || self.active.metadata().is_some())
             && self.bubble_mode == payload.mode
             && self.bubble_geometry_attached == payload.attached
+            && (!payload.attached || rect_nearly_equal(self.panel.frame(), payload.pet_frame))
             && self.bubble_panel.isVisible()
             && rect_nearly_equal(self.bubble_panel.frame(), drag.expected_frame)
-            && standalone_visible_frame(self.mtm, drag.expected_frame)
-                .is_some_and(|screen| rect_nearly_equal(screen, drag.screen_visible))
+            && pinned_screen_valid(self.mtm, payload, drag.screen_visible)
     }
 
     fn thaw_bubble_resize(&mut self) {
@@ -7986,6 +8022,7 @@ impl Ui {
     }
 
     fn invalidate_pending_bubble_resize(&mut self) {
+        self.bubble_root.set_drag_visuals(None);
         if let Some(drag) = self.pending_bubble_resize.take() {
             if let Some(payload) = drag.bubble_resize {
                 self.restore_bubble_resize(payload);
@@ -8078,7 +8115,25 @@ impl Ui {
         }
         self.status_summary = self.cards.status_summary();
         self.bubble_content_dirty = true;
+        let zero_displacement = payload.direction.size_delta(payload.delta) == (0.0, 0.0);
+        if zero_displacement {
+            self.set_mode_bubble_size(
+                payload.mode,
+                match payload.mode {
+                    BubbleMode::Compact => payload.prior_sizes.compact,
+                    BubbleMode::Expanded => payload.prior_sizes.expanded,
+                },
+            );
+        }
         self.measure_bubble_content(&scene);
+        // The drag view is already cleared; stage on the pressed display.
+        let staged_proposal = if zero_displacement {
+            self.fit_zero_displacement_bubble(&scene, payload, drag.screen_visible)
+        } else {
+            let (body, request) =
+                self.resize_bubble_proposal(&scene, payload, payload.delta, drag.screen_visible);
+            (body, Some(request))
+        };
         if scene.visible {
             self.refresh_speech_anchor(&scene);
         }
@@ -8120,15 +8175,20 @@ impl Ui {
             return;
         }
         // Layout and result state are now a coherent staged snapshot.
-        let final_geometry = self.bubble_geometry_for_scene(
-            &scene,
-            (!payload.attached).then_some((payload.start_body.x, payload.start_body.y)),
+        let (body, requested) = staged_proposal;
+        if let Some(requested) = requested {
+            self.set_mode_bubble_size(payload.mode, Some(requested));
+        }
+        self.bubble_layout.body_size = NSSize::new(body.width, body.height);
+        // Keep the captured side and opposite edge for this transaction; ordinary
+        // subsequent attached reflow may again follow the character.
+        let final_geometry = place_resizing_bubble(
+            body,
+            bubble_rect(drag.screen_visible),
+            payload
+                .attached
+                .then_some((bubble_rect(payload.pet_frame), payload.side)),
         );
-        let Some(final_geometry) = final_geometry else {
-            self.restore_bubble_resize(payload);
-            self.thaw_bubble_resize();
-            return;
-        };
         self.commit_bubble_geometry(final_geometry, payload.attached, false);
         self.poll_composer();
         let native = self.bubble_panel.frame();
@@ -8137,10 +8197,16 @@ impl Ui {
             .lock()
             .ok()
             .map(|state| (state.scene(), state.session_revision()));
-        let final_screen_valid = standalone_visible_frame(self.mtm, native)
-            .is_some_and(|screen| rect_nearly_equal(screen, drag.screen_visible));
-        let final_size_valid = (native.size.width - final_geometry.window.width).abs() <= 1.0
-            && (native.size.height - final_geometry.window.height).abs() <= 1.0;
+        let final_screen_valid = pinned_screen_valid(self.mtm, payload, drag.screen_visible);
+        // AppKit may round a window to backing pixels; the fixed opposite
+        // anchor and actual body must still agree within one logical point.
+        let final_body_valid =
+            capture_bubble_resize_geometry(native, final_geometry).is_some_and(|(actual, _)| {
+                (actual.x - body.x).abs() <= 1.0
+                    && (actual.y - body.y).abs() <= 1.0
+                    && (actual.x + actual.width - body.x - body.width).abs() <= 1.0
+                    && (actual.y + actual.height - body.y - body.height).abs() <= 1.0
+            });
         let Some((after_scene, after_revision)) = after else {
             self.restore_bubble_resize(payload);
             self.thaw_bubble_resize();
@@ -8155,7 +8221,7 @@ impl Ui {
             || (after_scene.phase != self.last_scene.phase && self.active.metadata().is_none())
             || self.active.token().backend_epoch != payload.source_epoch
             || !final_screen_valid
-            || !final_size_valid
+            || !final_body_valid
         {
             self.restore_bubble_resize(payload);
             self.thaw_bubble_resize();
@@ -8303,7 +8369,7 @@ impl Ui {
     fn restore_staged_bubble_resize(&mut self, drag: BubbleResizeDrag, scene: &Scene) -> bool {
         self.restore_bubble_resize_state(drag);
         let origin = (!drag.attached).then_some((drag.start_body.x, drag.start_body.y));
-        self.measure_bubble_at_standalone_origin(scene, origin);
+        self.measure_bubble_at_standalone_origin(scene, origin, None, None);
         if let Some(geometry) = self.bubble_geometry_for_scene(scene, origin) {
             self.apply_resizing_bubble_geometry(geometry, drag.attached);
             true
@@ -8603,6 +8669,10 @@ impl Ui {
         if !local_unchanged || self.bubble_layout_dirty {
             self.layout_bubble_children();
         }
+        // Window movement and child-frame changes can change the cursor owner
+        // without changing the bubble's local body path.
+        self.bubble_root
+            .set_drag_visuals(self.bubble_root.ivars().drag.get().map(|drag| drag.kind));
     }
     fn refresh_bubble_content(&mut self, scene: &Scene) {
         if self.measure_bubble_content(scene) {
@@ -8742,13 +8812,113 @@ impl Ui {
     }
 
     fn measure_bubble(&mut self, scene: &Scene) {
-        self.measure_bubble_at_standalone_origin(scene, None);
+        self.measure_bubble_at_standalone_origin(scene, None, None, None);
+    }
+
+    fn fit_zero_displacement_bubble(
+        &mut self,
+        scene: &Scene,
+        payload: BubbleResizeDrag,
+        visible: NSRect,
+    ) -> (BubbleRect, Option<BubbleSize>) {
+        self.measure_bubble_at_standalone_origin(scene, None, Some(visible), None);
+        let measured = BubbleSize {
+            width: self.bubble_layout.body_size.width,
+            height: self.bubble_layout.body_size.height,
+        };
+        let mut body = fit_resizing_bubble_body(
+            payload.start_body,
+            payload.direction,
+            measured,
+            bubble_rect(visible),
+        );
+        if body.width != measured.width {
+            self.measure_bubble_at_standalone_origin(scene, None, Some(visible), Some(body.width));
+            body = fit_resizing_bubble_body(
+                payload.start_body,
+                payload.direction,
+                BubbleSize {
+                    width: measured.width,
+                    height: self.bubble_layout.body_size.height,
+                },
+                bubble_rect(visible),
+            );
+        }
+        (body, None)
+    }
+
+    fn resize_bubble_proposal(
+        &mut self,
+        scene: &Scene,
+        payload: BubbleResizeDrag,
+        delta: (f64, f64),
+        visible: NSRect,
+    ) -> (BubbleRect, BubbleSize) {
+        let provisional = resize_bubble_body(
+            payload.start_body,
+            payload.direction,
+            delta,
+            BubbleSize {
+                width: 1.0,
+                height: 1.0,
+            },
+            bubble_rect(visible),
+        );
+        self.set_mode_bubble_size(
+            payload.mode,
+            Some(BubbleSize {
+                width: provisional.width.max(1.0),
+                height: 1.0,
+            }),
+        );
+        self.measure_bubble_at_standalone_origin(scene, None, Some(visible), None);
+        let minimum = BubbleSize {
+            width: self.bubble_layout.body_size.width,
+            height: self.bubble_layout.body_size.height,
+        };
+        let mut body = resize_bubble_body(
+            payload.start_body,
+            payload.direction,
+            delta,
+            minimum,
+            bubble_rect(visible),
+        );
+        if body.width != minimum.width {
+            self.measure_bubble_at_standalone_origin(scene, None, Some(visible), Some(body.width));
+            body = resize_bubble_body(
+                payload.start_body,
+                payload.direction,
+                delta,
+                BubbleSize {
+                    width: minimum.width,
+                    height: self.bubble_layout.body_size.height,
+                },
+                bubble_rect(visible),
+            );
+        }
+        let prior = match payload.mode {
+            BubbleMode::Compact => payload.prior_sizes.compact,
+            BubbleMode::Expanded => payload.prior_sizes.expanded,
+        };
+        let requested = requested_bubble_resize_size(
+            payload.start_body,
+            payload.direction,
+            delta,
+            BubbleSize {
+                width: minimum.width,
+                height: self.bubble_layout.body_size.height,
+            },
+            prior,
+        );
+        (body, requested)
     }
 
     fn measure_bubble_at_standalone_origin(
         &mut self,
         scene: &Scene,
         standalone_origin: Option<(f64, f64)>,
+        visible_override: Option<NSRect>,
+        effective_width: Option<f64>,
     ) {
         let primary = self.bubble_layout.primary.clone();
         let primary_font = NSFont::systemFontOfSize(BUBBLE_PRIMARY_FONT_SIZE);
@@ -8812,7 +8982,7 @@ impl Ui {
             .size
             .width
             .max(natural_secondary)
-            .max(disclosure_width + BUBBLE_GRIP_RESERVE)
+            .max(disclosure_width)
             .max(if show_status {
                 self.status_label
                     .cell()
@@ -8821,7 +8991,9 @@ impl Ui {
             } else {
                 0.0
             });
-        let visible = if let Some(drag) = self
+        let visible = if let Some(visible) = visible_override {
+            Some(visible)
+        } else if let Some(drag) = self
             .bubble_root
             .ivars()
             .drag
@@ -8864,24 +9036,23 @@ impl Ui {
             .max(BUBBLE_BODY_MIN_WIDTH)
             .min(BUBBLE_COMPACT_MAX_WIDTH);
         let expanded_auto_width = BUBBLE_EXPANDED_MIN_WIDTH.min(BUBBLE_EXPANDED_MAX_WIDTH);
-        let expanded_min_width =
-            (BUBBLE_COLLAPSE_WIDTH + BUBBLE_GRIP_RESERVE + BUBBLE_HORIZONTAL_INSET * 2.0)
-                .max(self.cards.minimum_content_width() + BUBBLE_HORIZONTAL_INSET * 2.0)
-                .max(
-                    self.composer_metrics.content_height
-                        + 58.0
-                        + 4.0
-                        + 4.0
-                        + 16.0
-                        + BUBBLE_HORIZONTAL_INSET * 2.0,
-                );
+        let expanded_min_width = (BUBBLE_COLLAPSE_WIDTH + BUBBLE_HORIZONTAL_INSET * 2.0)
+            .max(self.cards.minimum_content_width() + BUBBLE_HORIZONTAL_INSET * 2.0)
+            .max(
+                self.composer_metrics.content_height
+                    + 58.0
+                    + 4.0
+                    + 4.0
+                    + 16.0
+                    + BUBBLE_HORIZONTAL_INSET * 2.0,
+            );
         let compact_width = self
             .bubble_sizes
             .compact
             .map_or(compact_auto_width, |requested| {
                 requested
                     .width
-                    .max(disclosure_width + BUBBLE_GRIP_RESERVE + BUBBLE_HORIZONTAL_INSET * 2.0)
+                    .max(disclosure_width + BUBBLE_HORIZONTAL_INSET * 2.0)
             })
             .min(body_width_cap)
             .max(1.0);
@@ -8893,6 +9064,18 @@ impl Ui {
             })
             .min(body_width_cap)
             .max(1.0);
+        // A fixed opposite edge may have less room than the normal control floor.
+        // Only a resize's second, measurement-only pass uses the displayed width.
+        let compact_width = if self.bubble_mode == BubbleMode::Compact {
+            effective_width.unwrap_or(compact_width).max(1.0)
+        } else {
+            compact_width
+        };
+        let expanded_width = if self.bubble_mode == BubbleMode::Expanded {
+            effective_width.unwrap_or(expanded_width).max(1.0)
+        } else {
+            expanded_width
+        };
         let compact_content_width = (compact_width - BUBBLE_HORIZONTAL_INSET * 2.0).max(1.0);
         let full_metrics = measure_attributed_field(&self.bubble, compact_content_width);
         self.bubble.setLineBreakMode(if full_metrics.char_wrapping {
@@ -9014,24 +9197,16 @@ impl Ui {
             &self.message_view,
             (expanded_width - BUBBLE_HORIZONTAL_INSET * 2.0).max(1.0),
         );
-        self.bubble_layout.message_content_height =
-            if show_status && self.bubble_layout.full_message.is_empty() {
-                0.0
-            } else {
-                message_metrics.size.height.max(BUBBLE_LINE_HEIGHT)
-            };
-        let manual_expanded = self.bubble_sizes.expanded.is_some();
-        let message_height = if manual_expanded {
-            self.bubble_layout.message_content_height
+        self.bubble_layout.message_content_height = if self.bubble_layout.full_message.is_empty() {
+            0.0
         } else {
-            self.bubble_layout
-                .message_content_height
-                .min(BUBBLE_MESSAGE_MAX_HEIGHT)
+            message_metrics.size.height.max(BUBBLE_LINE_HEIGHT)
         };
-        let cards_height = if manual_expanded {
-            self.cards.document_content_height()
+        let message_height = self.bubble_layout.message_content_height;
+        let cards_height = if self.reply_open {
+            self.cards.content_height().max(self.minimum_cards_height())
         } else {
-            self.desired_cards_height()
+            self.cards.content_height()
         };
         let minimum_cards = self.minimum_cards_height();
         let spacing = expanded_spacing(
@@ -9041,41 +9216,14 @@ impl Ui {
             show_status,
             message_height > 0.0,
         );
-        let expanded_height = (spacing.inset
-            + if show_status {
-                STATUS_ROW_HEIGHT
-                    + if message_height > 0.0 {
-                        spacing.gap
-                    } else {
-                        0.0
-                    }
-            } else {
-                0.0
-            }
-            + message_height
-            + cards_height
-            + spacing.gap
-                * (if show_status && message_height == 0.0 {
-                    1.0
-                } else {
-                    2.0
-                })
-            + BUBBLE_CONTROL_HEIGHT
-            + spacing.inset)
-            .min(
-                (visible_height * 0.78).min(530.0).max(
-                    expanded_height_budget(
-                        cards_height,
-                        minimum_cards,
-                        show_status,
-                        message_height > 0.0,
-                        spacing,
-                    )
-                    .min(body_height_cap),
-                ),
-            )
-            .min(body_height_cap)
-            .max(1.0);
+        let expanded_height = expanded_auto_height(
+            visible_height,
+            body_height_cap,
+            cards_height,
+            message_height,
+            minimum_cards,
+            show_status,
+        );
         let expanded_height = self
             .bubble_sizes
             .expanded
@@ -9113,12 +9261,8 @@ impl Ui {
         self.bubble_panel
             .setTitle(&NSString::from_str(message_accessibility));
         set_accessibility_label(&self.message_view, message_accessibility);
-        let grip_help = NSString::from_str(text(self.locale, Message::ResizeBubbleHelp));
-        self.bubble_root.setToolTip(Some(&grip_help));
-        set_accessibility_label(
-            &self.bubble_root.ivars().grip,
-            text(self.locale, Message::ResizeBubbleHelp),
-        );
+        let resize_help = NSString::from_str(text(self.locale, Message::ResizeBubbleHelp));
+        self.bubble_root.setToolTip(Some(&resize_help));
         if let Some(cell) = self.bubble.cell() {
             set_accessibility_cell_text(&cell, &primary, Some(&primary));
         }
@@ -9166,7 +9310,11 @@ impl Ui {
         let spacing = if self.bubble_mode == BubbleMode::Expanded {
             expanded_spacing(
                 body.height,
-                self.desired_cards_height(),
+                if self.reply_open {
+                    self.cards.content_height().max(self.minimum_cards_height())
+                } else {
+                    self.cards.content_height()
+                },
                 self.minimum_cards_height(),
                 show_status,
                 self.bubble_layout.message_content_height > 0.0,
@@ -9264,7 +9412,7 @@ impl Ui {
                 self.composer_scroll.setHidden(true);
                 self.composer_status.setHidden(true);
                 self.composer_send.setHidden(true);
-                let available_footer_width = (content_width - BUBBLE_GRIP_RESERVE).max(0.0);
+                let available_footer_width = content_width.max(0.0);
                 let footer_width = self
                     .disclosure
                     .cell()
@@ -9437,10 +9585,7 @@ impl Ui {
                 let collapse_frame = bounded_frame(
                     NSRect::new(
                         NSPoint::new(
-                            body.x + body.width
-                                - BUBBLE_HORIZONTAL_INSET
-                                - BUBBLE_GRIP_RESERVE
-                                - BUBBLE_COLLAPSE_WIDTH,
+                            body.x + body.width - BUBBLE_HORIZONTAL_INSET - BUBBLE_COLLAPSE_WIDTH,
                             body.y + spacing.inset,
                         ),
                         NSSize::new(BUBBLE_COLLAPSE_WIDTH, BUBBLE_CONTROL_HEIGHT),
@@ -9455,17 +9600,11 @@ impl Ui {
                     self.bubble_layout.message_content_height > 0.0,
                     spacing,
                 );
-                let desired_message = if self.bubble_size_for_mode().is_some() {
-                    self.bubble_layout.message_content_height
+                let desired_message = self.bubble_layout.message_content_height;
+                let desired_cards = if self.reply_open {
+                    self.cards.content_height().max(self.minimum_cards_height())
                 } else {
-                    self.bubble_layout
-                        .message_content_height
-                        .min(BUBBLE_MESSAGE_MAX_HEIGHT)
-                };
-                let desired_cards = if self.bubble_size_for_mode().is_some() {
-                    self.cards.document_content_height()
-                } else {
-                    self.desired_cards_height()
+                    self.cards.content_height()
                 };
                 let heights = expanded_heights(
                     body.height,
@@ -9475,28 +9614,39 @@ impl Ui {
                     show_status,
                     spacing,
                 );
-                let cards_height = heights.cards;
-                let message_height = heights.message;
-                let message_frame = bounded_frame(
+                let mut cards_height = heights.cards;
+                let mut message_height = heights.message;
+                let mut message_frame = bounded_frame(
                     NSRect::new(
                         NSPoint::new(content_x, message_top - message_height),
                         NSSize::new(content_width, message_height),
                     ),
                     body_frame,
                 );
-                let cards_frame = bounded_frame(
+                let mut cards_frame = bounded_frame(
                     NSRect::new(
                         NSPoint::new(content_x, bottom),
                         NSSize::new(content_width, cards_height),
                     ),
                     body_frame,
                 );
-                let message_visible =
+                let mut message_visible =
                     message_frame.size.width > 0.0 && message_frame.size.height > 0.0;
-                let cards_visible = cards_frame.size.width > 0.0 && cards_frame.size.height > 0.0;
+                let mut cards_visible =
+                    cards_frame.size.width > 0.0 && cards_frame.size.height > 0.0;
                 let message_scroll_origin = self.message_scroll.contentView().bounds().origin;
                 self.message_scroll.setHidden(!message_visible);
                 self.message_scroll.setFrame(message_frame);
+                if message_visible {
+                    self.message_view.setFrame(NSRect::new(
+                        NSPoint::new(0.0, 0.0),
+                        NSSize::new(
+                            content_width.max(1.0),
+                            desired_message.max(message_frame.size.height),
+                        ),
+                    ));
+                }
+                self.message_scroll.tile();
                 self.message_scroll.layoutSubtreeIfNeeded();
                 let clip_width = if message_visible {
                     self.message_scroll
@@ -9511,16 +9661,70 @@ impl Ui {
                 let document_height = if message_visible {
                     self.message_view.setFrame(NSRect::new(
                         NSPoint::new(0.0, 0.0),
-                        NSSize::new(
-                            clip_width,
-                            self.bubble_layout
-                                .message_content_height
-                                .max(message_frame.size.height),
-                        ),
+                        NSSize::new(clip_width, desired_message.max(message_frame.size.height)),
                     ));
-                    let actual_metrics = measure_text_view(&self.message_view, clip_width);
-                    let actual_height = actual_metrics.size.height.max(BUBBLE_LINE_HEIGHT);
-                    self.bubble_layout.message_content_height = actual_height;
+                    let actual_height = measure_text_view(&self.message_view, clip_width)
+                        .size
+                        .height
+                        .max(BUBBLE_LINE_HEIGHT);
+                    if (actual_height - desired_message).abs() > 0.001 {
+                        self.bubble_layout.message_content_height = actual_height;
+                        if self.bubble_sizes.expanded.is_none() && !self.resize_frozen {
+                            let visible = if self.bubble_geometry_attached {
+                                panel_visible_frame(&self.panel, self.mtm)
+                            } else {
+                                standalone_visible_frame(self.mtm, self.bubble_panel.frame())
+                            };
+                            if let Some(visible) = visible {
+                                let cap =
+                                    (visible.size.height - BUBBLE_WINDOW_INSET * 2.0).max(1.0);
+                                let height = expanded_auto_height(
+                                    visible.size.height,
+                                    cap,
+                                    desired_cards,
+                                    actual_height,
+                                    self.minimum_cards_height(),
+                                    show_status,
+                                );
+                                if (height - body.height).abs() > 0.001 {
+                                    self.bubble_layout.body_size.height = height;
+                                    self.apply_bubble_frame_scene(&self.last_scene.clone());
+                                    return;
+                                }
+                            }
+                        }
+                        let corrected = expanded_heights(
+                            body.height,
+                            desired_cards,
+                            actual_height,
+                            self.minimum_cards_height(),
+                            show_status,
+                            spacing,
+                        );
+                        cards_height = corrected.cards;
+                        message_height = corrected.message;
+                        message_frame = bounded_frame(
+                            NSRect::new(
+                                NSPoint::new(content_x, message_top - message_height),
+                                NSSize::new(content_width, message_height),
+                            ),
+                            body_frame,
+                        );
+                        cards_frame = bounded_frame(
+                            NSRect::new(
+                                NSPoint::new(content_x, bottom),
+                                NSSize::new(content_width, cards_height),
+                            ),
+                            body_frame,
+                        );
+                        message_visible =
+                            message_frame.size.width > 0.0 && message_frame.size.height > 0.0;
+                        cards_visible =
+                            cards_frame.size.width > 0.0 && cards_frame.size.height > 0.0;
+                        self.message_scroll.setHidden(!message_visible);
+                        self.message_scroll.setFrame(message_frame);
+                        self.message_scroll.layoutSubtreeIfNeeded();
+                    }
                     actual_height.max(message_frame.size.height)
                 } else {
                     0.0
@@ -9645,6 +9849,7 @@ impl Ui {
                 started: Instant::now(),
             });
         }
+        self.bubble_root.set_drag_visuals(None);
     }
 
     fn hide_bubble_panel(&mut self) {
@@ -9653,6 +9858,7 @@ impl Ui {
         self.bubble_panel.setAlphaValue(0.0);
         self.bubble_panel.setIgnoresMouseEvents(true);
         self.bubble_panel.orderOut(None);
+        self.bubble_root.set_drag_visuals(None);
         if self.bubble_panel.isKeyWindow() {
             let _ = self.bubble_panel.makeFirstResponder(None);
             self.bubble_panel.resignKeyWindow();
@@ -10362,19 +10568,6 @@ fn grip_hit_rect(size: NSSize) -> NSRect {
     )
 }
 
-fn bubble_grip_rect(body: BubbleRect) -> NSRect {
-    NSRect::new(
-        NSPoint::new(
-            body.x + (body.width - GRIP_HIT_SIZE - 8.0).max(0.0),
-            body.y + 5.0,
-        ),
-        NSSize::new(
-            (body.width - 8.0).max(0.0).min(GRIP_HIT_SIZE),
-            (body.height - 5.0).max(0.0).min(GRIP_HIT_SIZE),
-        ),
-    )
-}
-
 fn grip_hit_test(point: NSPoint, size: NSSize) -> bool {
     let hit = grip_hit_rect(size);
     point.x >= hit.origin.x
@@ -10430,26 +10623,6 @@ fn resize_scale_limits(
         None
     } else {
         Some((MIN_SCALE, max_scale))
-    }
-}
-
-fn requested_bubble_resize_size(
-    start_body: BubbleRect,
-    delta: (f64, f64),
-    minimum: BubbleSize,
-    prior: Option<BubbleSize>,
-) -> BubbleSize {
-    BubbleSize {
-        width: if delta.0 == 0.0 {
-            prior.map_or(start_body.width.max(minimum.width), |size| size.width)
-        } else {
-            (start_body.width + delta.0).max(1.0).max(minimum.width)
-        },
-        height: if delta.1 == 0.0 {
-            prior.map_or(start_body.height.max(minimum.height), |size| size.height)
-        } else {
-            (start_body.height - delta.1).max(1.0).max(minimum.height)
-        },
     }
 }
 
@@ -10555,6 +10728,32 @@ fn screen_overlap(frame: NSRect, visible: NSRect) -> f64 {
     let bottom = frame.origin.y.max(visible.origin.y);
     let top = (frame.origin.y + frame.size.height).min(visible.origin.y + visible.size.height);
     (right - left).max(0.0) * (top - bottom).max(0.0)
+}
+
+fn pinned_screen_frame(mtm: MainThreadMarker, frame: NSRect, visible: NSRect) -> Option<NSRect> {
+    let screens = NSScreen::screens(mtm);
+    let mut best = None;
+    let mut overlap = 0.0;
+    for screen in screens.iter() {
+        let area = screen_overlap(frame, screen.visibleFrame());
+        if area > overlap && rect_nearly_equal(screen.visibleFrame(), visible) {
+            overlap = area;
+            best = Some(screen.frame());
+        }
+    }
+    best.or_else(|| {
+        screens
+            .iter()
+            .find(|screen| rect_nearly_equal(screen.visibleFrame(), visible))
+            .map(|screen| screen.frame())
+    })
+}
+
+fn pinned_screen_valid(mtm: MainThreadMarker, payload: BubbleResizeDrag, visible: NSRect) -> bool {
+    NSScreen::screens(mtm).iter().any(|screen| {
+        rect_nearly_equal(screen.frame(), payload.screen_frame)
+            && rect_nearly_equal(screen.visibleFrame(), visible)
+    })
 }
 
 fn anchor_visible_frame(mtm: MainThreadMarker, anchor: NSRect) -> Option<NSRect> {
@@ -12167,21 +12366,39 @@ mod tests {
             height: 120.0,
         };
         assert_eq!(
-            requested_bubble_resize_size(displayed, (0.0, -40.0), minimum, prior),
+            requested_bubble_resize_size(
+                displayed,
+                BubbleResizeDirection::Bottom,
+                (0.0, -40.0),
+                minimum,
+                prior
+            ),
             BubbleSize {
                 width: 800.0,
                 height: 340.0,
             }
         );
         assert_eq!(
-            requested_bubble_resize_size(displayed, (35.0, 0.0), minimum, prior),
+            requested_bubble_resize_size(
+                displayed,
+                BubbleResizeDirection::Right,
+                (35.0, 0.0),
+                minimum,
+                prior
+            ),
             BubbleSize {
                 width: 535.0,
                 height: 650.0,
             }
         );
         assert_eq!(
-            requested_bubble_resize_size(displayed, (0.0, -40.0), minimum, None),
+            requested_bubble_resize_size(
+                displayed,
+                BubbleResizeDirection::Bottom,
+                (0.0, -40.0),
+                minimum,
+                None
+            ),
             BubbleSize {
                 width: 500.0,
                 height: 340.0,
@@ -12205,20 +12422,114 @@ mod tests {
             width: 800.0,
             height: 650.0,
         });
-        let first = requested_bubble_resize_size(displayed, (90.0, -80.0), minimum, prior);
+        let first = requested_bubble_resize_size(
+            displayed,
+            BubbleResizeDirection::BottomRight,
+            (90.0, -80.0),
+            minimum,
+            prior,
+        );
         assert_eq!(first.width, 590.0);
         assert_eq!(first.height, 380.0);
         assert_eq!(
-            requested_bubble_resize_size(displayed, (0.0, -25.0), minimum, prior),
+            requested_bubble_resize_size(
+                displayed,
+                BubbleResizeDirection::BottomRight,
+                (0.0, -25.0),
+                minimum,
+                prior
+            ),
             BubbleSize {
                 width: 800.0,
                 height: 325.0,
             }
         );
         assert_eq!(
-            requested_bubble_resize_size(displayed, (-400.0, 250.0), minimum, prior),
+            requested_bubble_resize_size(
+                displayed,
+                BubbleResizeDirection::BottomRight,
+                (-400.0, 250.0),
+                minimum,
+                prior
+            ),
             minimum
         );
+    }
+
+    #[test]
+    fn left_and_top_requests_preserve_untouched_persisted_axes() {
+        let start = BubbleRect {
+            x: -420.0,
+            y: 90.0,
+            width: 300.0,
+            height: 210.0,
+        };
+        let prior = Some(BubbleSize {
+            width: 900.0,
+            height: 700.0,
+        });
+        let minimum = BubbleSize {
+            width: 180.0,
+            height: 140.0,
+        };
+        let left = requested_bubble_resize_size(
+            start,
+            BubbleResizeDirection::Left,
+            (-35.0, 45.0),
+            minimum,
+            prior,
+        );
+        assert_eq!(
+            left,
+            BubbleSize {
+                width: 335.0,
+                height: 700.0
+            }
+        );
+        let top = requested_bubble_resize_size(
+            start,
+            BubbleResizeDirection::Top,
+            (75.0, 28.0),
+            minimum,
+            prior,
+        );
+        assert_eq!(
+            top,
+            BubbleSize {
+                width: 900.0,
+                height: 238.0
+            }
+        );
+        let corner = requested_bubble_resize_size(
+            start,
+            BubbleResizeDirection::TopLeft,
+            (-35.0, 28.0),
+            minimum,
+            prior,
+        );
+        assert_eq!(
+            corner,
+            BubbleSize {
+                width: 335.0,
+                height: 238.0
+            }
+        );
+        let visible = BubbleRect {
+            x: -600.0,
+            y: 0.0,
+            width: 700.0,
+            height: 500.0,
+        };
+        let body = resize_bubble_body(
+            start,
+            BubbleResizeDirection::Top,
+            (75.0, 28.0),
+            minimum,
+            visible,
+        );
+        assert_eq!(body.width, start.width);
+        assert_eq!(body.x, start.x);
+        assert_eq!(body.y, start.y);
     }
 
     #[test]
@@ -12942,30 +13253,86 @@ mod tests {
             true,
             spacing,
         );
-        assert!(tall.cards > maximum_cards_height());
-        assert!(tall.message > BUBBLE_MESSAGE_MAX_HEIGHT);
+        assert!(tall.cards > minimum_cards);
+        assert!(tall.message > BUBBLE_LINE_HEIGHT);
         assert!(tall.cards > short.cards);
         assert!(tall.message > short.message);
         assert!(tall.cards <= desired_cards && tall.message <= desired_message);
     }
 
     #[test]
-    fn body_relative_grip_does_not_cover_footer_controls() {
-        for width in [120.0, 260.0, 320.0, 800.0] {
-            let body = BubbleRect {
-                x: 12.0,
-                y: 12.0,
-                width,
-                height: 140.0,
-            };
-            let grip = bubble_grip_rect(body);
-            let content_right = body.x + body.width - BUBBLE_HORIZONTAL_INSET;
-            let footer_right = content_right - BUBBLE_GRIP_RESERVE;
-            assert!(footer_right < grip.origin.x);
-            assert!(grip.origin.x > body.x);
-            assert!(grip.origin.x + grip.size.width < body.x + width);
-            assert!(grip.origin.y >= body.y);
+    fn expanded_natural_heights_share_one_screen_budget() {
+        let minimum = minimum_selectable_height();
+        for show_status in [false, true] {
+            for message in [0.0, 18.0, 210.5] {
+                for cards in [minimum - 25.0, minimum, 350.25] {
+                    let cap = 900.0;
+                    let auto =
+                        expanded_auto_height(900.0, cap, cards, message, minimum, show_status);
+                    let spacing =
+                        expanded_spacing(auto, cards, minimum, show_status, message > 0.0);
+                    let slots =
+                        expanded_heights(auto, cards, message, minimum, show_status, spacing);
+                    assert!(auto <= 530.0 && auto >= 0.0);
+                    assert!(slots.cards.is_finite() && slots.message.is_finite());
+                    assert!(slots.cards >= 0.0 && slots.cards <= cards + 1e-9);
+                    assert!(slots.message >= 0.0 && slots.message <= message + 1e-9);
+                    let chrome =
+                        expanded_height_budget(cards, minimum, show_status, message > 0.0, spacing)
+                            - cards.min(minimum)
+                            - if message > 0.0 {
+                                BUBBLE_LINE_HEIGHT
+                            } else {
+                                0.0
+                            };
+                    assert!(slots.cards + slots.message + chrome <= auto + 1e-9);
+                    if cards + message + chrome <= auto + 1e-9 {
+                        assert!(close(slots.cards, cards));
+                        assert!(close(slots.message, message));
+                    }
+                }
+            }
         }
+        let cards = 390.0;
+        let message = 410.0;
+        let spacing = ExpandedSpacing {
+            inset: BUBBLE_VERTICAL_INSET,
+            gap: BUBBLE_CONTENT_GAP,
+        };
+        let floor = expanded_height_budget(cards, minimum, true, true, spacing);
+        let shared = expanded_heights(floor + 140.0, cards, message, minimum, true, spacing);
+        assert!(close(shared.cards, minimum + 70.0));
+        assert!(close(shared.message, BUBBLE_LINE_HEIGHT + 70.0));
+        let short_message = expanded_heights(
+            floor + 140.0,
+            cards,
+            BUBBLE_LINE_HEIGHT + 15.0,
+            minimum,
+            true,
+            spacing,
+        );
+        assert!(close(short_message.message, BUBBLE_LINE_HEIGHT + 15.0));
+        assert!(close(short_message.cards, minimum + 125.0));
+        let short_cards = expanded_heights(
+            floor + 140.0,
+            minimum + 12.0,
+            message,
+            minimum,
+            true,
+            spacing,
+        );
+        assert!(close(short_cards.cards, minimum + 12.0));
+        assert!(close(short_cards.message, BUBBLE_LINE_HEIGHT + 128.0));
+        assert_eq!(
+            expanded_auto_height(900.0, 876.0, 300.0, 400.0, minimum, true),
+            530.0
+        );
+        assert!(expanded_auto_height(230.0, 206.0, 300.0, 400.0, minimum, true) <= 206.0);
+        // A saved manual request bypasses the automatic 530pt ceiling; allocation
+        // also leaves surplus blank rather than stretching either document.
+        let manual = expanded_heights(850.0, 300.0, 400.0, minimum, true, spacing);
+        assert!(close(manual.cards, 300.0));
+        assert!(close(manual.message, 400.0));
     }
 
     #[test]
