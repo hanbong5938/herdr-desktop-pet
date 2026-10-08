@@ -394,6 +394,10 @@ PET="./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"
 
 네이티브 hit-overlay 혼합 계산은 릴리스 러너의 Xcode 16.4 Swift 컴파일러와 호환되도록 타입을 지정한 부분 식을 사용합니다. 오버레이 수정 시 이 타입 경계를 유지하세요. 소스 빌드에는 여전히 Xcode Command Line Tools가 필요합니다.
 
+debug·release 네이티브 빌드는 `codesign`이 필요하며 `native/rig/RigDecodeWorker.entitlements.plist`의 `com.apple.security.cs.allow-jit=true`를 **`rig-decode-worker`에만** 적용해 ad-hoc 서명합니다. Cargo는 plist 변경도 추적해 worker를 다시 빌드·서명합니다. JavaScriptCore가 신뢰된 디코더 번들을 JIT 컴파일할 수 있게 하되, 앱 본체·네이티브 rig 라이브러리에는 JIT 권한을 주지 않고 worker 격리·입력 검증·자원 제한은 유지합니다.
+
+`bun run package:native`는 선택한 서명 identity로 같은 worker 전용 권한을 다시 적용하고, 외부 앱 서명 후 실제 entitlement와 worker·앱의 엄격한 서명 검증을 수행합니다. 서명·검증 실패 시 패키징을 중단합니다. 기본 ad-hoc 패키지는 로컬 실행용이며 Developer ID 서명·공증을 뜻하지 않습니다.
+
 ```sh
 bun run check
 bun run test:native

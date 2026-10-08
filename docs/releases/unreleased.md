@@ -15,6 +15,19 @@
 
 The original branch name and commit identify implementation history, not an installation prerequisite. Follow the bilingual root [English](../../readme.md) / [Korean](../../readme.ko.md) runtime guides. Stop an older daemon before starting the stable app and check `status` for the actual executable/app version; CLI `--version` alone does not prove which already-running daemon was reused. For switching from either v0.1.11 or beta, follow the [stable migration](../migrations/v0.1.11-to-v0.2.0.md), not the historical [local-checkout guide](../migrations/unreleased.md).
 
+## Unreleased source correction: rig worker JIT / 미출시 소스 수정: rig worker JIT
+
+- Debug/release builds and app packaging share `native/rig/RigDecodeWorker.entitlements.plist`, granting only `com.apple.security.cs.allow-jit=true` to `rig-decode-worker`. Cargo tracks entitlement changes; packaging verifies effective entitlements and strict worker/deep app signatures after outer signing. Signing or verification failures stop the build/package. No Rust decoder rewrite, cache, pack-format, renderer, or resource-limit change; the main app and rig library receive no JIT entitlement.
+- On the same M4 Max/macOS arm64 checkout, fresh-process release validation of all ten bundled models fell from a 16.20 s median (three baseline runs) to 1.31 s (ten corrected runs). One rebuilt waiting-model worker response was byte-identical to the baseline. The actual packaged daemon selected the managed ten-model pack in 1.39 s and reapplied it in 1.50 s; these are local measurements, not a universal latency guarantee.
+- Observed gates: 533 native tests including the isolated FIFO child, the main-thread AppKit composer executable, TypeScript, and 55 Bun tests / 469 expectations. The actual packaged GUI passed staged Apply, reapply, restart, candidate cancellation, and v4 rig/PNG swaps with inspected WindowServer captures. The signed worker rejected malformed/canvas/file/nested-block/ZIP-expansion inputs; a live malformed import preserved the entire registry. Real child timeout/cancellation and in-flight daemon shutdown reaped decoder children without committing the pending selection.
+- Local ad-hoc packaging and final nested entitlements/signatures were verified. No valid Developer ID signing identity was available; Developer ID signing, notarization, and published artifacts are not certified by this source change.
+
+- debug·release 빌드와 앱 패키징이 같은 plist로 **`rig-decode-worker`에만** `com.apple.security.cs.allow-jit=true`를 적용합니다. Cargo가 권한 파일 변경을 추적하고, 패키징은 외부 앱 서명 후 실제 entitlement와 worker·앱 서명을 엄격히 검증합니다. 서명·검증 실패 시 중단합니다. Rust 디코더 재작성·캐시·팩 형식·렌더러·자원 제한 변경은 없으며 앱 본체·rig 라이브러리에 JIT 권한을 추가하지 않습니다.
+- 같은 M4 Max/macOS arm64 환경에서 기본 10모델 release 준비 중앙값이 기존 3회 16.20초에서 수정 후 10회 1.31초로 줄었습니다. waiting 모델의 재빌드 worker 응답은 기존과 바이트 단위로 같았습니다. 실제 패키지 데몬의 관리 팩 선택은 1.39초, 재적용은 1.50초였으며 모든 환경의 지연 시간을 보장하는 수치는 아닙니다.
+- native 533개·실제 AppKit composer·TypeScript·Bun 55개(469 expectations)가 통과했습니다. 실제 패키지 GUI의 후보 적용·재적용·재시작·후보 취소·v4 rig/PNG 전환을 WindowServer 창 캡처로 확인했습니다. 서명된 worker가 잘못된 PSD·캔버스·파일·중첩 블록·ZIP 과다 해제 입력을 거부했고, 실제 데몬의 잘못된 팩 가져오기는 저장소 전체를 그대로 보존했습니다. 실제 자식 timeout·취소 및 준비 중 데몬 종료 시 자식 정리·미커밋 선택 보존도 확인했습니다.
+- 로컬 ad-hoc 패키지와 최종 nested 권한·서명까지 검증했습니다. 유효한 Developer ID identity가 없어 Developer ID 서명·공증·게시 바이너리는 검증한 것으로 주장하지 않습니다.
+
+
 ## Unreleased bubble resizing / 미출시 말풍선 크기 조절
 
 - A body-internal bottom-right grip independently resizes width and height in compact/expanded, attached/standalone bubbles. The two mode-specific requested sizes are shared between attachment states and persisted in `preferences.json`; absent overrides retain automatic sizing. No character-scale, font-size, CLI, or automation-schema changes.

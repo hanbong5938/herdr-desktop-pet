@@ -390,6 +390,10 @@ After a source installation:
 
 Native hit-overlay blending uses typed subexpressions for compatibility with the release runner’s Xcode 16.4 Swift compiler. Keep those type boundaries when modifying the overlay; the source toolchain still requires Xcode Command Line Tools.
 
+Debug and release native builds require `codesign` and ad-hoc sign only `rig-decode-worker` with `com.apple.security.cs.allow-jit=true`, using `native/rig/RigDecodeWorker.entitlements.plist`. Cargo tracks plist changes so they rebuild and re-sign the worker. JavaScriptCore can then JIT-compile the trusted decoder bundle; the main app and native rig library receive no JIT entitlement, and worker isolation, validation, and resource limits stay unchanged.
+
+`bun run package:native` reapplies that worker-only entitlement with the selected signing identity, then verifies the effective entitlements and strict worker/app signatures after the outer app is signed. Signing or verification failure stops packaging. The default ad-hoc package is for local use, not Developer ID signing or notarization.
+
 ```sh
 bun run check
 bun run test:native
