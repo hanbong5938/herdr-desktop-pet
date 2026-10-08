@@ -233,7 +233,6 @@ pub(crate) enum Message {
     LanguageSystem,
     KoreanLanguage,
     EnglishLanguage,
-    Characters,
     More,
     MenuPanelTitle,
     MenuCharacterTab,
@@ -256,6 +255,9 @@ pub(crate) enum Message {
     BubbleAccentColor,
     ApplyBubbleColors,
     ResetBubbleColors,
+    ResetBubbleSize,
+    ResizeBubbleHelp,
+    BubbleSizeSaveFailed,
     InvalidBubbleColor,
     BubbleColorsReload,
     BubbleColorsRebase,
@@ -474,7 +476,6 @@ pub(crate) enum Message {
     NeedsAttention,
     Complete,
     BeingChecked,
-    AddCharacter,
     AddCharacterTitle,
     UpdateCharacterTitle,
     Active,
@@ -505,9 +506,25 @@ pub(crate) enum Message {
     BuiltInTag,
     ManagedTag,
     CharacterDiagnostics,
-    SelectedMismatchWarning,
-    OverrideActiveWarning,
     Close,
+    CharacterBrowserTitle,
+    CharacterBrowserOpen,
+    CharacterBrowserSearchPlaceholder,
+    CharacterBrowserFilterAll,
+    CharacterBrowserFilterInstalled,
+    CharacterBrowserFilterOfficial,
+    CharacterBrowserNoResults,
+    CharacterBrowserDownloadAndApply,
+    CharacterBrowserDownloading,
+    CharacterBrowserCancelDownload,
+    CharacterBrowserOfficialTag,
+    CharacterBrowserSelect,
+    CharacterBrowserViewLocal,
+    CharacterBrowserSelected,
+    CharacterBrowserUnsupportedFormat,
+    OfficialCatalogUnavailable,
+    OfficialUnsupportedFormat,
+    OfficialLocalIdExists,
 }
 
 /// The shared event label for a dialogue slot in menus and the editor sidebar.
@@ -535,7 +552,6 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::LanguageSystem => "시스템",
             Message::KoreanLanguage => "한국어",
             Message::EnglishLanguage => "English",
-            Message::Characters => "캐릭터",
             Message::More => "더 보기",
             Message::MenuPanelTitle => "Herdr Desktop Pet 설정",
             Message::MenuCharacterTab => "캐릭터",
@@ -558,6 +574,9 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::BubbleAccentColor => "강조 색상",
             Message::ApplyBubbleColors => "색상 적용",
             Message::ResetBubbleColors => "색상 초기화",
+            Message::ResetBubbleSize => "자동 크기로 복원",
+            Message::ResizeBubbleHelp => "말풍선 오른쪽 아래 모서리를 드래그하여 너비와 높이를 각각 조절하세요.",
+            Message::BubbleSizeSaveFailed => "말풍선 크기를 저장하지 못했습니다",
             Message::InvalidBubbleColor => "색상은 #RRGGBB 형식이어야 합니다",
             Message::BubbleColorsReload => "저장값 불러오기",
             Message::BubbleColorsRebase => "초안 기준 갱신",
@@ -790,7 +809,6 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::NeedsAttention => "확인이 필요",
             Message::Complete => "완료",
             Message::BeingChecked => "확인 중",
-            Message::AddCharacter => "캐릭터 추가…",
             Message::AddCharacterTitle => "캐릭터 추가",
             Message::UpdateCharacterTitle => "캐릭터 업데이트",
             Message::Active => "활성",
@@ -821,9 +839,25 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::BuiltInTag => "내장",
             Message::ManagedTag => "관리 팩",
             Message::CharacterDiagnostics => "진단 정보",
-            Message::SelectedMismatchWarning => "선택된 캐릭터와 활성 캐릭터가 일치하지 않습니다.",
-            Message::OverrideActiveWarning => "임시 캐릭터 재정의가 활성화되어 있습니다.",
             Message::Close => "닫기",
+            Message::CharacterBrowserTitle => "캐릭터 브라우저",
+            Message::CharacterBrowserOpen => "캐릭터 브라우저 열기…",
+            Message::CharacterBrowserSearchPlaceholder => "이름, ID, 태그로 검색…",
+            Message::CharacterBrowserFilterAll => "전체",
+            Message::CharacterBrowserFilterInstalled => "설치됨",
+            Message::CharacterBrowserFilterOfficial => "공식 카탈로그",
+            Message::CharacterBrowserNoResults => "검색 결과가 없습니다",
+            Message::CharacterBrowserDownloadAndApply => "다운로드 및 적용",
+            Message::CharacterBrowserDownloading => "다운로드 중…",
+            Message::CharacterBrowserCancelDownload => "다운로드 취소",
+            Message::CharacterBrowserOfficialTag => "공식",
+            Message::CharacterBrowserSelect => "선택",
+            Message::CharacterBrowserSelected => "선택됨",
+            Message::CharacterBrowserViewLocal => "로컬 팩 보기",
+            Message::CharacterBrowserUnsupportedFormat => "지원되지 않는 형식",
+            Message::OfficialCatalogUnavailable => "공식 카탈로그를 사용할 수 없습니다",
+            Message::OfficialUnsupportedFormat => "지원되지 않는 공식 캐릭터 형식입니다",
+            Message::OfficialLocalIdExists => "같은 ID의 로컬 팩이 설치되어 있습니다. 설치됨에서 선택하세요",
         },
         UiLocale::En => match message {
             Message::ResetPosition => "Reset Position",
@@ -833,7 +867,6 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::LanguageSystem => "System",
             Message::KoreanLanguage => "한국어",
             Message::EnglishLanguage => "English",
-            Message::Characters => "Characters",
             Message::More => "More",
             Message::MenuPanelTitle => "Herdr Desktop Pet Settings",
             Message::MenuCharacterTab => "Character",
@@ -856,6 +889,9 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::BubbleAccentColor => "Accent color",
             Message::ApplyBubbleColors => "Apply colors",
             Message::ResetBubbleColors => "Reset colors",
+            Message::ResetBubbleSize => "Restore automatic size",
+            Message::ResizeBubbleHelp => "Drag the bubble's bottom-right corner to adjust its width and height independently.",
+            Message::BubbleSizeSaveFailed => "Bubble size could not be saved",
             Message::InvalidBubbleColor => "Colors must use #RRGGBB",
             Message::BubbleAppearanceSaveFailure => "Bubble appearance could not be saved",
             Message::BubbleColorsReload => "Reload saved",
@@ -1088,7 +1124,6 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::NeedsAttention => "need attention",
             Message::Complete => "complete",
             Message::BeingChecked => "being checked",
-            Message::AddCharacter => "Add Character…",
             Message::AddCharacterTitle => "Add Character",
             Message::UpdateCharacterTitle => "Update Character",
             Message::Active => "Active",
@@ -1119,15 +1154,49 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::BuiltInTag => "Built-in",
             Message::ManagedTag => "Managed",
             Message::CharacterDiagnostics => "Diagnostics",
-            Message::SelectedMismatchWarning => "Selected character differs from active character.",
-            Message::OverrideActiveWarning => "A temporary character override is active.",
             Message::Close => "Close",
+            Message::CharacterBrowserTitle => "Character Browser",
+            Message::CharacterBrowserOpen => "Browse Characters…",
+            Message::CharacterBrowserSearchPlaceholder => "Search by name, ID, tags…",
+            Message::CharacterBrowserFilterAll => "All",
+            Message::CharacterBrowserFilterInstalled => "Installed",
+            Message::CharacterBrowserFilterOfficial => "Official Catalog",
+            Message::CharacterBrowserNoResults => "No characters found",
+            Message::CharacterBrowserDownloadAndApply => "Download & Apply",
+            Message::CharacterBrowserDownloading => "Downloading…",
+            Message::CharacterBrowserCancelDownload => "Cancel Download",
+            Message::CharacterBrowserOfficialTag => "Official",
+            Message::CharacterBrowserSelect => "Select",
+            Message::CharacterBrowserSelected => "Selected",
+            Message::CharacterBrowserViewLocal => "View local pack",
+            Message::CharacterBrowserUnsupportedFormat => "Unsupported Format",
+            Message::OfficialCatalogUnavailable => "Official catalog is unavailable",
+            Message::OfficialUnsupportedFormat => "Unsupported official character format",
+            Message::OfficialLocalIdExists => "A local pack with this ID exists. Select it from Installed",
         },
     }
 }
 
 pub(crate) const fn session_local_source(locale: UiLocale) -> &'static str {
     text(locale, Message::ObservationLocal)
+}
+
+pub(crate) fn character_count_label(locale: UiLocale, count: usize) -> String {
+    match locale {
+        UiLocale::Ko => format!("캐릭터 {count}개"),
+        UiLocale::En if count == 1 => "1 character".to_owned(),
+        UiLocale::En => format!("{count} characters"),
+    }
+}
+
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 /// Status used by the status bubble. `count` is the phase count, while
@@ -1344,10 +1413,6 @@ pub(crate) fn offline_status(locale: UiLocale, status: &str) -> String {
         text(locale, Message::Offline),
         text(locale, Message::LastKnown)
     )
-}
-
-pub(crate) fn operation_pending(locale: UiLocale) -> &'static str {
-    text(locale, Message::ActivePending)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

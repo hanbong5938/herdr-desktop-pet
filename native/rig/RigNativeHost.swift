@@ -286,7 +286,6 @@ final class RigNativeHost {
     private let baseURL: URL
     private let poseURL: URL?
     private let overridesURL: URL
-    private let motionURL: URL
 
     private let modelSources: [RigModelSource]
     private let modelBindings: [Int]
@@ -391,10 +390,9 @@ final class RigNativeHost {
             }
         }
         guard let legacyBase = asset.base_path, let legacyOverrides = asset.overrides_path,
-              let legacyMotion = asset.motion_path, let legacyPoseID = asset.base_pose_id,
+              let legacyPoseID = asset.base_pose_id,
               let legacyBaseString = String(validatingUTF8: legacyBase),
               let legacyOverridesString = String(validatingUTF8: legacyOverrides),
-              let legacyMotionString = String(validatingUTF8: legacyMotion),
               let legacyBasePoseID = String(validatingUTF8: legacyPoseID),
               !legacyBasePoseID.isEmpty else {
             throw RigNativeError.invalid("rig source paths or base pose id are invalid UTF-8")
@@ -411,7 +409,6 @@ final class RigNativeHost {
         let initialModelIndex: Int
         let basePathString: String
         let overridesPathString: String
-        let motionPathString: String
         let basePoseID: String
         let posePathString: String?
         let alternatePoseID: String?
@@ -424,7 +421,6 @@ final class RigNativeHost {
             let source = sourceModels[initialModelIndex]
             basePathString = source.fileURL.path
             overridesPathString = source.overridesURL.path
-            motionPathString = source.motionURL.path
             basePoseID = source.id
             posePathString = nil
             alternatePoseID = nil
@@ -435,7 +431,6 @@ final class RigNativeHost {
             initialModelIndex = 0
             basePathString = legacyBaseString
             overridesPathString = legacyOverridesString
-            motionPathString = legacyMotionString
             basePoseID = legacyBasePoseID
             posePathString = legacyPoseString
             alternatePoseID = legacyAlternateID
@@ -456,7 +451,6 @@ final class RigNativeHost {
         self.baseURL = URL(fileURLWithPath: basePathString, isDirectory: false)
         self.poseURL = posePathString.map { URL(fileURLWithPath: $0, isDirectory: false) }
         self.overridesURL = URL(fileURLWithPath: overridesPathString, isDirectory: false)
-        self.motionURL = URL(fileURLWithPath: motionPathString, isDirectory: false)
         self.canvasWidth = Int(asset.width)
         self.canvasHeight = Int(asset.height)
         self.basePoseID = basePoseID
@@ -467,7 +461,12 @@ final class RigNativeHost {
             throw RigNativeError.unavailable("Metal device unavailable")
         }
         self.device = device
-        let motionData = try Self.readMotion(self.motionURL)
+        guard asset.initial_motion_length <= 64 * 1024,
+              let motionBytes = asset.initial_motion_bytes else {
+            throw RigNativeError.invalid("motion source is not a bounded regular file")
+        }
+        // Copy while the Rust snapshot still owns the borrowed asset bytes.
+        let motionData = Data(bytes: motionBytes, count: asset.initial_motion_length)
         self.evaluator = try RigMotionEvaluator(data: motionData, basePoseID: basePoseID,
                                                 alternatePoseID: alternatePoseID)
         self.view = RigSurfaceView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))

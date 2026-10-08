@@ -109,6 +109,80 @@ struct LoadedRegistry {
     warning: Option<String>,
 }
 
+fn listing_from_parts(
+    generation: u64,
+    selected: CharacterRef,
+    packs: Vec<PackRecord>,
+    error: Option<String>,
+) -> PackListing {
+    PackListing {
+        generation,
+        selected,
+        active: None,
+        override_active: false,
+        packs,
+        error,
+    }
+}
+
+fn listing_from_loaded(loaded: LoadedRegistry) -> PackListing {
+    if loaded.readonly {
+        listing_from_parts(
+            loaded.index.generation,
+            CharacterRef::builtin(),
+            Vec::new(),
+            loaded.warning,
+        )
+    } else {
+        listing_from_parts(
+            loaded.index.generation,
+            loaded.index.selected,
+            loaded.index.packs,
+            loaded.warning,
+        )
+    }
+}
+
+fn listing_and_status_from_loaded(
+    loaded: LoadedRegistry,
+    operation_id: &str,
+) -> Result<(PackListing, Option<PackOperation>), String> {
+    if loaded.readonly {
+        return Err(loaded.warning.unwrap_or_else(|| {
+            "character store metadata is corrupt; store is read-only".to_owned()
+        }));
+    }
+    let mut index = loaded.index;
+    let operation = index
+        .operations
+        .drain(..)
+        .find(|operation| operation.operation_id == operation_id);
+    Ok((
+        listing_from_parts(
+            index.generation,
+            index.selected,
+            index.packs,
+            loaded.warning,
+        ),
+        operation,
+    ))
+}
+
+#[derive(Debug)]
+enum StoreOpenError {
+    Contended,
+    Diagnostic(String),
+}
+
+impl StoreOpenError {
+    fn diagnostic(self, root: &Path) -> String {
+        match self {
+            Self::Contended => format!("Busy: character store {} is locked", root.display()),
+            Self::Diagnostic(error) => error,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct StoreLock {
     file: File,
@@ -139,8 +213,8 @@ pub struct PackStore {
     root: PathBuf,
 }
 
-/// A transaction owns the per-config store flock until it is either finished
-/// or dropped.  Dropping deliberately leaves staged/renamed data in place;
+/// A transaction owns the per-config store flock through `finish`, until Drop.
+/// Dropping deliberately leaves staged/renamed data in place;
 pub struct PackTransaction {
     _lock: Option<StoreLock>,
     root: PathBuf,
@@ -176,25 +250,17 @@ impl PackStore {
 
     pub fn list(&self) -> Result<PackListing, String> {
         let (layout, _lock) = self.open_locked()?;
-        let loaded = load_registry(&layout.root_file)?;
-        if loaded.readonly {
-            return Ok(PackListing {
-                generation: loaded.index.generation,
-                selected: CharacterRef::builtin(),
-                active: None,
-                override_active: false,
-                packs: Vec::new(),
-                error: loaded.warning,
-            });
-        }
-        Ok(PackListing {
-            generation: loaded.index.generation,
-            selected: loaded.index.selected,
-            active: None,
-            override_active: false,
-            packs: loaded.index.packs,
-            error: loaded.warning,
-        })
+        Ok(listing_from_loaded(load_registry(&layout.root_file)?))
+    }
+
+    /// Read an operation and its registry listing under a single flock and load.
+    pub(crate) fn listing_and_status(
+        &self,
+        operation_id: &str,
+    ) -> Result<(PackListing, Option<PackOperation>), String> {
+        validate_operation_id(operation_id)?;
+        let (layout, _lock) = self.open_locked()?;
+        listing_and_status_from_loaded(load_registry(&layout.root_file)?, operation_id)
     }
 
     pub fn startup_candidates(&self) -> Result<Vec<(CharacterRef, PathBuf)>, String> {
@@ -246,6 +312,36 @@ impl PackStore {
         request: &PackRequest,
         active: Option<&CharacterRef>,
     ) -> Result<PackTransaction, String> {
+        self.begin_import(request, active, None)
+    }
+
+    /// The downloader supplies one owned, already validated pack. This path
+    /// never reopens its archive or substitutes a caller-controlled pathname.
+    pub fn begin_with_verified_import(
+        &self,
+        request: &PackRequest,
+        active: Option<&CharacterRef>,
+        verified: ManagedPack,
+    ) -> Result<PackTransaction, String> {
+        if !matches!(request.action, PackAction::ImportAndSelect { .. }) {
+            return Err("verified import requires import_and_select".to_owned());
+        }
+        self.begin_import(request, active, Some(verified))
+    }
+
+    fn begin_import(
+        &self,
+        request: &PackRequest,
+        active: Option<&CharacterRef>,
+        verified: Option<ManagedPack>,
+    ) -> Result<PackTransaction, String> {
+        if matches!(request.action, PackAction::ImportAndSelect { .. })
+            && (verified.is_none() || request.expected_generation.is_none())
+        {
+            return Err(
+                "official import requires verified bytes and expected_generation".to_owned(),
+            );
+        }
         validate_operation_id(&request.operation_id)?;
         if self.builtin_assets.is_none() {
             return Err("builtin character assets are not configured".to_string());
@@ -290,7 +386,8 @@ impl PackStore {
             .map_err(|error| format!("cannot pin character store root: {error}"))?;
         let stage_candidate = |managed: ManagedPack,
                                operation_id: &str,
-                               root: &Path|
+                               root: &Path,
+                               already_verified: bool|
          -> Result<(PathBuf, ValidatedCharacter), String> {
             let incoming = managed_size(&managed)?;
             let used = measure_store(&root_file, root)?;
@@ -306,13 +403,19 @@ impl PackStore {
                 let _ = remove_owned_tree_pinned(&root_file, root, &stage);
                 return Err(error);
             }
-            let stage_directory =
-                open_root_relative_directory(&root_file, root, &stage, "staged pack")?;
-            let candidate = match ManagedPack::load_from_directory(&stage_directory) {
-                Ok(pack) => pack.assets,
-                Err(error) => {
-                    let _ = remove_owned_tree_pinned(&root_file, root, &stage);
-                    return Err(format!("staged character pack is invalid: {error}"));
+            let candidate = if already_verified {
+                // Keep the exact owned snapshot prepared outside the store
+                // gate rather than decoding its staged copy a second time.
+                managed.assets
+            } else {
+                let stage_directory =
+                    open_root_relative_directory(&root_file, root, &stage, "staged pack")?;
+                match ManagedPack::load_from_directory(&stage_directory) {
+                    Ok(pack) => pack.assets,
+                    Err(error) => {
+                        let _ = remove_owned_tree_pinned(&root_file, root, &stage);
+                        return Err(format!("staged character pack is invalid: {error}"));
+                    }
                 }
             };
             sync_directory_pinned(&root_file, root, &stage)?;
@@ -322,9 +425,21 @@ impl PackStore {
 
         let action_result: Result<(), String> = (|| {
             match &request.action {
-                PackAction::Import { path } => {
-                    let managed = ManagedPack::load(path)
-                        .map_err(|error| format!("cannot import character pack: {error}"))?;
+                PackAction::Import { .. } | PackAction::ImportAndSelect { .. } => {
+                    let managed = match (&request.action, verified) {
+                        (PackAction::Import { path }, None) => ManagedPack::load(path)
+                            .map_err(|error| format!("cannot import character pack: {error}"))?,
+                        (PackAction::ImportAndSelect { official }, Some(managed)) => {
+                            if managed.id != official.id {
+                                return Err(format!(
+                                    "official pack id {} does not match {}",
+                                    managed.id, official.id
+                                ));
+                            }
+                            managed
+                        }
+                        _ => return Err("invalid verified import source".to_owned()),
+                    };
                     validate_managed_identity(&managed)?;
                     let id = managed.id.clone();
                     let name = managed.name.clone();
@@ -339,8 +454,12 @@ impl PackStore {
                     }
                     ensure_pack_directory_pinned(&root_file, &self.root, &id)?;
                     let revision = preview_next_revision(&root_file, &proposed)?;
-                    let (stage, assets) =
-                        stage_candidate(managed, &request.operation_id, &self.root)?;
+                    let (stage, assets) = stage_candidate(
+                        managed,
+                        &request.operation_id,
+                        &self.root,
+                        matches!(request.action, PackAction::ImportAndSelect { .. }),
+                    )?;
                     stage_dir = Some(stage);
                     allocated_revision = Some(revision);
                     final_dir = Some(revision_path(&self.root, &id, revision));
@@ -352,6 +471,9 @@ impl PackStore {
                     });
                     candidate_ref = Some(CharacterRef { id, revision });
                     candidate = Some(assets);
+                    if matches!(request.action, PackAction::ImportAndSelect { .. }) {
+                        proposed.selected = candidate_ref.clone().unwrap();
+                    }
                 }
                 PackAction::Update { id, path } => {
                     validate_managed_id(id)?;
@@ -376,7 +498,7 @@ impl PackStore {
                     ensure_pack_directory_pinned(&root_file, &self.root, id)?;
                     let revision = preview_next_revision(&root_file, &proposed)?;
                     let (stage, assets) =
-                        stage_candidate(managed, &request.operation_id, &self.root)?;
+                        stage_candidate(managed, &request.operation_id, &self.root, false)?;
                     stage_dir = Some(stage);
                     allocated_revision = Some(revision);
                     final_dir = Some(revision_path(&self.root, id, revision));
@@ -609,6 +731,78 @@ impl PackStore {
         managed_dialogue_metadata(&revision_directory, &reference.id)
     }
 
+    /// Generation-pinned preview load: check revision and read payload under one store lock.
+    pub fn load_preview(
+        &self,
+        reference: &CharacterRef,
+        expected_generation: u64,
+    ) -> Result<Option<ValidatedCharacter>, String> {
+        validate_character_ref(reference)?;
+        let (layout, _lock) = match self.open_locked_result() {
+            Ok(locked) => locked,
+            Err(StoreOpenError::Contended) => return Ok(None),
+            Err(StoreOpenError::Diagnostic(error)) => return Err(error),
+        };
+        let loaded = load_registry(&layout.root_file)?;
+        if loaded.index.generation != expected_generation {
+            return Err(format!(
+                "character store generation mismatch (expected {expected_generation}, current {})",
+                loaded.index.generation
+            ));
+        }
+        if reference.is_builtin() {
+            let path = self
+                .builtin_assets
+                .as_deref()
+                .ok_or_else(|| "builtin character assets are not configured".to_owned())?;
+            drop(_lock);
+            drop(layout);
+            return ValidatedCharacter::load_builtin(path).map(Some);
+        }
+        if loaded.readonly {
+            return Err(loaded.warning.unwrap_or_else(|| {
+                "character store metadata is corrupt; store is read-only".to_owned()
+            }));
+        }
+        let record = loaded
+            .index
+            .packs
+            .iter()
+            .find(|record| record.id == reference.id)
+            .ok_or_else(|| format!("character pack {} is not registered", reference.id))?;
+        if !record.revisions.contains(&reference.revision) {
+            return Err(format!(
+                "character pack {} has no retained revision {}",
+                reference.id, reference.revision
+            ));
+        }
+        let packs = open_directory_at(
+            &layout.root_file,
+            std::ffi::OsStr::new(PACKS_DIR),
+            "character packs directory",
+        )?;
+        let pack = open_directory_at(
+            &packs,
+            std::ffi::OsStr::new(&reference.id),
+            "managed character directory",
+        )?;
+        verify_private_directory(&pack, Path::new("<managed character directory>"))?;
+        let revision = open_directory_at(
+            &pack,
+            std::ffi::OsStr::new(&reference.revision.to_string()),
+            "managed character revision",
+        )?;
+        verify_private_directory(&revision, Path::new("<managed character revision>"))?;
+        let managed = ManagedPack::load_from_directory(&revision)?;
+        if managed.id != reference.id {
+            return Err(format!(
+                "managed pack id {} does not match referenced pack {}",
+                managed.id, reference.id
+            ));
+        }
+        Ok(Some(managed.assets))
+    }
+
     pub fn load_revision(&self, reference: &CharacterRef) -> Result<ValidatedCharacter, String> {
         validate_character_ref(reference)?;
         let (layout, _lock) = self.open_locked()?;
@@ -739,13 +933,42 @@ impl PackStore {
     }
 
     fn open_locked(&self) -> Result<(StoreLayout, StoreLock), String> {
-        let layout = ensure_layout(&self.config_dir, &self.root)?;
+        self.open_locked_result()
+            .map_err(|error| error.diagnostic(&self.root))
+    }
+
+    fn open_locked_result(&self) -> Result<(StoreLayout, StoreLock), StoreOpenError> {
+        let layout =
+            ensure_layout(&self.config_dir, &self.root).map_err(StoreOpenError::Diagnostic)?;
         let lock = acquire_store_lock(&layout.root_file, &layout.root, &layout.lock_path)?;
         Ok((layout, lock))
     }
 }
 
 impl PackTransaction {
+    /// A committed listing is known without reacquiring the flock, even when
+    /// post-rename durability or completion bookkeeping remains uncertain.
+    pub(crate) fn committed_listing(&self) -> Option<PackListing> {
+        self.committed.then(|| {
+            listing_from_parts(
+                self.proposed.generation,
+                self.proposed.selected.clone(),
+                self.proposed.packs.clone(),
+                None,
+            )
+        })
+    }
+
+    pub(crate) fn durability_unknown(&self) -> bool {
+        self.durability_unknown
+    }
+
+    pub(crate) fn listing_and_status(
+        &self,
+    ) -> Result<(PackListing, Option<PackOperation>), String> {
+        listing_and_status_from_loaded(load_registry(&self.root_directory)?, &self.operation_id)
+    }
+
     /// Publish the staged revision (if any) and replace `registry.json`.
     ///
     /// `Err` always means `registry.json` was not replaced: every failing step
@@ -897,6 +1120,7 @@ impl PackTransaction {
         Ok(())
     }
 
+    /// Completion bookkeeping retains the store flock; only Drop releases it.
     pub fn finish(&mut self, allow_gc: bool) -> Result<Option<String>, String> {
         if !self.committed {
             return Err("cannot finish an uncommitted character transaction".to_string());
@@ -1324,33 +1548,37 @@ fn acquire_store_lock(
     root_directory: &File,
     root: &Path,
     path: &Path,
-) -> Result<StoreLock, String> {
-    let name = child_name(path, "store lock")?;
+) -> Result<StoreLock, StoreOpenError> {
+    let name = child_name(path, "store lock").map_err(StoreOpenError::Diagnostic)?;
     let file = open_child_file(
         root_directory,
         name,
         libc::O_RDWR | libc::O_CREAT | libc::O_NONBLOCK,
         0o600,
         "store lock",
-    )?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("cannot inspect store lock {}: {error}", path.display()))?;
+    )
+    .map_err(StoreOpenError::Diagnostic)?;
+    let metadata = file.metadata().map_err(|error| {
+        StoreOpenError::Diagnostic(format!(
+            "cannot inspect store lock {}: {error}",
+            path.display()
+        ))
+    })?;
     if !metadata.is_file() || metadata.uid() != unsafe { libc::geteuid() } || metadata.nlink() != 1
     {
-        return Err(format!(
+        return Err(StoreOpenError::Diagnostic(format!(
             "store lock {} is not a private regular file",
             path.display()
-        ));
+        )));
     }
     if metadata.permissions().mode() & 0o077 != 0 {
         let result = unsafe { libc::fchmod(file.as_raw_fd(), 0o600) };
         if result != 0 {
-            return Err(format!(
+            return Err(StoreOpenError::Diagnostic(format!(
                 "cannot secure store lock {}: {}",
                 path.display(),
                 io::Error::last_os_error()
-            ));
+            )));
         }
     }
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -1359,15 +1587,12 @@ fn acquire_store_lock(
         if error.raw_os_error() == Some(libc::EAGAIN)
             || error.raw_os_error() == Some(libc::EWOULDBLOCK)
         {
-            return Err(format!(
-                "Busy: character store {} is locked",
-                root.display()
-            ));
+            return Err(StoreOpenError::Contended);
         }
-        return Err(format!(
+        return Err(StoreOpenError::Diagnostic(format!(
             "cannot lock character store {}: {error}",
             root.display()
-        ));
+        )));
     }
     Ok(StoreLock { file })
 }
@@ -2649,6 +2874,171 @@ mod tests {
         let mut permissions = fs::metadata(path).unwrap().permissions();
         permissions.set_mode(0o600);
         fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[test]
+    fn committed_official_import_without_native_ack_preserves_selected_revision() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-store-official-pending-{}", unique_nonce()));
+        let source = root.join("source");
+        write_single_frame_v3_pack(&source, "official-cat", &test_png_bytes());
+        let store = PackStore::new(root.join("config"), Some(source.clone()));
+        let request = PackRequest {
+            operation_id: "official-pending".to_owned(),
+            expected_generation: Some(0),
+            action: PackAction::ImportAndSelect {
+                official: crate::character_types::OfficialPackIdentity {
+                    id: "official-cat".to_owned(),
+                    version: "0.0.2".to_owned(),
+                    release_tag: "v0.0.2".to_owned(),
+                    sha256: "a".repeat(64),
+                },
+            },
+        };
+        let mut transaction = store
+            .begin_with_verified_import(&request, None, ManagedPack::load(&source).unwrap())
+            .unwrap();
+        assert!(transaction.committed_listing().is_none());
+        let selected = transaction.selected.clone();
+        transaction.commit().unwrap();
+        let committed = transaction.committed_listing().unwrap();
+        assert_eq!(committed.generation, 1);
+        assert_eq!(committed.selected, selected);
+        assert!(committed.active.is_none());
+        assert!(!committed.override_active);
+        assert_eq!(committed.packs.len(), 1);
+        let (same_lock_listing, pending) = transaction.listing_and_status().unwrap();
+        assert_eq!(same_lock_listing.generation, committed.generation);
+        assert_eq!(same_lock_listing.packs, committed.packs);
+        assert_eq!(pending.unwrap().state, "committed_pending_apply");
+        transaction.set_ui_applied(false);
+        transaction.finish(false).unwrap();
+        drop(transaction);
+        let operation = store.operation_status("official-pending").unwrap().unwrap();
+        assert_eq!(operation.state, "committed_pending_apply");
+        assert!(operation.committed);
+        assert!(!operation.ui_applied);
+        assert_eq!(operation.generation, Some(1));
+        assert_eq!(store.list().unwrap().selected, selected);
+        assert!(store.load_revision(&selected).is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_only_defers_actual_flock_contention_not_lock_file_security_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let store = PackStore::new(root.path().to_path_buf(), None);
+        assert_eq!(store.list().unwrap().generation, 0);
+        let lock = root.path().join(STORE_DIR).join(LOCK_FILE);
+        fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink(root.path().join("outside"), &lock).unwrap();
+        let error = store
+            .load_preview(
+                &CharacterRef {
+                    id: "fixture-cat".to_owned(),
+                    revision: 1,
+                },
+                0,
+            )
+            .unwrap_err();
+        assert!(error.contains("store lock"), "{error}");
+        assert!(!error.starts_with("Busy:"), "{error}");
+        assert_eq!(error, store.list().unwrap_err());
+    }
+
+    #[test]
+    fn verified_import_rejects_wrong_manifest_id_without_mutating_selection() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-store-wrong-official-{}", unique_nonce()));
+        let source = root.join("source");
+        write_single_frame_v3_pack(&source, "different-id", &test_png_bytes());
+        let store = PackStore::new(root.join("config"), Some(source.clone()));
+        let request = PackRequest {
+            operation_id: "wrong-official".to_owned(),
+            expected_generation: Some(0),
+            action: PackAction::ImportAndSelect {
+                official: crate::character_types::OfficialPackIdentity {
+                    id: "official-cat".to_owned(),
+                    version: "0.0.2".to_owned(),
+                    release_tag: "v0.0.2".to_owned(),
+                    sha256: "a".repeat(64),
+                },
+            },
+        };
+        let error = store
+            .begin_with_verified_import(&request, None, ManagedPack::load(&source).unwrap())
+            .err()
+            .unwrap();
+        assert!(error.contains("does not match"));
+        let listing = store.list().unwrap();
+        assert_eq!(listing.generation, 0);
+        assert_eq!(listing.selected, CharacterRef::builtin());
+        assert!(listing.packs.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verified_official_import_commits_selection_and_pack_in_one_generation() {
+        let root = std::env::temp_dir().join(format!("herdr-store-official-{}", unique_nonce()));
+        let source = root.join("source");
+        write_single_frame_v3_pack(&source, "official-cat", &test_png_bytes());
+        let store = PackStore::new(root.join("config"), Some(source.clone()));
+        let identity = crate::character_types::OfficialPackIdentity {
+            id: "official-cat".to_owned(),
+            version: "0.0.2".to_owned(),
+            release_tag: "v0.0.2".to_owned(),
+            sha256: "a".repeat(64),
+        };
+        let request = |operation_id: &str, generation| PackRequest {
+            operation_id: operation_id.to_owned(),
+            expected_generation: Some(generation),
+            action: PackAction::ImportAndSelect {
+                official: identity.clone(),
+            },
+        };
+        let pack = ManagedPack::load(&source).unwrap();
+        let mut transaction = store
+            .begin_with_verified_import(&request("official-first", 0), None, pack)
+            .unwrap();
+        let selected = transaction.candidate_ref.clone().unwrap();
+        assert_eq!(transaction.selected, selected);
+        assert!(transaction.changes_selection);
+        let result = transaction.commit().unwrap();
+        assert_eq!(result.generation, 1);
+        transaction.set_ui_applied(true);
+        transaction.finish(true).unwrap();
+        drop(transaction);
+        let listing = store.list().unwrap();
+        assert_eq!(listing.generation, 1);
+        assert_eq!(listing.selected, selected);
+        assert_eq!(listing.packs.len(), 1);
+        assert_eq!(listing.packs[0].head, selected.revision);
+        assert_eq!(
+            store
+                .operation_status("official-first")
+                .unwrap()
+                .unwrap()
+                .generation,
+            Some(1)
+        );
+        assert!(store
+            .begin_with_verified_import(
+                &request("official-stale", 0),
+                None,
+                ManagedPack::load(&source).unwrap()
+            )
+            .is_err());
+        let duplicate = store
+            .begin_with_verified_import(
+                &request("official-duplicate", 1),
+                None,
+                ManagedPack::load(&source).unwrap(),
+            )
+            .err()
+            .unwrap();
+        assert!(duplicate.contains("already exists"));
+        assert_eq!(store.list().unwrap().generation, 1);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

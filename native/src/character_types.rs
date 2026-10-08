@@ -82,10 +82,21 @@ pub struct PackListing {
     pub error: Option<String>,
 }
 
+/// Catalog-pinned official variant identity; never a caller-supplied URL.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfficialPackIdentity {
+    pub id: String,
+    pub version: String,
+    pub release_tag: String,
+    pub sha256: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PackAction {
     Import { path: PathBuf },
+    ImportAndSelect { official: OfficialPackIdentity },
     Select { id: String },
     Update { id: String, path: PathBuf },
     Restore { id: String, revision: u64 },

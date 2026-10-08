@@ -1484,9 +1484,39 @@ fn validate_source_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_pack_request(request: &PackRequest) -> Result<(), String> {
+pub(crate) fn validate_pack_request(request: &PackRequest) -> Result<(), String> {
     match &request.action {
         PackAction::Import { path } | PackAction::Update { path, .. } => validate_source_path(path),
+        PackAction::ImportAndSelect { official } => {
+            if request.expected_generation.is_none() {
+                return Err("official import requires expected_generation".to_owned());
+            }
+            crate::character_types::validate_pack_id(&official.id)?;
+            if official.version.is_empty()
+                || official.version.len() > 64
+                || !official
+                    .version
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-_+".contains(&b))
+            {
+                return Err("official version is invalid".to_owned());
+            }
+            if official.release_tag.is_empty()
+                || official.release_tag.len() > 128
+                || !official
+                    .release_tag
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-_+".contains(&b))
+            {
+                return Err("official release tag is invalid".to_owned());
+            }
+            if official.sha256.len() != 64
+                || !official.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err("official sha256 is invalid".to_owned());
+            }
+            Ok(())
+        }
         PackAction::Select { .. } | PackAction::Restore { .. } | PackAction::Remove { .. } => {
             Ok(())
         }
@@ -2541,6 +2571,36 @@ fn lock_unpoisoned<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
 mod tests {
     use super::*;
     use crate::character_types::{CharacterRef, PackRecord};
+    #[test]
+    fn official_import_control_rejects_missing_cas_and_unbounded_identity() {
+        let mut request = PackRequest {
+            operation_id: "official-import".to_owned(),
+            expected_generation: None,
+            action: PackAction::ImportAndSelect {
+                official: crate::character_types::OfficialPackIdentity {
+                    id: "official-cat".to_owned(),
+                    version: "0.0.2".to_owned(),
+                    release_tag: "v0.0.2".to_owned(),
+                    sha256: "a".repeat(64),
+                },
+            },
+        };
+        assert!(validate_pack_request(&request)
+            .unwrap_err()
+            .contains("expected_generation"));
+        request.expected_generation = Some(4);
+        assert!(validate_pack_request(&request).is_ok());
+        if let PackAction::ImportAndSelect { official } = &mut request.action {
+            official.release_tag = "../evil".to_owned();
+        }
+        assert!(validate_pack_request(&request).is_err());
+        if let PackAction::ImportAndSelect { official } = &mut request.action {
+            official.release_tag = "v0.0.2".to_owned();
+            official.sha256 = "a".repeat(65);
+        }
+        assert!(validate_pack_request(&request).is_err());
+    }
+
     #[test]
     fn typed_requests_reject_duplicates_unknowns_null_combinations_and_wrong_kinds() {
         for frame in [
