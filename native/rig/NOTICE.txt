@@ -15,6 +15,16 @@ decoder.js together with this notice and the notice resources under vendor/.
 The build intentionally does not copy web/rig/index.html,
 web/rig/dist/index.js, web/rig/dist/worker.js, or any WebGL host resource.
 
+Worker runtime signing
+-----------------------
+Debug and release builds ad-hoc sign only rig-decode-worker with
+com.apple.security.cs.allow-jit=true from RigDecodeWorker.entitlements.plist.
+This lets JavaScriptCore compile the trusted decoder bundle instead of falling
+back to interpreted execution. The main app and native rig library receive no
+JIT entitlement; worker isolation, input validation, and resource caps remain
+unchanged. App packaging reuses the same plist and verifies effective worker
+entitlements and strict signatures after signing the outer app.
+
 Upstream application sources
 ----------------------------
 DAEMONLET (MIT; pinned source and adaptation details):

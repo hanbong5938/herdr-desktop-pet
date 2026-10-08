@@ -20,6 +20,7 @@ const appAssets = join(appResources, "default");
 const appFrameworks = join(appContents, "Frameworks");
 const appRigLibrary = join(appFrameworks, "libherdr_rig.dylib");
 const appRigWorker = join(appContents, "MacOS", "rig-decode-worker");
+const workerEntitlements = join(root, "native", "rig", "RigDecodeWorker.entitlements.plist");
 const appCreator = join(appResources, "creator");
 const licenseSource = join(root, "LICENSE.txt");
 const licenseDestination = join(appResources, "LICENSE.txt");
@@ -58,8 +59,12 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
-async function runTool(command: string[], label: string): Promise<string> {
-  const child = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
+async function runTool(command: string[], label: string, input?: string): Promise<string> {
+  const child = Bun.spawn(command, { stdin: input === undefined ? undefined : "pipe", stdout: "pipe", stderr: "pipe" });
+  if (input !== undefined) {
+    child.stdin.write(input);
+    child.stdin.end();
+  }
   const [exit, stdout, stderr] = await Promise.all([
     child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
   ]);
@@ -89,11 +94,35 @@ async function validateNativePack(binary: string, path: string): Promise<void> {
   }
 }
 
+async function readEntitlements(target: string): Promise<Record<string, unknown>> {
+  const plist = await runTool(["codesign", "-d", "--xml", "--entitlements", "-", target], `reading entitlements of ${target}`);
+  if (!plist.trim()) return {};
+  const json = await runTool(["plutil", "-convert", "json", "-o", "-", "-"], `parsing entitlements of ${target}`, plist);
+  const value: unknown = JSON.parse(json);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`invalid entitlements of ${target}: expected a dictionary`);
+  }
+  return value as Record<string, unknown>;
+}
+
 async function runCodesign(identity: string): Promise<void> {
   for (const target of [appRigLibrary, appRigWorker, appBinary, appRoot]) {
-    await runTool(["codesign", "--force", "--timestamp=none", "--sign", identity, target], `signing ${target}`);
+    const command = ["codesign", "--force", "--timestamp=none", "--sign", identity];
+    if (target === appRigWorker) command.push("--entitlements", workerEntitlements);
+    await runTool([...command, target], `signing ${target}`);
   }
+  await runTool(["codesign", "--verify", "--strict", appRigWorker], "verifying packaged decode worker signature");
   await runTool(["codesign", "--verify", "--deep", "--strict", appRoot], "verifying packaged signature");
+  const worker = await readEntitlements(appRigWorker);
+  const keys = Object.keys(worker);
+  if (keys.length !== 1 || keys[0] !== "com.apple.security.cs.allow-jit" || worker[keys[0]] !== true) {
+    throw new Error("packaged decode worker must have only com.apple.security.cs.allow-jit=true");
+  }
+  for (const target of [appRigLibrary, appBinary, appRoot]) {
+    if (Object.keys(await readEntitlements(target)).length !== 0) {
+      throw new Error(`unexpected entitlements on ${target}`);
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -113,6 +142,7 @@ async function main(): Promise<void> {
   await requireFile(thumbnailSource, "Rubelia menu thumbnail");
   await requireFile(join(rigBuild, "libherdr_rig.dylib"), "release native rig library");
   await requireFile(join(rigBuild, "rig-decode-worker"), "release native decode worker");
+  await requireFile(workerEntitlements, "decode worker JIT entitlements");
   await requireFile(join(rigBuild, "Resources", "rig", "decoder.js"), "trusted decoder bundle");
   await requireFile(join(rigBuild, "Resources", "rig", "NOTICE.txt"), "renderer license closure");
   await requireFile(join(root, "tools", "character-pack.py"), "creator tool");
