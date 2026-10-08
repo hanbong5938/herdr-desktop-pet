@@ -143,6 +143,8 @@ The generator declares the managed Wiki mappings:
 | `docs/migrations/unreleased.md`, `unreleased.ko.md` | `Upgrade-Unreleased`, `Upgrade-Unreleased-ko` |
 | Catalog/generated navigation | `Release-Status`, `Older-Releases`, `_Sidebar` |
 
+Top-level canonical Markdown filenames in `docs/releases/` and `docs/migrations/` are limited to the mappings above; an unsupported filename fails rendering rather than being ignored. Put manual validation checklists and supporting records in `docs/validation/` instead. Canonical pages may link to those files, but the Wiki renders links as immutable source-commit blob URLs, not additional managed Wiki pages. Checklist procedures are not completed acceptance evidence: keep observed results distinct from unexercised checks. Changes under `docs/validation/` trigger Wiki sync so those pinned links update with the source commit.
+
 Do not manually edit these generated pages; make changes in canonical source. Unrelated Wiki pages are untouched. `.wiki-managed-pages` records the pages the generator owns; only prior-manifest-owned pages that disappear from the new manifest are removed. The publisher validates both manifests against the generator's ownership rules and rejects unexpected rendered files, unsafe paths, symlinks and missing/empty pages. It preserves existing Wiki history and makes at most one content commit per run. Identical rendered content is a no-op.
 
 For HTTPS Git operations, an ephemeral askpass script reads the publish-step environment; its file contains no token. The token is never written to a clone URL, main checkout, Git credential store or commit. Credential helpers and Git tracing are disabled for publication; the temporary clone and askpass script are removed on exit. The remote's HEAD decides the Wiki branch name—`master` or `main` is never assumed. Push is normal, never force.
@@ -161,6 +163,8 @@ A render error occurs before the publisher is called. Clone/validation/copy/comm
 ## 한국어 운영·안전 요약
 
 정본은 저장소에서 검토한 Markdown이며 Wiki는 생성된 읽기용 문서입니다. 현재 안정판 소스·릴리스 계약은 **0.2.0**으로, 이전 베타3의 네이티브 기능을 `main`에 포함하고 안정판 태그·바이너리·Homebrew 포뮬러·기본 설치·Wiki 발행이 허용되었습니다. 예전 `9cbad32` 시기의 문서·도구 전용 허가는 역사적 범위이지 현재의 제한이 아닙니다. beta1/2/3의 태그·자산과 별도 베타 포뮬러는 그대로 둡니다. 실제 릴리스 게시 상태는 공개 Release 카탈로그·업로드된 자산으로 판단합니다.
+
+`docs/releases/`와 `docs/migrations/`의 최상위 정본 Markdown 파일명은 위 매핑으로 제한되며, 지원하지 않는 파일명은 무시되지 않고 렌더링 오류를 일으킵니다. 수동 검증 체크리스트와 보조 기록은 `docs/validation/`에 둡니다. 정본 페이지에서 해당 파일을 링크할 수 있지만 Wiki에서는 새 관리 페이지가 아니라 소스 커밋에 고정된 blob URL로 연결됩니다. 체크리스트의 절차 자체는 완료된 인수 검증 증거가 아니므로 관찰한 결과와 실행하지 않은 항목을 구분합니다. `docs/validation/`의 변경도 Wiki 동기화를 트리거하여 고정 링크를 갱신합니다.
 
 원래 읽기 전용 점검에서는 Wiki가 꺼져 있고 Actions 비밀이 없었으며 설정·초기 페이지·원격 커밋/푸시/배포는 하지 않았습니다. 이후 Wiki가 활성화되어 첫 Home과 HEAD `680633c28f33f264b5d532a385370e1ec5995d1a`가 확인되었습니다. 이 사실만으로 생성된 v0.2.0 Wiki 페이지가 게시됐다고 주장하지 않습니다. **전용 `WIKI_PUBLISH_TOKEN` Actions 비밀은 아직 설정되지 않았습니다.** 허가된 로컬 수동 발행에는 기존 소유자 `gh` OAuth를 추적·출력·저장 없이 발행 프로세스 환경에만 일시적으로 전달할 수 있습니다. 절대로 CI 비밀에 복사하지 마세요. 이후 main 푸시·Actions 수동 실행·릴리스 후 자동 발행에는 실제 Wiki Git 쓰기 권한·만료·소유자를 확인한 **전용** 자동화 토큰을 따로 설정해야 합니다. 일반 `GITHUB_TOKEN`의 Wiki 쓰기 권한은 가정하지 않습니다.
 
