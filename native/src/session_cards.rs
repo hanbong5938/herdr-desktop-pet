@@ -1,13 +1,13 @@
 use crate::herdr_protocol::AgentStatus;
 use crate::i18n::{
     display_status_label, offline_status, session_empty, session_filter_label,
-    session_local_source, session_pane, session_source, session_status_label, session_summary,
-    text, Message, SessionFilterLabel, SessionStatusLabel, UiLocale,
+    session_list_summary, session_pane, session_source, session_status_label, text, Message,
+    SessionFilterLabel, SessionStatusLabel, UiLocale,
 };
-use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette};
+use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, SessionListPreferences};
 use crate::session_view::{
-    Availability, DisplayStatus, SessionFilter, SessionKey, SessionSnapshot, SessionStatusSummary,
-    SessionView,
+    display_value, Availability, CardDisplay, DisplayStatus, SessionFilter, SessionKey,
+    SessionListOptions, SessionSnapshot, SessionSort, SessionStatusSummary, SessionView,
 };
 use crate::state::AppState;
 use crate::status_indicator::{semantic_color, StatusIcon, STATUS_ICON_GAP, STATUS_ICON_SIZE};
@@ -17,12 +17,11 @@ use objc2::Message as _;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSColor, NSControlSize, NSEvent, NSFont,
-    NSLineBreakMode, NSPopUpButton, NSScrollElasticity, NSScrollView, NSScrollerStyle,
-    NSTextAlignment, NSTextField, NSView,
+    NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSButton, NSColor, NSControlSize,
+    NSControlStateValueOn, NSEvent, NSFont, NSLineBreakMode, NSPopUpButton, NSScrollElasticity,
+    NSScrollView, NSScrollerStyle, NSSearchField, NSTextAlignment, NSTextField, NSView,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSString};
-use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
@@ -30,11 +29,22 @@ use std::sync::{Arc, Mutex};
 const DEFAULT_FRAME_WIDTH: f64 = 360.0;
 const DEFAULT_FRAME_HEIGHT: f64 = 220.0;
 const OUTER_INSET: f64 = 8.0;
-const HEADER_HEIGHT: f64 = 27.0;
-const HEADER_GAP: f64 = 5.0;
+const SEARCH_HEIGHT: f64 = 24.0;
+const POPUP_HEIGHT: f64 = 24.0;
+const TOOLBAR_GAP: f64 = 6.0;
+const POPUP_GAP: f64 = 8.0;
 const SUMMARY_HEIGHT: f64 = 40.0;
+const HEADER_HEIGHT: f64 =
+    SEARCH_HEIGHT + TOOLBAR_GAP + POPUP_HEIGHT + TOOLBAR_GAP + SUMMARY_HEIGHT;
+const SESSION_SORTS: [SessionSort; 3] = [
+    SessionSort::Stable,
+    SessionSort::TitleAsc,
+    SessionSort::SourceAsc,
+];
+const HEADER_GAP: f64 = 5.0;
 const ROW_HEIGHT: f64 = 46.0;
 const EMPTY_HEIGHT: f64 = 20.0;
+const LIST_VIEWPORT_MAX_HEIGHT: f64 = 180.0;
 const ROW_GAP: f64 = 0.0;
 const ROW_HORIZONTAL_INSET: f64 = 12.0;
 const ROW_TEXT_HEIGHT: f64 = 16.0;
@@ -43,25 +53,56 @@ const ROW_SELECTION_INSET: f64 = 1.0;
 const ROW_SELECTION_RADIUS: f64 = 8.0;
 const BADGE_GAP: f64 = 8.0;
 
-/// Height needed to show the filter/summary and one complete selectable row.
+/// Toolbar, insets and one selectable row; the inline reply adds its measured height.
 pub(crate) const fn minimum_selectable_height() -> f64 {
-    OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + ROW_HEIGHT
+    OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP + ROW_HEIGHT
+}
+
+pub(crate) const fn maximum_cards_height() -> f64 {
+    OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP + LIST_VIEWPORT_MAX_HEIGHT
 }
 
 #[derive(Default)]
 struct CardsIntent {
-    composition_active: bool,
+    reply_composition_active: bool,
+    search_composition_active: bool,
     pending_selection: Option<SessionKey>,
     pending_filter: Option<SessionFilter>,
+    pending_query: Option<String>,
+    pending_query_native: Option<Retained<NSString>>,
+    pending_sort: Option<SessionSort>,
+    pending_running_first: Option<bool>,
     pending_selection_deferred: bool,
     deferred_refresh: bool,
     deferred_selection_applied: bool,
 }
 impl CardsIntent {
+    fn composing(&self) -> bool {
+        self.reply_composition_active || self.search_composition_active
+    }
+
+    fn pending_preferences(
+        &self,
+        applied: SessionListPreferences,
+    ) -> Option<SessionListPreferences> {
+        if self.pending_sort.is_none() && self.pending_running_first.is_none() {
+            return None;
+        }
+        Some(SessionListPreferences {
+            sort: self.pending_sort.unwrap_or(applied.sort),
+            running_first: self.pending_running_first.unwrap_or(applied.running_first),
+        })
+    }
+
+    fn clear_pending_preferences(&mut self) {
+        self.pending_sort = None;
+        self.pending_running_first = None;
+    }
+
     fn request_selection(&mut self, key: SessionKey, marked: bool) {
         self.pending_selection = Some(key);
         self.pending_selection_deferred = true;
-        self.composition_active |= marked;
+        self.reply_composition_active |= marked;
         self.deferred_refresh = true;
     }
 }
@@ -69,8 +110,12 @@ impl CardsIntent {
 struct SessionCardsRootIvars {
     inner: Weak<RefCell<SessionCardsInner>>,
     intent: Rc<RefCell<CardsIntent>>,
+    search: Retained<NSSearchField>,
     popup: Retained<NSPopUpButton>,
+    sort_popup: Retained<NSPopUpButton>,
+    running_toggle: Retained<NSButton>,
     applied_filter: Cell<SessionFilter>,
+    applied_options: Cell<SessionListPreferences>,
 }
 
 struct SessionCardViewIvars {
@@ -127,33 +172,64 @@ define_class!(
             let Some(filter) = SessionFilter::ALL.get(index.max(0) as usize).copied() else {
                 return;
             };
-            let marked = crate::ui::composer_is_composing();
-            let Some(inner) = self.ivars().inner.upgrade() else {
+            let mut intent = self.ivars().intent.borrow_mut();
+            intent.pending_filter = Some(filter);
+            intent.deferred_refresh = true;
+            drop(intent);
+            self.restore_popup();
+            crate::ui::cards_content_changed();
+        }
+
+        #[unsafe(method(sortChanged:))]
+        fn sort_changed(&self, _sender: Option<&AnyObject>) {
+            let index: isize = unsafe { msg_send![&*self.ivars().sort_popup, indexOfSelectedItem] };
+            let Some(sort) = SESSION_SORTS.get(index.max(0) as usize).copied() else {
                 return;
             };
-            {
-                let mut intent = self.ivars().intent.borrow_mut();
-                intent.pending_filter = Some(filter);
-                intent.deferred_refresh = true;
-                intent.composition_active |= marked;
+            self.ivars().intent.borrow_mut().pending_sort = Some(sort);
+            self.restore_options();
+            crate::ui::cards_options_changed();
+        }
+
+        #[unsafe(method(runningChanged:))]
+        fn running_changed(&self, _sender: Option<&AnyObject>) {
+            self.ivars().intent.borrow_mut().pending_running_first =
+                Some(self.ivars().running_toggle.state() == NSControlStateValueOn);
+            self.restore_options();
+            crate::ui::cards_options_changed();
+        }
+
+        #[unsafe(method(searchChanged:))]
+        fn search_changed(&self, _sender: Option<&AnyObject>) {
+            self.search_text_changed();
+        }
+
+        #[unsafe(method(controlTextDidChange:))]
+        fn control_text_did_change(&self, _notification: &AnyObject) {
+            self.search_text_changed();
+        }
+
+        #[unsafe(method(controlTextDidEndEditing:))]
+        fn control_text_did_end_editing(&self, _notification: &AnyObject) {
+            self.search_text_changed();
+            crate::ui::wake();
+        }
+
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn control_text_view_do_command(
+            &self,
+            _control: &AnyObject,
+            _editor: &AnyObject,
+            command: objc2::runtime::Sel,
+        ) -> bool {
+            if command == sel!(insertNewline:) || command == sel!(insertNewlineIgnoringFieldEditor:) {
+                return true.into();
             }
-            // AppKit may reenter while the cards are borrowed.
-            self.restore_popup();
-            if !marked {
-                let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
-                    if !self.ivars().intent.borrow().composition_active {
-                        cards.refresh();
-                    }
-                    true
-                } else {
-                    false
-                };
-                if ready {
-                    crate::ui::cards_content_changed();
-                } else {
-                    crate::ui::wake();
-                }
+            if command == sel!(cancelOperation:) {
+                self.search_escape();
+                return true.into();
             }
+            false
         }
 
 
@@ -173,6 +249,86 @@ impl SessionCardsRoot {
         let selected: isize = unsafe { msg_send![&*self.ivars().popup, indexOfSelectedItem] };
         if selected != index {
             let _: () = unsafe { msg_send![&*self.ivars().popup, selectItemAtIndex: index] };
+        }
+    }
+
+    fn restore_options(&self) {
+        let options = self.ivars().applied_options.get();
+        let index = SESSION_SORTS
+            .iter()
+            .position(|sort| *sort == options.sort)
+            .unwrap_or(0) as isize;
+        let selected: isize = unsafe { msg_send![&*self.ivars().sort_popup, indexOfSelectedItem] };
+        if selected != index {
+            let _: () = unsafe { msg_send![&*self.ivars().sort_popup, selectItemAtIndex: index] };
+        }
+        let state = if options.running_first {
+            NSControlStateValueOn
+        } else {
+            objc2_app_kit::NSControlStateValueOff
+        };
+        if self.ivars().running_toggle.state() != state {
+            self.ivars().running_toggle.setState(state);
+        }
+    }
+
+    fn search_marked(&self) -> bool {
+        let editor: Option<&AnyObject> = unsafe { msg_send![&*self.ivars().search, currentEditor] };
+        editor.is_some_and(|editor| unsafe { msg_send![editor, hasMarkedText] })
+    }
+
+    fn search_text_changed(&self) {
+        let value = self.ivars().search.stringValue();
+        let marked = self.search_marked();
+        let mut intent = self.ivars().intent.borrow_mut();
+        if intent
+            .pending_query_native
+            .as_deref()
+            .is_none_or(|pending| !native_string_equal(&value, pending))
+        {
+            intent.pending_query = Some(value.to_string());
+            intent.pending_query_native = Some(value);
+            intent.deferred_refresh = true;
+        }
+        if intent.search_composition_active != marked {
+            intent.search_composition_active = marked;
+            intent.deferred_refresh = true;
+        }
+        drop(intent);
+        crate::ui::cards_content_changed();
+    }
+
+    fn search_escape(&self) {
+        if self.search_marked() {
+            let editor: Option<&AnyObject> =
+                unsafe { msg_send![&*self.ivars().search, currentEditor] };
+            if let Some(editor) = editor {
+                let context: Option<&AnyObject> = unsafe { msg_send![editor, inputContext] };
+                if let Some(context) = context {
+                    let _: () = unsafe { msg_send![context, discardMarkedText] };
+                }
+                let still_marked: bool = unsafe { msg_send![editor, hasMarkedText] };
+                if still_marked {
+                    let range: objc2_foundation::NSRange =
+                        unsafe { msg_send![editor, markedRange] };
+                    let empty = NSString::from_str("");
+                    let _: () =
+                        unsafe { msg_send![editor, insertText: &*empty, replacementRange: range] };
+                    let _: () = unsafe { msg_send![editor, unmarkText] };
+                }
+            }
+            crate::ui::wake();
+        } else if self.ivars().search.stringValue().length() > 0 {
+            let empty = NSString::from_str("");
+            self.ivars().search.setStringValue(&empty);
+            let editor: Option<&AnyObject> =
+                unsafe { msg_send![&*self.ivars().search, currentEditor] };
+            if let Some(editor) = editor {
+                let _: () = unsafe { msg_send![editor, setString: &*empty] };
+            }
+            self.search_text_changed();
+        } else if let Some(window) = self.window() {
+            let _ = window.makeFirstResponder(None);
         }
     }
 }
@@ -258,7 +414,8 @@ define_class!(
 
 impl SessionCardView {
     fn select(&self) {
-        let marked = crate::ui::composer_is_composing();
+        let marked = crate::ui::composer_is_composing()
+            || self.ivars().intent.borrow().search_composition_active;
         let Some(inner) = self.ivars().inner.upgrade() else {
             return;
         };
@@ -270,7 +427,7 @@ impl SessionCardView {
             return;
         }
         let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
-            if !self.ivars().intent.borrow().composition_active {
+            if !self.ivars().intent.borrow().composing() {
                 self.ivars().intent.borrow_mut().pending_selection_deferred = false;
                 cards.reveal_selection = true;
                 cards.refresh();
@@ -298,7 +455,11 @@ impl SessionCardsDocument {
 impl SessionCardsRoot {
     fn new(
         frame: NSRect,
+        search: Retained<NSSearchField>,
         popup: Retained<NSPopUpButton>,
+        sort_popup: Retained<NSPopUpButton>,
+        running_toggle: Retained<NSButton>,
+        options: SessionListPreferences,
         inner: Weak<RefCell<SessionCardsInner>>,
         intent: Rc<RefCell<CardsIntent>>,
         mtm: MainThreadMarker,
@@ -306,8 +467,12 @@ impl SessionCardsRoot {
         let this = Self::alloc(mtm).set_ivars(SessionCardsRootIvars {
             inner,
             intent,
+            search,
             popup,
+            sort_popup,
+            running_toggle,
             applied_filter: Cell::new(SessionFilter::All),
+            applied_options: Cell::new(options),
         });
         // SAFETY: NSView's initWithFrame: has the expected signature.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -589,6 +754,14 @@ struct SessionCardsInner {
     document: Retained<SessionCardsDocument>,
     empty: Retained<NSTextField>,
     filter: SessionFilter,
+    query: String,
+    query_native: Retained<NSString>,
+    sort: SessionSort,
+    running_first: bool,
+    matched: usize,
+    omitted: usize,
+    options_epoch: u64,
+    rendered_options_epoch: Option<u64>,
     palette: BubblePalette,
     show_status_indicators: bool,
     rendered_show_status_indicators: Option<bool>,
@@ -598,17 +771,22 @@ struct SessionCardsInner {
     selection_epoch: u64,
     selected_target_cache: Option<((Option<u64>, u64, UiLocale), String)>,
     rendered_locale: Option<UiLocale>,
+    controls_locale: Option<UiLocale>,
     rendered_filter: Option<SessionFilter>,
     rendered_selected: Option<SessionKey>,
     reply: Option<ReplySlot>,
     reveal_selection: bool,
+    reset_scroll: bool,
     rows: Vec<Retained<SessionCardView>>,
 }
 
 impl SessionCardsInner {
     fn content_height(&self) -> f64 {
         let document_height = self.rows_height();
-        (OUTER_INSET * 2.0 + SUMMARY_HEIGHT + HEADER_GAP + document_height).min(180.0)
+        OUTER_INSET * 2.0
+            + HEADER_HEIGHT
+            + HEADER_GAP
+            + document_height.min(LIST_VIEWPORT_MAX_HEIGHT)
     }
 
     fn rows_height(&self) -> f64 {
@@ -634,23 +812,35 @@ impl SessionCardsInner {
         let width = size.width.max(1.0);
         let height = size.height.max(1.0);
         let inset = OUTER_INSET.min(width / 2.0).min(height / 2.0);
-        let header_y = (height - inset - SUMMARY_HEIGHT).max(0.0);
+        let header_y = (height - inset - HEADER_HEIGHT).max(0.0);
         let header_width = (width - 2.0 * inset).max(1.0);
-        let popup_width = (header_width * 0.42).clamp(82.0, 154.0).min(header_width);
-        let popup_y = header_y + ((SUMMARY_HEIGHT - HEADER_HEIGHT) / 2.0).max(0.0);
-        let popup_frame = NSRect::new(
-            NSPoint::new(inset, popup_y),
-            objc2_foundation::NSSize::new(popup_width, HEADER_HEIGHT),
-        );
-        self.root.ivars().popup.setFrame(popup_frame);
-
-        let summary_x = (inset + popup_width + HEADER_GAP).min(width - inset);
-        let summary_width = (width - inset - summary_x).max(1.0);
-        self.summary.setFrame(NSRect::new(
-            NSPoint::new(summary_x, header_y),
-            objc2_foundation::NSSize::new(summary_width, SUMMARY_HEIGHT),
+        let search_y = header_y + SUMMARY_HEIGHT + TOOLBAR_GAP + POPUP_HEIGHT + TOOLBAR_GAP;
+        self.root.ivars().search.setFrame(NSRect::new(
+            NSPoint::new(inset, search_y),
+            objc2_foundation::NSSize::new(header_width, SEARCH_HEIGHT),
         ));
-
+        let popup_width = ((header_width - POPUP_GAP) / 2.0).max(1.0);
+        let popup_y = header_y + SUMMARY_HEIGHT + TOOLBAR_GAP;
+        self.root.ivars().popup.setFrame(NSRect::new(
+            NSPoint::new(inset, popup_y),
+            objc2_foundation::NSSize::new(popup_width, POPUP_HEIGHT),
+        ));
+        self.root.ivars().sort_popup.setFrame(NSRect::new(
+            NSPoint::new(inset + popup_width + POPUP_GAP, popup_y),
+            objc2_foundation::NSSize::new(popup_width, POPUP_HEIGHT),
+        ));
+        let toggle_width = 150.0_f64.min(header_width);
+        self.root.ivars().running_toggle.setFrame(NSRect::new(
+            NSPoint::new(inset, header_y + (SUMMARY_HEIGHT - 18.0) / 2.0),
+            objc2_foundation::NSSize::new(toggle_width, 18.0),
+        ));
+        self.summary.setFrame(NSRect::new(
+            NSPoint::new(inset + toggle_width + POPUP_GAP, header_y),
+            objc2_foundation::NSSize::new(
+                (header_width - toggle_width - POPUP_GAP).max(1.0),
+                SUMMARY_HEIGHT,
+            ),
+        ));
         let scroll_y = inset;
         let scroll_height = (header_y - HEADER_GAP - scroll_y).max(1.0);
         let scroll_width = (width - 2.0 * inset).max(1.0);
@@ -749,7 +939,6 @@ impl SessionCardsInner {
             .setTextColor(Some(&palette_color(palette.muted, 1.0)));
         self.empty
             .setTextColor(Some(&palette_color(palette.muted, 1.0)));
-        let popup = &self.root.ivars().popup;
         let (red, green, blue) = palette.surface.rgb();
         let dark = 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.45;
         let appearance_name = unsafe {
@@ -759,8 +948,27 @@ impl SessionCardsInner {
                 NSAppearanceNameAqua
             }
         };
-        popup.setAppearance(NSAppearance::appearanceNamed(appearance_name).as_deref());
-        popup.setContentTintColor(Some(&palette_color(palette.text, 1.0)));
+        let appearance = NSAppearance::appearanceNamed(appearance_name);
+        for popup in [&self.root.ivars().popup, &self.root.ivars().sort_popup] {
+            popup.setAppearance(appearance.as_deref());
+            popup.setContentTintColor(Some(&palette_color(palette.text, 1.0)));
+        }
+        self.root
+            .ivars()
+            .search
+            .setAppearance(appearance.as_deref());
+        self.root
+            .ivars()
+            .running_toggle
+            .setAppearance(appearance.as_deref());
+        self.root
+            .ivars()
+            .running_toggle
+            .setContentTintColor(Some(&palette_color(palette.text, 1.0)));
+        self.root
+            .ivars()
+            .search
+            .setTextColor(Some(&palette_color(palette.text, 1.0)));
         for row in &self.rows {
             row.set_palette(palette);
         }
@@ -774,12 +982,33 @@ impl SessionCardsInner {
 
     fn refresh(&mut self) {
         let scroll_origin = self.scroll.contentView().bounds().origin;
-        let (marked, pending_filter, pending_selection, deferred) = {
-            let intent = self.intent.borrow();
+        let search_marked = self.root.search_marked();
+        let search_value = self.root.ivars().search.stringValue();
+        let (marked, pending_filter, pending_query, pending_selection, deferred) = {
+            let mut intent = self.intent.borrow_mut();
+            if intent.search_composition_active && !search_marked {
+                intent.deferred_refresh = true;
+            }
+            intent.search_composition_active = search_marked;
+            let current = intent
+                .pending_query_native
+                .as_deref()
+                .unwrap_or(&self.query_native);
+            if !native_string_equal(&search_value, current) {
+                intent.pending_query = Some(search_value.to_string());
+                intent.pending_query_native = Some(search_value.clone());
+                intent.deferred_refresh = true;
+            }
+            let composing = intent.composing();
             (
-                intent.composition_active,
+                composing,
                 intent.pending_filter,
-                if intent.composition_active {
+                if composing {
+                    None
+                } else {
+                    intent.pending_query.clone()
+                },
+                if composing {
                     None
                 } else {
                     intent.pending_selection.clone()
@@ -792,48 +1021,68 @@ impl SessionCardsInner {
         } else {
             pending_filter.unwrap_or(self.filter)
         };
-        let (revision, snapshot, all_rows, marked_views, selection_valid) = match self.shared.lock()
-        {
-            Ok(state) => {
-                let revision = state.session_revision();
-                if (marked || !deferred)
-                    && self.last_revision == Some(revision)
-                    && self.rendered_locale == Some(self.locale)
-                    && self.rendered_filter == Some(filter)
-                    && self.rendered_selected == self.selected
-                    && self.rendered_show_status_indicators == Some(self.show_status_indicators)
-                {
-                    drop(state);
-                    if !marked && self.reveal_selection {
-                        self.layout(self.root.frame().size, scroll_origin);
-                        self.reveal_selection = false;
-                    }
-                    return;
-                }
-                let mut snapshot = state.session_snapshot(filter, self.selected.as_ref());
-                let selection_valid = pending_selection
-                    .as_ref()
-                    .is_some_and(|key| selection_visible(&snapshot, key));
-                if !marked && selection_valid {
-                    snapshot.selected = pending_selection.clone();
-                }
-                let marked_views = if marked {
-                    self.rows
-                        .iter()
-                        .filter_map(|row| state.session_view_for_key(row.key()))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let all_rows = if filter != SessionFilter::All {
-                    Some(state.session_snapshot(SessionFilter::All, None).rows)
-                } else {
-                    None
-                };
-                (revision, snapshot, all_rows, marked_views, selection_valid)
-            }
-            Err(_) => return,
+        let query = if marked {
+            &self.query
+        } else {
+            pending_query.as_ref().unwrap_or(&self.query)
         };
+        let (revision, snapshot, marked_views, marked_displays, selection_valid) =
+            match self.shared.lock() {
+                Ok(state) => {
+                    let revision = state.session_revision();
+                    if (marked || !deferred)
+                        && self.last_revision == Some(revision)
+                        && self.rendered_locale == Some(self.locale)
+                        && self.rendered_options_epoch == Some(self.options_epoch)
+                        && self.rendered_filter == Some(filter)
+                        && self.rendered_selected == self.selected
+                        && self.rendered_show_status_indicators == Some(self.show_status_indicators)
+                    {
+                        drop(state);
+                        if !marked && self.reveal_selection {
+                            self.layout(self.root.frame().size, scroll_origin);
+                            self.reveal_selection = false;
+                        }
+                        return;
+                    }
+                    let mut snapshot = state.session_snapshot(
+                        &SessionListOptions {
+                            filter,
+                            query,
+                            sort: self.sort,
+                            running_first: self.running_first,
+                            locale: self.locale,
+                        },
+                        self.selected.as_ref(),
+                    );
+                    let selection_valid = pending_selection
+                        .as_ref()
+                        .is_some_and(|key| selection_visible(&snapshot, key));
+                    if !marked && selection_valid {
+                        snapshot.selected = pending_selection.clone();
+                    }
+                    let (marked_views, marked_displays) = if marked {
+                        let views: Vec<_> = self
+                            .rows
+                            .iter()
+                            .filter_map(|row| state.session_view_for_key(row.key()))
+                            .collect();
+                        let keys: Vec<_> = views.iter().map(|view| &view.key).collect();
+                        let displays = state.session_displays_for_keys(self.locale, &keys);
+                        (views, displays)
+                    } else {
+                        (Vec::new(), Vec::new())
+                    };
+                    (
+                        revision,
+                        snapshot,
+                        marked_views,
+                        marked_displays,
+                        selection_valid,
+                    )
+                }
+                Err(_) => return,
+            };
 
         if marked {
             // Preserve every displayed row's identity and its attached editor;
@@ -841,17 +1090,17 @@ impl SessionCardsInner {
             // Titles are still disambiguated against every session, not just
             // the frozen rows, so they do not shift while composing.
             self.status_summary = snapshot.status_summary;
-            self.update_filter_popup();
+            self.matched = snapshot.matched;
+            self.omitted = snapshot.omitted;
+            self.update_controls();
             self.update_summary(&snapshot, !self.rows.is_empty());
-            let displays = card_displays_against(
-                self.locale,
-                &marked_views,
-                all_rows.as_deref().unwrap_or(&snapshot.rows),
-            );
+            let displays = &marked_displays;
             for row in &self.rows {
                 if let Some(index) = marked_views.iter().position(|view| view.key == *row.key()) {
                     let view = &marked_views[index];
-                    let display = &displays[index];
+                    let Some(display) = displays[index].as_ref() else {
+                        continue;
+                    };
                     row.update(
                         self.locale,
                         view,
@@ -866,15 +1115,19 @@ impl SessionCardsInner {
             self.last_revision = Some(revision);
             self.rendered_locale = Some(self.locale);
             self.rendered_filter = Some(self.filter);
+            self.rendered_options_epoch = Some(self.options_epoch);
             self.rendered_selected = self.selected.clone();
             self.rendered_show_status_indicators = Some(self.show_status_indicators);
             self.intent.borrow_mut().deferred_refresh = true;
             return;
         }
 
+        let conditions_changed = self.filter != filter || self.query != *query;
         {
             let mut intent = self.intent.borrow_mut();
             intent.pending_filter = None;
+            intent.pending_query = None;
+            intent.pending_query_native = None;
             intent.pending_selection = None;
             intent.deferred_refresh = false;
             intent.deferred_selection_applied |=
@@ -882,6 +1135,13 @@ impl SessionCardsInner {
             intent.pending_selection_deferred = false;
         }
         self.filter = filter;
+        if self.query != *query {
+            self.query = pending_query.expect("changed query has a pending search value");
+            self.query_native = search_value;
+        }
+        if conditions_changed {
+            self.options_epoch = self.options_epoch.wrapping_add(1);
+        }
         if self.selected != snapshot.selected {
             self.selection_epoch = self.selection_epoch.saturating_add(1);
         }
@@ -893,45 +1153,75 @@ impl SessionCardsInner {
             self.detach_reply();
         }
         self.status_summary = snapshot.status_summary;
-        self.update_filter_popup();
+        self.matched = snapshot.matched;
+        self.omitted = snapshot.omitted;
+        self.update_controls();
         self.update_summary(&snapshot, !snapshot.rows.is_empty());
-        self.update_rows(&snapshot, all_rows.as_deref().unwrap_or(&snapshot.rows));
+        self.update_rows(&snapshot);
         self.last_revision = Some(revision);
         self.rendered_locale = Some(self.locale);
         self.rendered_filter = Some(self.filter);
+        self.rendered_options_epoch = Some(self.options_epoch);
         self.rendered_show_status_indicators = Some(self.show_status_indicators);
         self.rendered_selected = self.selected.clone();
-        self.layout(self.root.frame().size, scroll_origin);
+        self.layout(
+            self.root.frame().size,
+            if conditions_changed || self.reset_scroll {
+                NSPoint::new(0.0, 0.0)
+            } else {
+                scroll_origin
+            },
+        );
+        self.reset_scroll = false;
         self.reveal_selection = false;
     }
 
-    fn update_filter_popup(&self) {
-        self.root.ivars().applied_filter.set(self.filter);
-        for (index, filter) in SessionFilter::ALL.into_iter().enumerate() {
-            let title = NSString::from_str(filter_label(self.locale, filter));
-            if let Some(item) = self.root.ivars().popup.itemAtIndex(index as isize) {
-                item.setTitle(&title);
+    fn update_controls(&mut self) {
+        if self.controls_locale != Some(self.locale) {
+            for (index, filter) in SessionFilter::ALL.into_iter().enumerate() {
+                if let Some(item) = self.root.ivars().popup.itemAtIndex(index as isize) {
+                    item.setTitle(&NSString::from_str(filter_label(self.locale, filter)));
+                }
             }
+            for (index, sort) in SESSION_SORTS.into_iter().enumerate() {
+                if let Some(item) = self.root.ivars().sort_popup.itemAtIndex(index as isize) {
+                    item.setTitle(&NSString::from_str(sort_label(self.locale, sort)));
+                }
+            }
+            let search_label = NSString::from_str(text(self.locale, Message::SessionSearch));
+            self.root
+                .ivars()
+                .search
+                .setPlaceholderString(Some(&search_label));
+            set_accessibility_label(&self.root.ivars().search, &search_label);
+            set_accessibility_label(
+                &self.root.ivars().popup,
+                &NSString::from_str(text(self.locale, Message::SessionStatusFilter)),
+            );
+            set_accessibility_label(
+                &self.root.ivars().sort_popup,
+                &NSString::from_str(text(self.locale, Message::SessionSortLabel)),
+            );
+            let running_label = NSString::from_str(text(self.locale, Message::SessionRunningFirst));
+            self.root.ivars().running_toggle.setTitle(&running_label);
+            set_accessibility_label(&self.root.ivars().running_toggle, &running_label);
+            self.controls_locale = Some(self.locale);
         }
-        let index = SessionFilter::ALL
-            .iter()
-            .position(|filter| *filter == self.filter)
-            .unwrap_or(0) as isize;
-        let selected_index: isize =
-            unsafe { msg_send![&*self.root.ivars().popup, indexOfSelectedItem] };
-        if selected_index != index {
-            let _: () = unsafe { msg_send![&*self.root.ivars().popup, selectItemAtIndex: index] };
-        }
+        self.root.ivars().applied_filter.set(self.filter);
+        self.root.restore_popup();
+        self.root
+            .ivars()
+            .applied_options
+            .set(SessionListPreferences {
+                sort: self.sort,
+                running_first: self.running_first,
+            });
+        self.root.restore_options();
     }
 
     fn update_summary(&self, snapshot: &SessionSnapshot, visible_rows: bool) {
-        let text = session_summary(
-            self.locale,
-            snapshot.total,
-            snapshot.matched,
-            snapshot.omitted,
-        );
-        self.summary.setStringValue(&NSString::from_str(&text));
+        let summary = session_list_summary(self.locale, snapshot.matched, snapshot.omitted);
+        self.summary.setStringValue(&NSString::from_str(&summary));
 
         let empty_text = session_empty(self.locale, snapshot.total, snapshot.matched);
         self.empty.setStringValue(&NSString::from_str(empty_text));
@@ -1003,9 +1293,8 @@ impl SessionCardsInner {
         old.removeFromSuperview();
     }
 
-    fn update_rows(&mut self, snapshot: &SessionSnapshot, all_rows: &[SessionView]) {
-        let displays = card_displays_against(self.locale, &snapshot.rows, all_rows);
-        for (index, (view, display)) in snapshot.rows.iter().zip(&displays).enumerate() {
+    fn update_rows(&mut self, snapshot: &SessionSnapshot) {
+        for (index, (view, display)) in snapshot.rows.iter().zip(&snapshot.displays).enumerate() {
             let selected = self.selected.as_ref() == Some(&view.key);
             if let Some(row) = self.rows.get(index) {
                 if row.key() == &view.key {
@@ -1076,6 +1365,7 @@ impl SessionCards {
     pub(crate) fn new(
         shared: Arc<Mutex<AppState>>,
         locale: UiLocale,
+        options: SessionListPreferences,
         mtm: MainThreadMarker,
     ) -> Self {
         let default_frame = NSRect::new(
@@ -1086,18 +1376,61 @@ impl SessionCards {
         let intent = Rc::new(RefCell::new(CardsIntent::default()));
         let inner = Rc::new_cyclic(|weak| {
             let popup = make_filter_popup(locale, mtm);
-            let root =
-                SessionCardsRoot::new(default_frame, popup, weak.clone(), Rc::clone(&intent), mtm);
+            let sort_popup = make_sort_popup(locale, mtm);
+            let search: Retained<NSSearchField> = unsafe {
+                msg_send![NSSearchField::alloc(mtm), initWithFrame: NSRect::new(
+                    NSPoint::new(0.0, 0.0), objc2_foundation::NSSize::new(DEFAULT_FRAME_WIDTH, SEARCH_HEIGHT)
+                )]
+            };
+            search.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+            search.setRefusesFirstResponder(false);
+            search.setPlaceholderString(Some(&NSString::from_str(text(
+                locale,
+                Message::SessionSearch,
+            ))));
+            let running_toggle: Retained<NSButton> = unsafe {
+                msg_send![NSButton::alloc(mtm), initWithFrame: NSRect::new(
+                    NSPoint::new(0.0, 0.0), objc2_foundation::NSSize::new(150.0, 18.0)
+                )]
+            };
+            running_toggle.setButtonType(objc2_app_kit::NSButtonType::Switch);
+            running_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+            running_toggle.setRefusesFirstResponder(false);
+            running_toggle.setTitle(&NSString::from_str(text(
+                locale,
+                Message::SessionRunningFirst,
+            )));
+            popup.setRefusesFirstResponder(false);
+            sort_popup.setRefusesFirstResponder(false);
+            let root = SessionCardsRoot::new(
+                default_frame,
+                search,
+                popup,
+                sort_popup,
+                running_toggle,
+                options,
+                weak.clone(),
+                Rc::clone(&intent),
+                mtm,
+            );
             unsafe {
                 let _: () = msg_send![&*root.ivars().popup, setTarget: Some(&*root)];
                 let _: () = msg_send![&*root.ivars().popup, setAction: sel!(filterChanged:)];
+                let _: () = msg_send![&*root.ivars().sort_popup, setTarget: Some(&*root)];
+                let _: () = msg_send![&*root.ivars().sort_popup, setAction: sel!(sortChanged:)];
+                let _: () = msg_send![&*root.ivars().running_toggle, setTarget: Some(&*root)];
+                let _: () =
+                    msg_send![&*root.ivars().running_toggle, setAction: sel!(runningChanged:)];
+                let _: () = msg_send![&*root.ivars().search, setTarget: Some(&*root)];
+                let _: () = msg_send![&*root.ivars().search, setAction: sel!(searchChanged:)];
+                let _: () = msg_send![&*root.ivars().search, setDelegate: Some(&*root)];
             }
-
-            let summary = label(&session_summary(locale, 0, 0, 0), 11.5, mtm);
+            root.restore_options();
+            let summary = label(&session_list_summary(locale, 0, 0), 10.0, mtm);
             summary.setAlignment(NSTextAlignment::Right);
             summary.setTextColor(Some(&palette_color(palette.muted, 1.0)));
 
-            let empty = label(session_empty(locale, 0, 0), 12.0, mtm);
+            let empty = label(session_empty(locale, 0, 0), 11.0, mtm);
             empty.setAlignment(NSTextAlignment::Center);
             empty.setTextColor(Some(&palette_color(palette.muted, 1.0)));
             empty.setHidden(true);
@@ -1136,6 +1469,24 @@ impl SessionCards {
             root.addSubview(&empty);
             root.addSubview(&root.ivars().popup);
             root.addSubview(&summary);
+            root.addSubview(&root.ivars().search);
+            root.addSubview(&root.ivars().sort_popup);
+            root.addSubview(&root.ivars().running_toggle);
+            // The root retains these controls for the lifetime of their unretained links.
+            unsafe {
+                root.ivars()
+                    .search
+                    .setNextKeyView(Some(&root.ivars().popup));
+                root.ivars()
+                    .popup
+                    .setNextKeyView(Some(&root.ivars().sort_popup));
+                root.ivars()
+                    .sort_popup
+                    .setNextKeyView(Some(&root.ivars().running_toggle));
+                root.ivars()
+                    .running_toggle
+                    .setNextKeyView(Some(&root.ivars().search));
+            }
 
             SessionCardsInner {
                 shared,
@@ -1148,6 +1499,14 @@ impl SessionCards {
                 document,
                 empty,
                 filter: SessionFilter::All,
+                query: String::new(),
+                query_native: NSString::from_str(""),
+                sort: options.sort,
+                running_first: options.running_first,
+                matched: 0,
+                omitted: 0,
+                options_epoch: 0,
+                rendered_options_epoch: None,
                 palette,
                 show_status_indicators: true,
                 rendered_show_status_indicators: None,
@@ -1156,11 +1515,13 @@ impl SessionCards {
                 last_revision: None,
                 selection_epoch: 0,
                 selected_target_cache: None,
+                controls_locale: None,
                 rendered_locale: None,
                 rendered_filter: None,
                 rendered_selected: None,
                 reply: None,
                 reveal_selection: false,
+                reset_scroll: false,
                 rows: Vec::new(),
             }
             .into()
@@ -1179,9 +1540,14 @@ impl SessionCards {
     pub(crate) fn view(&self) -> &NSView {
         &self.root
     }
-    pub(crate) fn selection_stamp(&self) -> (Option<u64>, u64, UiLocale) {
+    pub(crate) fn selection_stamp(&self) -> (Option<u64>, u64, UiLocale, u64) {
         let inner = self.inner.borrow();
-        (inner.last_revision, inner.selection_epoch, inner.locale)
+        (
+            inner.last_revision,
+            inner.selection_epoch,
+            inner.locale,
+            inner.options_epoch,
+        )
     }
 
     pub(crate) fn selected_target(&self) -> Option<(SessionKey, String)> {
@@ -1196,29 +1562,28 @@ impl SessionCards {
             }
             (Arc::clone(&inner.shared), key.clone(), inner.locale, stamp)
         };
-        let snapshot = {
+        let title = {
             let state = shared.lock().ok()?;
-            let snapshot = state.session_snapshot(SessionFilter::All, Some(&key));
-            if snapshot.selected.as_ref() != Some(&key) {
-                return None;
-            }
-            snapshot
+            state.session_display_for_key(locale, &key)?.title
         };
-        let title = snapshot
-            .rows
-            .iter()
-            .position(|row| row.key == key)
-            .and_then(|index| {
-                card_displays(locale, &snapshot.rows)
-                    .get(index)
-                    .map(|display| display.title.clone())
-            })
-            .unwrap_or_else(|| key.terminal_id.clone());
         let mut inner = self.inner.borrow_mut();
         if (inner.last_revision, inner.selection_epoch, inner.locale) == stamp {
             inner.selected_target_cache = Some((stamp, title.clone()));
         }
         Some((key, title))
+    }
+    pub(crate) fn visible_selected_target(&self) -> Option<(SessionKey, String)> {
+        {
+            let inner = self.inner.borrow();
+            if !inner
+                .rows
+                .iter()
+                .any(|row| Some(row.key()) == inner.selected.as_ref())
+            {
+                return None;
+            }
+        }
+        self.selected_target()
     }
 
     pub(crate) fn set_frame(&self, frame: NSRect) {
@@ -1230,10 +1595,78 @@ impl SessionCards {
     }
     pub(crate) fn set_composition_active(&self, active: bool) {
         let mut intent = self.intent.borrow_mut();
-        if intent.composition_active && !active {
+        if intent.reply_composition_active && !active {
             intent.deferred_refresh = true;
         }
-        intent.composition_active = active;
+        intent.reply_composition_active = active;
+    }
+
+    pub(crate) fn sync_search_composition(&self) {
+        let marked = self.root.search_marked();
+        let mut intent = self.intent.borrow_mut();
+        if intent.search_composition_active && !marked {
+            intent.deferred_refresh = true;
+        }
+        intent.search_composition_active = marked;
+    }
+
+    pub(crate) fn is_composing(&self) -> bool {
+        self.intent.borrow().composing()
+    }
+
+    pub(crate) fn search_has_focus(&self) -> bool {
+        let editor: Option<&AnyObject> =
+            unsafe { msg_send![&*self.root.ivars().search, currentEditor] };
+        let responder = self
+            .root
+            .window()
+            .and_then(|window| window.firstResponder());
+        editor.zip(responder).is_some_and(|(editor, responder)| {
+            (editor as *const AnyObject).cast::<()>() == Retained::as_ptr(&responder).cast::<()>()
+        })
+    }
+
+    pub(crate) fn search_editor(&self) -> Option<&AnyObject> {
+        if !self.search_has_focus() {
+            return None;
+        }
+        unsafe { msg_send![&*self.root.ivars().search, currentEditor] }
+    }
+
+    pub(crate) fn search_escape(&self) {
+        self.root.search_escape();
+    }
+
+    pub(crate) fn pending_options(&self) -> Option<SessionListPreferences> {
+        let intent = self.intent.borrow();
+        let inner = self.inner.borrow();
+        intent.pending_preferences(SessionListPreferences {
+            sort: inner.sort,
+            running_first: inner.running_first,
+        })
+    }
+
+    pub(crate) fn commit_options(&self, options: SessionListPreferences) {
+        let mut inner = self.inner.borrow_mut();
+        {
+            let mut intent = self.intent.borrow_mut();
+            intent.clear_pending_preferences();
+            intent.deferred_refresh = true;
+        }
+        if inner.sort != options.sort || inner.running_first != options.running_first {
+            inner.sort = options.sort;
+            inner.running_first = options.running_first;
+            inner.options_epoch = inner.options_epoch.wrapping_add(1);
+            inner.reset_scroll = true;
+            inner.reveal_selection = false;
+        }
+    }
+
+    pub(crate) fn reject_options(&self) {
+        let mut intent = self.intent.borrow_mut();
+        intent.clear_pending_preferences();
+        drop(intent);
+        self.root.restore_options();
     }
 
     pub(crate) fn has_deferred_refresh(&self) -> bool {
@@ -1267,21 +1700,20 @@ impl SessionCards {
         self.inner.borrow().content_height()
     }
     pub(crate) fn attach_reply(&self, key: &SessionKey, view: &NSView, height: f64) -> bool {
-        let mut inner = self.inner.borrow_mut();
-        if self.intent.borrow().composition_active
-            && !inner
+        if self.intent.borrow().composing() {
+            self.intent.borrow_mut().deferred_refresh = true;
+            return self
+                .inner
+                .borrow()
                 .reply
                 .as_ref()
-                .is_some_and(|reply| reply.key == *key && std::ptr::eq(&*reply.view, view))
-        {
-            self.intent.borrow_mut().deferred_refresh = true;
-            return false;
+                .is_some_and(|reply| reply.key == *key && std::ptr::eq(&*reply.view, view));
         }
-        inner.attach_reply(key, view, height)
+        self.inner.borrow_mut().attach_reply(key, view, height)
     }
 
     pub(crate) fn detach_reply(&self) {
-        if self.intent.borrow().composition_active {
+        if self.intent.borrow().composing() {
             self.intent.borrow_mut().deferred_refresh = true;
             return;
         }
@@ -1328,7 +1760,7 @@ fn make_filter_popup(locale: UiLocale, mtm: MainThreadMarker) -> Retained<NSPopU
             NSPopUpButton::alloc(mtm),
             initWithFrame: NSRect::new(
                 NSPoint::new(0.0, 0.0),
-                objc2_foundation::NSSize::new(140.0, HEADER_HEIGHT),
+                objc2_foundation::NSSize::new(140.0, POPUP_HEIGHT),
             ),
             pullsDown: false
         ]
@@ -1345,6 +1777,42 @@ fn make_filter_popup(locale: UiLocale, mtm: MainThreadMarker) -> Retained<NSPopU
     }
     let _: () = unsafe { msg_send![&*popup, selectItemAtIndex: 0isize] };
     popup
+}
+
+fn make_sort_popup(locale: UiLocale, mtm: MainThreadMarker) -> Retained<NSPopUpButton> {
+    let popup: Retained<NSPopUpButton> = unsafe {
+        msg_send![
+            NSPopUpButton::alloc(mtm),
+            initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                objc2_foundation::NSSize::new(140.0, POPUP_HEIGHT),
+            ),
+            pullsDown: false
+        ]
+    };
+    popup.setControlSize(NSControlSize::Small);
+    popup.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    for sort in SESSION_SORTS {
+        let _: () = unsafe {
+            msg_send![&*popup, addItemWithTitle: &*NSString::from_str(sort_label(locale, sort))]
+        };
+    }
+    popup
+}
+
+fn sort_label(locale: UiLocale, sort: SessionSort) -> &'static str {
+    text(
+        locale,
+        match sort {
+            SessionSort::Stable => Message::SessionSortStable,
+            SessionSort::TitleAsc => Message::SessionSortName,
+            SessionSort::SourceAsc => Message::SessionSortSource,
+        },
+    )
+}
+
+fn native_string_equal(a: &NSString, b: &NSString) -> bool {
+    a.isEqualToString(b)
 }
 
 fn filter_label(locale: UiLocale, filter: SessionFilter) -> &'static str {
@@ -1440,229 +1908,6 @@ fn row_text_frame(size: objc2_foundation::NSSize, y: f64) -> NSRect {
             ROW_TEXT_HEIGHT.min(size.height.max(1.0)),
         ),
     )
-}
-
-struct CardDisplay {
-    title: String,
-    context: String,
-    directory_fallback: bool,
-    directory_context: bool,
-}
-
-fn display_value(value: Option<&str>) -> Option<String> {
-    let value = value?;
-    let mut result = String::with_capacity(value.len());
-    let mut space = false;
-    for character in value.chars() {
-        if character.is_whitespace() {
-            space = !result.is_empty();
-        } else if !unsafe_identifier_char(character) {
-            if space {
-                result.push(' ');
-                space = false;
-            }
-            result.push(character);
-        }
-    }
-    (!result.is_empty()).then_some(result)
-}
-
-fn meaningful_title(value: Option<&str>) -> Option<String> {
-    let title = display_value(value)?;
-    if [
-        "omp",
-        "claude",
-        "claude code",
-        "codex",
-        "openai codex",
-        "terminal",
-        "shell",
-        "bash",
-        "zsh",
-        "fish",
-        "sh",
-        "nu",
-        "pwsh",
-        "powershell",
-    ]
-    .iter()
-    .any(|generic| title.eq_ignore_ascii_case(generic))
-    {
-        return None;
-    }
-    Some(title)
-}
-
-fn tab_location(locale: UiLocale, view: &SessionView) -> String {
-    match display_value(view.metadata.tab_label.as_deref()) {
-        Some(label) if label.chars().all(|c| c.is_ascii_digit()) => {
-            format!("{} {label}", text(locale, Message::Tab))
-        }
-        Some(label) => label,
-        None => text(locale, Message::UnnamedTab).to_owned(),
-    }
-}
-
-fn directory_suffix(path: &str, components: usize) -> String {
-    let parts: Vec<_> = path.split('/').filter(|part| !part.is_empty()).collect();
-    if parts.is_empty() {
-        return String::new();
-    }
-    parts[parts.len().saturating_sub(components)..].join("/")
-}
-
-fn card_source_label<'a>(locale: UiLocale, view: &'a SessionView) -> Cow<'a, str> {
-    if view.is_local {
-        Cow::Borrowed(session_local_source(locale))
-    } else {
-        display_value(Some(&view.source_label))
-            .map(Cow::Owned)
-            .unwrap_or_else(|| Cow::Owned(format!("#{}", view.key.source_id)))
-    }
-}
-
-/// Card displays for `rows` (in order), disambiguated against every session
-/// (`all_rows`, the unfiltered snapshot) rather than only the rows on screen,
-/// so titles stay stable across filters and while IME composition freezes rows.
-fn card_displays_against(
-    locale: UiLocale,
-    rows: &[SessionView],
-    all_rows: &[SessionView],
-) -> Vec<CardDisplay> {
-    let mut shared: Vec<Option<CardDisplay>> = card_displays(locale, all_rows)
-        .into_iter()
-        .map(Some)
-        .collect();
-    rows.iter()
-        .map(|view| {
-            all_rows
-                .iter()
-                .position(|row| row.key == view.key)
-                .and_then(|position| shared[position].take())
-                // An unfiltered snapshot is capped; filtered rows past that cap remain readable.
-                .unwrap_or_else(|| card_displays(locale, std::slice::from_ref(view)).remove(0))
-        })
-        .collect()
-}
-
-fn card_displays(locale: UiLocale, rows: &[SessionView]) -> Vec<CardDisplay> {
-    let cwd_paths: Vec<_> = rows
-        .iter()
-        .map(|view| display_value(view.metadata.cwd.as_deref()))
-        .collect();
-    let mut displays: Vec<_> = rows
-        .iter()
-        .enumerate()
-        .map(|(index, view)| {
-            let workspace = display_value(view.metadata.workspace_label.as_deref());
-            let agent = display_value(view.metadata.agent.as_deref());
-            let cwd = cwd_paths[index].as_deref();
-            let directory = cwd
-                .map(|path| directory_suffix(path, 1))
-                .filter(|name| !name.is_empty());
-            let tab = tab_location(locale, view);
-            let title = meaningful_title(view.metadata.title.as_deref()).or_else(|| {
-                meaningful_title(view.metadata.tab_label.as_deref())
-                    .filter(|label| !label.chars().all(|c| c.is_ascii_digit()))
-            });
-            let directory_context = workspace.is_none() && directory.is_some();
-            let directory_fallback = title.is_none() && directory_context;
-            let title = title.unwrap_or_else(|| {
-                workspace
-                    .clone()
-                    .or(directory.clone())
-                    .map(|base| format!("{base} · {tab}"))
-                    .unwrap_or_else(|| text(locale, Message::UnnamedSession).to_owned())
-            });
-            let context = [workspace.or(directory), Some(tab), agent]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join(" · ");
-            CardDisplay {
-                title,
-                context,
-                directory_fallback,
-                directory_context,
-            }
-        })
-        .collect();
-
-    // Compare original basenames before changing either display, so both
-    // sides of a directory collision acquire sufficient parent context.
-    let original: Vec<_> = displays
-        .iter()
-        .map(|display| (display.title.clone(), display.context.clone()))
-        .collect();
-    for i in 0..rows.len() {
-        if !displays[i].directory_context {
-            continue;
-        }
-        let Some(path) = cwd_paths[i].as_deref() else {
-            continue;
-        };
-        let peers: Vec<_> = (0..rows.len())
-            .filter(|&j| j != i && original[j] == original[i] && displays[j].directory_context)
-            .collect();
-        if peers.is_empty() {
-            continue;
-        }
-        let mut count = 1;
-        while peers.iter().any(|&j| {
-            cwd_paths[j].as_deref().is_some_and(|other| {
-                directory_suffix(other, count) == directory_suffix(path, count)
-            })
-        }) {
-            count += 1;
-            if directory_suffix(path, count) == directory_suffix(path, count - 1) {
-                break;
-            }
-        }
-        let directory = directory_suffix(path, count);
-        if displays[i].directory_fallback {
-            displays[i].title = format!("{directory} · {}", tab_location(locale, &rows[i]));
-        }
-        let basename = directory_suffix(path, 1);
-        if let Some(rest) = displays[i].context.strip_prefix(&basename) {
-            displays[i].context = format!("{directory}{rest}");
-        }
-    }
-    let collision_names: Vec<_> = displays
-        .iter()
-        .map(|display| (display.title.clone(), display.context.clone()))
-        .collect();
-    // Compare against every row (not just the current filter). IDs stay off
-    // ordinary cards; only indistinguishable title/context pairs need one.
-    // Put the marker first in the muted context: long titles and contexts
-    // truncate at their tails, which must never hide the distinction.
-    for i in 0..rows.len() {
-        let collisions: Vec<_> = (0..rows.len())
-            .filter(|&j| j != i && collision_names[j] == collision_names[i])
-            .collect();
-        // Labels are presentation only; equality above uses original title
-        // and context so shared or renamed machine names cannot hide a clash.
-        let label = card_source_label(locale, &rows[i]);
-        if collision_names[i].0 == text(locale, Message::UnnamedSession) || !collisions.is_empty() {
-            let source = rows[i].key.source_id;
-            let same_source = collisions.iter().any(|&j| rows[j].key.source_id == source);
-            let discriminator = if same_source {
-                // A compact rank stays visible even when terminal IDs share
-                // an arbitrarily long prefix; sort by stable session key, not
-                // current row order or filter position.
-                let rank = 1 + collisions
-                    .iter()
-                    .filter(|&&j| rows[j].key.source_id == source && rows[j].key < rows[i].key)
-                    .count();
-                format!("#{source} · {rank}")
-            } else {
-                format!("#{source}")
-            };
-            displays[i].context = format!("({discriminator}) · {label} · {}", displays[i].context);
-        } else {
-            displays[i].context = format!("{label} · {}", displays[i].context);
-        }
-    }
-    displays
 }
 
 struct CardAccessibilityDetails {
@@ -1783,25 +2028,11 @@ fn localized_status(locale: UiLocale, status: AgentStatus) -> &'static str {
     session_status_label(locale, status)
 }
 
-fn unsafe_identifier_char(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            '\u{00AD}'
-                | '\u{061C}'
-                | '\u{200B}'
-                | '\u{200E}'..='\u{200F}'
-                | '\u{2028}'..='\u{202E}'
-                | '\u{2060}'..='\u{206F}'
-                | '\u{FEFF}'
-                | '\u{FFF9}'..='\u{FFFB}'
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::herdr_protocol::SessionMetadata;
+    use crate::session_view::card_displays;
 
     #[test]
     fn reply_slot_shifts_only_following_rows_and_extends_scroll_tail() {
@@ -1862,6 +2093,7 @@ mod tests {
             omitted: 0,
             status_summary: SessionStatusSummary::default(),
             rows,
+            displays: Vec::new(),
             selected,
         };
         let mut intent = CardsIntent::default();
@@ -1885,6 +2117,39 @@ mod tests {
             &old.key
         ));
         assert!(!selection_visible(&snapshot(vec![other], None), &old.key));
+    }
+
+    #[test]
+    fn search_and_reply_ime_hold_the_last_toolbar_intent_until_both_end() {
+        let applied = SessionListPreferences::default();
+        let mut intent = CardsIntent::default();
+        intent.search_composition_active = true;
+        intent.reply_composition_active = true;
+        intent.pending_filter = Some(SessionFilter::Offline);
+        intent.pending_query = Some("first".into());
+        intent.pending_query = Some("latest".into());
+        intent.pending_sort = Some(SessionSort::TitleAsc);
+        intent.pending_sort = Some(SessionSort::SourceAsc);
+        intent.pending_running_first = Some(true);
+        assert!(intent.composing());
+        assert_eq!(intent.pending_query.as_deref(), Some("latest"));
+        assert_eq!(intent.pending_filter, Some(SessionFilter::Offline));
+        assert_eq!(
+            intent.pending_preferences(applied),
+            Some(SessionListPreferences {
+                sort: SessionSort::SourceAsc,
+                running_first: true,
+            })
+        );
+
+        intent.reply_composition_active = false;
+        assert!(intent.composing());
+        intent.search_composition_active = false;
+        assert!(!intent.composing());
+        intent.clear_pending_preferences();
+        assert_eq!(intent.pending_preferences(applied), None);
+        assert_eq!(intent.pending_filter, Some(SessionFilter::Offline));
+        assert_eq!(intent.pending_query.as_deref(), Some("latest"));
     }
 
     #[test]
@@ -2032,35 +2297,6 @@ mod tests {
         assert_eq!(cards[0].title, "alpha/src · Tab 1");
         assert_eq!(cards[1].title, "beta/src · Tab 1");
         assert!(!cards[0].title.contains("/alpha/"));
-    }
-
-    #[test]
-    fn filtered_and_composing_cards_disambiguate_against_every_session() {
-        let all = [
-            row(1, "abc", Some("Refactor"), Some("1"), Some("Idea"), None),
-            row(1, "abd", Some("Refactor"), Some("1"), Some("Idea"), None),
-            row(2, "a", None, Some("1"), None, Some("/alpha/src")),
-            row(3, "b", None, Some("1"), None, Some("/beta/src")),
-        ];
-        let extra = row(4, "late", None, Some("2"), None, Some("/gamma/src"));
-        let displayed = [all[2].clone(), all[0].clone(), extra.clone()];
-        let full = card_displays(UiLocale::En, &all);
-        let visible_only = card_displays(UiLocale::En, &displayed);
-        let cards = card_displays_against(UiLocale::En, &displayed, &all);
-
-        assert_eq!(cards.len(), displayed.len());
-        assert_eq!(visible_only[0].title, "src · Tab 1");
-        assert_eq!(cards[0].title, "alpha/src · Tab 1");
-        assert_eq!(cards[0].title, full[2].title);
-        assert_eq!(cards[0].context, full[2].context);
-        assert!(!visible_only[1].context.starts_with("(#"));
-        assert!(cards[1].context.starts_with("(#1 · 1) · "));
-        assert_eq!(cards[1].title, full[0].title);
-        assert_eq!(cards[1].context, full[0].context);
-        let fallback = card_displays(UiLocale::En, std::slice::from_ref(&extra)).remove(0);
-        assert_eq!(cards[2].title, fallback.title);
-        assert_eq!(cards[2].context, fallback.context);
-        assert_eq!(cards[2].title, "src · Tab 2");
     }
 
     #[test]

@@ -1755,6 +1755,7 @@ fn wake_ui() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_view::SessionListOptions;
 
     #[test]
     fn disconnected_prompt_worker_returns_matching_uncertainty_once_without_copying_text() {
@@ -2306,7 +2307,9 @@ mod tests {
         {
             let mut state = shared.lock().unwrap();
             assert_eq!(state.scene().unknown, 1);
-            let rows = state.session_snapshot(SessionFilter::All, None).rows;
+            let rows = state
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows;
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].availability, Availability::Offline);
             assert!(state.take_completions().is_empty());
@@ -2321,7 +2324,10 @@ mod tests {
         assert_eq!(state.take_completions().len(), 1);
         assert_eq!(state.scene().done, 1);
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None).rows[0].availability,
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .rows[0]
+                .availability,
             Availability::Live
         );
     }
@@ -2378,7 +2384,9 @@ mod tests {
             let mut state = shared.lock().unwrap();
             assert_eq!(state.scene().working, 1);
             assert_eq!(state.scene().done, 0);
-            let rows = state.session_snapshot(SessionFilter::All, None).rows;
+            let rows = state
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows;
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].status, AgentStatus::Working);
             assert_eq!(rows[0].key.generation, 11);
@@ -2671,7 +2679,8 @@ mod tests {
             endpoint.publish_snapshot(&shared, &[], Instant::now());
             let accepted_revision = {
                 let mut state = shared.lock().unwrap();
-                let view = state.session_snapshot(SessionFilter::All, None);
+                let view = state
+                    .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
                 assert_eq!(view.rows[0].display_status(), DisplayStatus::Succeeded);
                 assert_eq!(view.status_summary.status, DisplayStatus::Succeeded);
                 assert_eq!(state.take_outcomes().len(), 1);
@@ -2692,7 +2701,10 @@ mod tests {
             endpoint.publish_snapshot(&shared, &[], Instant::now());
             let revoked_revision = {
                 let mut state = shared.lock().unwrap();
-                let view = state.session_snapshot(SessionFilter::Completed, None);
+                let view = state.session_snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Completed),
+                    None,
+                );
                 assert!(view.revision > accepted_revision);
                 assert_eq!(view.rows.len(), if duplicate_terminal { 1 } else { 2 });
                 assert!(view.rows.iter().all(|row| row.outcome.is_none()));
@@ -2711,7 +2723,10 @@ mod tests {
             endpoint.publish_snapshot(&shared, &[], Instant::now());
             {
                 let mut state = shared.lock().unwrap();
-                let view = state.session_snapshot(SessionFilter::Working, None);
+                let view = state.session_snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Working),
+                    None,
+                );
                 assert!(view.rows.is_empty());
                 assert_eq!(view.status_summary.status, DisplayStatus::Completed);
                 assert_eq!(view.status_summary.total, 1);
@@ -2728,7 +2743,8 @@ mod tests {
             ));
             endpoint.publish_snapshot(&shared, &[], Instant::now());
             let mut state = shared.lock().unwrap();
-            let view = state.session_snapshot(SessionFilter::All, None);
+            let view =
+                state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
             assert_eq!(view.rows[0].display_status(), DisplayStatus::Succeeded);
             assert_eq!(view.status_summary.status, DisplayStatus::Succeeded);
             assert_eq!(state.take_outcomes().len(), 1);
@@ -2773,7 +2789,10 @@ mod tests {
                 publish(&mut endpoint);
                 let accepted = {
                     let mut state = shared.lock().unwrap();
-                    let view = state.session_snapshot(SessionFilter::All, None);
+                    let view = state.session_snapshot(
+                        &SessionListOptions::with_filter(SessionFilter::All),
+                        None,
+                    );
                     assert_eq!(view.status_summary.status, DisplayStatus::Succeeded);
                     assert_eq!(state.take_outcomes().len(), 1);
                     view.revision
@@ -2791,7 +2810,10 @@ mod tests {
                 publish(&mut endpoint);
                 let revoked = {
                     let mut state = shared.lock().unwrap();
-                    let view = state.session_snapshot(SessionFilter::All, None);
+                    let view = state.session_snapshot(
+                        &SessionListOptions::with_filter(SessionFilter::All),
+                        None,
+                    );
                     assert!(view.revision > accepted);
                     assert!(view.rows.iter().all(|row| row.outcome.is_none()));
                     assert_eq!(view.status_summary.status, DisplayStatus::Completed);
@@ -2805,7 +2827,10 @@ mod tests {
                 publish(&mut endpoint);
                 {
                     let mut state = shared.lock().unwrap();
-                    let view = state.session_snapshot(SessionFilter::All, None);
+                    let view = state.session_snapshot(
+                        &SessionListOptions::with_filter(SessionFilter::All),
+                        None,
+                    );
                     assert_eq!(view.status_summary.status, DisplayStatus::Completed);
                     assert!(view.rows.iter().all(|row| row.outcome.is_none()));
                     assert!(state.take_outcomes().is_empty());
@@ -2826,7 +2851,7 @@ mod tests {
                 assert_eq!(state.take_outcomes().len(), 1);
                 assert_eq!(
                     state
-                        .session_snapshot(SessionFilter::All, None)
+                        .session_snapshot(&SessionListOptions::default(), None)
                         .status_summary
                         .status,
                     DisplayStatus::Succeeded
@@ -2880,7 +2905,8 @@ mod tests {
             publish(&mut endpoint);
             {
                 let mut state = shared.lock().unwrap();
-                let view = state.session_snapshot(SessionFilter::All, None);
+                let view = state
+                    .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
                 assert_eq!(
                     view.status_summary.status,
                     if first_is_running {
@@ -2907,7 +2933,8 @@ mod tests {
             publish(&mut endpoint);
             let mut state = shared.lock().unwrap();
             assert!(state.take_outcomes().is_empty());
-            let view = state.session_snapshot(SessionFilter::All, None);
+            let view =
+                state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
             assert!(view.rows.iter().all(|row| row.outcome.is_none()));
             assert_eq!(view.status_summary.status, DisplayStatus::Completed);
         }

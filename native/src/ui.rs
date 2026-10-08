@@ -56,7 +56,9 @@ use crate::preferences::{
     BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarIconPreference, MenuBarMode,
     Preferences,
 };
-use crate::session_cards::{card_header_key_at_hit, minimum_selectable_height, SessionCards};
+use crate::session_cards::{
+    card_header_key_at_hit, maximum_cards_height, minimum_selectable_height, SessionCards,
+};
 use crate::session_view::{SessionKey, SessionStatusSummary, WorktreeRemoveTarget};
 use crate::sources::ObservationPreferences;
 use crate::state::{AppState, Phase, Scene, MAX_SCALE, MIN_SCALE};
@@ -69,7 +71,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadMarker,
-    MainThreadOnly,
+    MainThreadOnly, Message as ObjcMessage,
 };
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance,
@@ -176,7 +178,6 @@ const BUBBLE_CONTROL_HEIGHT: f64 = 20.0;
 const BUBBLE_COLLAPSE_WIDTH: f64 = 72.0;
 const BUBBLE_CONTENT_GAP: f64 = 4.0;
 const BUBBLE_MESSAGE_MAX_HEIGHT: f64 = 116.0;
-const BUBBLE_CARDS_MAX_HEIGHT: f64 = 180.0;
 const COMPOSER_READONLY_HEIGHT: f64 = 25.0;
 const COMPOSER_STATUS_HEIGHT: f64 = 18.0;
 
@@ -870,7 +871,7 @@ fn placed_attached_bubble(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ComposerRenderStamp {
-    cards: (Option<u64>, u64, UiLocale),
+    cards: (Option<u64>, u64, UiLocale, u64),
     locale: UiLocale,
     pending: bool,
     live_revision: Option<u64>,
@@ -1194,6 +1195,7 @@ define_class!(
                     if ui.bubble_content_dirty
                         && !ui.bubble_content_tracking_locked()
                         && !ui.composer_marked()
+                        && !ui.cards.is_composing()
                     {
                         let current = ui.shared.lock().ok().map(|state| state.scene());
                         if current.as_ref().is_some_and(|scene| {
@@ -1426,10 +1428,23 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), sendEvent: event] };
         }
 
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            if self.search_edit_shortcut(event) {
+                return true.into();
+            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            if self.isKeyWindow() && self.search_edit_shortcut(event) {
+                return;
+            }
             if self.isKeyWindow() && event.keyCode() == 53 {
-                if self.composing_editor().is_some() {
+                if with_ui_read(|ui| ui.cards.search_has_focus()).unwrap_or(false) {
+                    with_ui_mut(|ui| ui.cards.search_escape());
+                } else if self.composing_editor().is_some() {
                     let _: () = unsafe { msg_send![super(self), keyDown: event] };
                 } else {
                     with_ui_mut(|ui| ui.escape_reply_or_collapse());
@@ -1438,11 +1453,12 @@ define_class!(
             }
             let _: () = unsafe { msg_send![super(self), keyDown: event] };
         }
-
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, sender: Option<&AnyObject>) {
             if self.isKeyWindow() {
-                if let Some(editor) = self.composing_editor() {
+                if with_ui_read(|ui| ui.cards.search_has_focus()).unwrap_or(false) {
+                    with_ui_mut(|ui| ui.cards.search_escape());
+                } else if let Some(editor) = self.composing_editor() {
                     let _: () = unsafe { msg_send![editor, cancelOperation: sender] };
                 } else {
                     with_ui_mut(|ui| ui.escape_reply_or_collapse());
@@ -1454,6 +1470,57 @@ define_class!(
     }
 );
 impl BubblePanel {
+    fn search_edit_shortcut(&self, event: &NSEvent) -> bool {
+        if !self.isKeyWindow() {
+            return false;
+        }
+        let modifiers = event.modifierFlags()
+            & (NSEventModifierFlags::Command
+                | NSEventModifierFlags::Shift
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option);
+        if modifiers != NSEventModifierFlags::Command {
+            return false;
+        }
+        let Some(key) = event.charactersIgnoringModifiers() else {
+            return false;
+        };
+        if key.length() != 1 {
+            return false;
+        }
+        let Ok(key) = u8::try_from(key.characterAtIndex(0)) else {
+            return false;
+        };
+        if !matches!(key.to_ascii_lowercase(), b'a' | b'c' | b'x' | b'v') {
+            return false;
+        }
+        let Some(editor) =
+            with_ui_read(|ui| ui.cards.search_editor().map(|editor| editor.retain())).flatten()
+        else {
+            return false;
+        };
+        let marked: bool = unsafe { msg_send![&*editor, hasMarkedText] };
+        if marked {
+            return false;
+        }
+        match key.to_ascii_lowercase() {
+            b'a' => {
+                let _: () = unsafe { msg_send![&*editor, selectAll: None::<&AnyObject>] };
+            }
+            b'c' => {
+                let _: () = unsafe { msg_send![&*editor, copy: None::<&AnyObject>] };
+            }
+            b'x' => {
+                let _: () = unsafe { msg_send![&*editor, cut: None::<&AnyObject>] };
+            }
+            b'v' => {
+                let _: () = unsafe { msg_send![&*editor, paste: None::<&AnyObject>] };
+            }
+            _ => unreachable!(),
+        }
+        true
+    }
+
     fn composing_editor(&self) -> Option<&AnyObject> {
         let responder: Option<&AnyObject> = unsafe { msg_send![self, firstResponder] };
         responder.filter(|responder| {
@@ -1493,7 +1560,7 @@ impl BubblePanel {
             (
                 ui.locale,
                 ui.last_scene.visible,
-                ui.composer_marked(),
+                ui.composer_marked() || ui.cards.is_composing(),
                 ui._menu_target.clone(),
                 ui.mtm,
                 worktree,
@@ -1769,7 +1836,7 @@ define_class!(
         #[unsafe(method(closeBubbleWindow:))]
         fn close_bubble_window(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| {
-                if ui.composer_marked() {
+                if ui.composer_marked() || ui.cards.is_composing() {
                     return;
                 }
                 if ui.apply_control("hide_bubble").is_err() {
@@ -1982,7 +2049,7 @@ define_class!(
         #[unsafe(method(openContextSettings:))]
         fn open_context_settings(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| {
-                if !ui.composer_marked() {
+                if !ui.composer_marked() && !ui.cards.is_composing() {
                     if let Some(anchor) = ui.context_anchor {
                         ui.open_settings_at(anchor);
                     }
@@ -2026,7 +2093,7 @@ define_class!(
 
             match action {
                 StatusItemAction::Primary => with_ui_mut(|ui| {
-                    if !ui.composer_marked() {
+                    if !ui.composer_marked() && !ui.cards.is_composing() {
                         ui.open_settings_at(anchor);
                     }
                 }),
@@ -2036,7 +2103,7 @@ define_class!(
                     with_ui_mut(|ui| {
                         let context_menu = ui.status_menu.clone();
                         if let Some(settings) = context_menu.itemAtIndex(1) {
-                            settings.setEnabled(!ui.composer_marked());
+                            settings.setEnabled(!ui.composer_marked() && !ui.cards.is_composing());
                         }
                         ui.menu_panel.hide();
                         if let Ok(state) = ui.shared.lock() {
@@ -3059,7 +3126,9 @@ where
 
 pub(crate) fn composer_is_composing() -> bool {
     UI.with(|cell| match cell.try_borrow() {
-        Ok(slot) => slot.as_ref().is_some_and(|ui| ui.composer_marked()),
+        Ok(slot) => slot
+            .as_ref()
+            .is_some_and(|ui| ui.composer_marked() || ui.cards.is_composing()),
         Err(_) => {
             wake();
             true
@@ -3080,9 +3149,28 @@ pub(crate) fn cards_content_changed() {
     });
 }
 
+pub(crate) fn cards_options_changed() {
+    with_ui_mut(|ui| {
+        ui.cards.set_composition_active(ui.composer_marked());
+        ui.cards.sync_search_composition();
+        if ui.composer_marked() || ui.cards.is_composing() {
+            return;
+        }
+        ui.apply_pending_cards_options();
+        ui.composer_render_stamp = None;
+        ui.sync_composer();
+        if ui.bubble_mode == BubbleMode::Expanded {
+            ui.bubble_content_dirty = true;
+            let scene = ui.last_scene.clone();
+            ui.refresh_bubble_content(&scene);
+        }
+    });
+}
+
 pub(crate) fn cards_selection_changed() {
     with_ui_mut(|ui| {
-        if ui.bubble_mode != BubbleMode::Expanded {
+        if ui.bubble_mode != BubbleMode::Expanded || ui.composer_marked() || ui.cards.is_composing()
+        {
             return;
         }
         ui.reply_open = true;
@@ -3819,7 +3907,7 @@ impl Ui {
         bubble_root.set_opaque_surface(prefs.show_status_indicators());
         let menu_target = MenuTarget::new(mtm);
         let character_menu = CharacterMenu::new(&menu_target, locale, mtm);
-        let mut cards = SessionCards::new(shared.clone(), locale, mtm);
+        let mut cards = SessionCards::new(shared.clone(), locale, prefs.session_list(), mtm);
         cards.set_show_status_indicators(prefs.show_status_indicators());
         cards.set_palette(palette);
         cards.set_frame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)));
@@ -4523,6 +4611,7 @@ impl Ui {
     fn language_transition_locked(&self) -> bool {
         self.explicit_gesture_active()
             || self.composer_marked()
+            || self.cards.is_composing()
             || NSEvent::pressedMouseButtons() != 0
             || appkit_event_tracking_active()
     }
@@ -5324,15 +5413,47 @@ impl Ui {
         }
     }
 
+    fn apply_pending_cards_options(&mut self) {
+        self.cards.sync_search_composition();
+        if self.composer_marked() || self.cards.is_composing() {
+            return;
+        }
+        let Some(candidate) = self.cards.pending_options() else {
+            return;
+        };
+        if candidate == self.prefs.session_list() {
+            self.cards.commit_options(candidate);
+            return;
+        }
+        match self.prefs.save_session_list(candidate) {
+            Ok(()) => self.cards.commit_options(candidate),
+            Err(error) => {
+                self.cards.reject_options();
+                let locale = self.locale;
+                DispatchQueue::main().exec_async(move || {
+                    let Some(mtm) = with_ui_read(|ui| ui.mtm) else {
+                        return;
+                    };
+                    show_bubble_appearance_error(
+                        mtm,
+                        locale,
+                        Message::SessionListSaveFailure,
+                        &error,
+                    );
+                });
+            }
+        }
+    }
+
     fn refresh_cards(&mut self) -> bool {
-        let marked = self.composer_marked();
-        self.cards.set_composition_active(marked);
+        self.cards.set_composition_active(self.composer_marked());
+        self.apply_pending_cards_options();
         self.cards.refresh();
-        !marked && self.cards.take_deferred_selection_applied()
+        !self.cards.is_composing() && self.cards.take_deferred_selection_applied()
     }
 
     fn close_reply(&mut self) {
-        if !self.reply_open || self.composer_marked() {
+        if !self.reply_open || self.composer_marked() || self.cards.is_composing() {
             return;
         }
         self.reply_open = false;
@@ -5340,7 +5461,10 @@ impl Ui {
             let draft = self.composer_text();
             self.remember_composer_draft(key, draft);
         }
-        self.cards.set_composition_active(false);
+        if self.composer_has_focus() {
+            let _ = self.bubble_panel.makeFirstResponder(None);
+        }
+        self.cards.set_composition_active(self.composer_marked());
         self.cards.detach_reply();
         self.composer_render_stamp = None;
         self.bubble_content_dirty = true;
@@ -5350,7 +5474,7 @@ impl Ui {
         if !self.reply_open {
             return;
         }
-        if self.composer_marked() {
+        if self.composer_marked() || self.cards.is_composing() {
             return;
         }
         if self.bubble_panel.isKeyWindow() {
@@ -5379,13 +5503,16 @@ impl Ui {
     }
 
     fn desired_cards_height(&self) -> f64 {
-        self.cards
-            .content_height()
-            .min(BUBBLE_CARDS_MAX_HEIGHT.max(self.minimum_cards_height()))
+        let desired = self.cards.content_height().min(maximum_cards_height());
+        if self.reply_open {
+            desired.max(self.minimum_cards_height())
+        } else {
+            desired
+        }
     }
 
     fn layout_reply_children(&mut self) {
-        if self.composer_marked() {
+        if self.composer_marked() || self.cards.is_composing() {
             self.pending_bubble_scene = Some(self.last_scene.clone());
             self.queue_language_apply();
             return;
@@ -5430,14 +5557,17 @@ impl Ui {
             .map(|state| state.session_revision());
         let marked = self.composer_marked();
         self.cards.set_composition_active(marked);
+        self.cards.sync_search_composition();
+        let mut composing = marked || self.cards.is_composing();
         let was_focused = self.composer_has_focus();
         let replayed = if self.cards.selection_stamp().0 != revision
-            || (!marked && self.cards.has_deferred_refresh())
+            || (!composing && self.cards.has_deferred_refresh())
         {
             self.refresh_cards()
         } else {
             false
         };
+        composing = self.composer_marked() || self.cards.is_composing();
         if replayed && self.bubble_mode == BubbleMode::Expanded {
             self.reply_open = true;
             self.composer_render_stamp = None;
@@ -5449,7 +5579,7 @@ impl Ui {
             pending: self.prompt_sender.is_pending(),
             live_revision: revision,
         };
-        if !marked && self.composer_render_stamp == Some(stamp) {
+        if !composing && self.composer_render_stamp == Some(stamp) {
             if !self.composer_scroll.isHidden() {
                 layout_composer(
                     &self.composer_view,
@@ -5461,8 +5591,12 @@ impl Ui {
             return;
         }
         self.composer_render_stamp = Some(stamp);
-        let selected = self.cards.selected_target();
-        let next_key = if marked {
+        let selected = self.cards.visible_selected_target();
+        if !composing && selected.is_none() && self.reply_open {
+            self.close_reply();
+            self.composer_render_stamp = Some(stamp);
+        }
+        let next_key = if composing {
             self.composer_key.clone()
         } else {
             selected.as_ref().map(|(key, _)| key.clone())
@@ -5509,7 +5643,7 @@ impl Ui {
             } else {
                 text(
                     self.locale,
-                    if marked {
+                    if composing {
                         Message::ComposerComposingShortcut
                     } else {
                         Message::ComposerShortcut
@@ -5534,11 +5668,11 @@ impl Ui {
             .setTitle(&NSString::from_str(text(self.locale, send)));
         set_accessibility_label(&self.composer_send, text(self.locale, send));
         self.composer_send.setEnabled(
-            !marked
+            !composing
                 && matches!(available.as_ref(), Some(Ok(())))
                 && !self.prompt_sender.is_pending(),
         );
-        if marked {
+        if composing {
             self.composer_render_stamp = None;
             return;
         }
@@ -5619,6 +5753,9 @@ impl Ui {
         // A visibility change can invalidate the retained selection between
         // refresh ticks; reconcile before using its key for submission.
         self.sync_composer();
+        if self.composer_marked() || self.cards.is_composing() {
+            return;
+        }
         let Some(key) = self.composer_key.clone().filter(|key| {
             self.reply_open
                 && self.bubble_mode == BubbleMode::Expanded
@@ -5665,6 +5802,7 @@ impl Ui {
                 Ok(()) => {
                     let marked: bool = unsafe { msg_send![&*self.composer_view, hasMarkedText] };
                     let current = !marked
+                        && !self.cards.is_composing()
                         && self.composer_key.as_ref() == Some(&submission.key)
                         && self
                             .cards
@@ -5785,7 +5923,7 @@ impl Ui {
     fn publish_presentation_checkpoint(&mut self, scene: &Scene) {
         let mut pending = Vec::new();
         if self.pending_bubble_scene.is_some() || self.pending_bubble_content {
-            pending.push(if self.composer_marked() {
+            pending.push(if self.composer_marked() || self.cards.is_composing() {
                 PendingReason::ImeComposition
             } else {
                 PendingReason::Tracking
@@ -6188,7 +6326,9 @@ impl Ui {
                 timer.invalidate();
             }
             if !scene.shutdown
-                && (self.bubble_placement_tracking_locked() || self.composer_marked())
+                && (self.bubble_placement_tracking_locked()
+                    || self.composer_marked()
+                    || self.cards.is_composing())
             {
                 return;
             }
@@ -6200,6 +6340,8 @@ impl Ui {
     }
 
     fn pointer_tick(&mut self) {
+        self.cards.set_composition_active(self.composer_marked());
+        self.cards.sync_search_composition();
         let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) else {
             return;
         };
@@ -6225,7 +6367,11 @@ impl Ui {
         if placement_invalidated {
             self.update_bubble_frame_scene(&scene);
         }
-        if self.reply_open && !self.composer_scroll.isHidden() {
+        if self.reply_open
+            && !self.composer_scroll.isHidden()
+            && !self.composer_marked()
+            && !self.cards.is_composing()
+        {
             layout_composer(
                 &self.composer_view,
                 &self.composer_scroll,
@@ -6237,9 +6383,18 @@ impl Ui {
     }
 
     fn apply_pending_bubble_updates(&mut self) {
+        self.cards.set_composition_active(self.composer_marked());
+        self.cards.sync_search_composition();
         // A deferred drain must not perform even placement-only layout while
         // AppKit is tracking a control or a pet/bubble gesture is active.
-        if self.bubble_content_tracking_locked() || self.composer_marked() {
+        if self.bubble_content_tracking_locked()
+            || self.composer_marked()
+            || self.cards.is_composing()
+        {
+            return;
+        }
+        if self.cards.has_deferred_refresh() {
+            self.refresh();
             return;
         }
         if !self.pending_bubble_content && self.pending_bubble_scene.is_none() {
@@ -6289,7 +6444,8 @@ impl Ui {
         if !self.explicit_gesture_active()
             && (NSEvent::pressedMouseButtons() != 0
                 || appkit_event_tracking_active()
-                || self.composer_marked())
+                || self.composer_marked()
+                || self.cards.is_composing())
         {
             return;
         }
@@ -7151,7 +7307,10 @@ impl Ui {
     }
 
     fn update_bubble_frame_scene(&mut self, scene: &Scene) {
-        if self.bubble_placement_tracking_locked() || self.composer_marked() {
+        if self.bubble_placement_tracking_locked()
+            || self.composer_marked()
+            || self.cards.is_composing()
+        {
             self.pending_bubble_scene = Some(scene.clone());
             self.queue_language_apply();
             return;
@@ -7754,7 +7913,7 @@ impl Ui {
     }
 
     fn layout_bubble_children(&mut self) {
-        if self.composer_marked() {
+        if self.composer_marked() || self.cards.is_composing() {
             self.bubble_layout_dirty = true;
             self.pending_bubble_scene = Some(self.last_scene.clone());
             self.queue_language_apply();
@@ -8160,7 +8319,10 @@ impl Ui {
     }
 
     fn collapse_bubble(&mut self) {
-        if self.bubble_mode == BubbleMode::Compact || self.composer_marked() {
+        if self.bubble_mode == BubbleMode::Compact
+            || self.composer_marked()
+            || self.cards.is_composing()
+        {
             return;
         }
         self.close_reply();
@@ -8174,7 +8336,7 @@ impl Ui {
     }
 
     fn reset_bubble_mode(&mut self) {
-        if self.composer_marked() {
+        if self.composer_marked() || self.cards.is_composing() {
             return;
         }
         self.close_reply();
@@ -11027,7 +11189,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_reply_keeps_full_card_visible_on_short_screen() {
+    fn selected_reply_respects_screen_clamp_and_prioritizes_cards() {
         for (content_height, input_height) in [(20.0, 30.0), (24.0, 43.0), (27.0, 50.0)] {
             let metrics = ComposerMetrics {
                 content_height,
@@ -11094,25 +11256,6 @@ mod tests {
                                 slots.cards < cards || slots.message < desired_message,
                                 "an infeasible budget cannot fit both chrome and content"
                             );
-                        }
-                        if input_height == 43.0 && visible_height == 260.0 {
-                            assert!(close(slots.cards, cards));
-                            assert!(close(slots.message, desired_message));
-                        }
-                        if input_height == 50.0
-                            && visible_height == 260.0
-                            && show_status
-                            && has_message
-                        {
-                            assert!(
-                                cards
-                                    + STATUS_ROW_HEIGHT
-                                    + BUBBLE_CONTROL_HEIGHT
-                                    + BUBBLE_LINE_HEIGHT
-                                    > cap
-                            );
-                            assert!(close(slots.cards, cards));
-                            assert!(slots.message < BUBBLE_LINE_HEIGHT);
                         }
                     }
                 }

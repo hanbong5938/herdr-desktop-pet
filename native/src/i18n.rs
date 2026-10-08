@@ -425,6 +425,14 @@ pub(crate) enum Message {
     CliWorktreeConflict,
     FullSpeechBubbleMessage,
     AllSessions,
+    SessionSearch,
+    SessionStatusFilter,
+    SessionSortLabel,
+    SessionSortStable,
+    SessionSortName,
+    SessionSortSource,
+    SessionRunningFirst,
+    SessionListSaveFailure,
     ComposerSelectSession,
     ComposerInput,
     ComposerSend,
@@ -729,6 +737,14 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::CliWorktreeConflict => "워크트리 상태가 변경됨 · 다시 확인하세요",
             Message::FullSpeechBubbleMessage => "전체 말풍선 메시지",
             Message::AllSessions => "전체",
+            Message::SessionSearch => "검색",
+            Message::SessionStatusFilter => "상태",
+            Message::SessionSortLabel => "정렬",
+            Message::SessionSortStable => "기본순",
+            Message::SessionSortName => "이름순",
+            Message::SessionSortSource => "출처순",
+            Message::SessionRunningFirst => "실행 중 우선",
+            Message::SessionListSaveFailure => "세션 목록 설정 저장 실패",
             Message::ComposerSelectSession => "답장할 로컬 세션 카드를 선택하세요",
             Message::ComposerInput => "선택한 세션에 보낼 한 줄 답장",
             Message::ComposerSend => "보내기",
@@ -758,7 +774,7 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::Unknown => "알 수 없음",
             Message::Offline => "오프라인",
             Message::NoSessions => "세션 없음",
-            Message::NoMatches => "검색 결과 없음",
+            Message::NoMatches => "결과 없음",
             Message::UnnamedSession => "이름 없는 세션",
             Message::UnnamedTab => "이름 없는 탭",
             Message::Workspace => "작업 공간",
@@ -1021,6 +1037,14 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::CliWorktreeConflict => "Worktree changed · review again",
             Message::FullSpeechBubbleMessage => "Full speech bubble message",
             Message::AllSessions => "All",
+            Message::SessionSearch => "Search",
+            Message::SessionStatusFilter => "Status",
+            Message::SessionSortLabel => "Sort",
+            Message::SessionSortStable => "Stable",
+            Message::SessionSortName => "Name",
+            Message::SessionSortSource => "Source",
+            Message::SessionRunningFirst => "Running first",
+            Message::SessionListSaveFailure => "Could not save session list settings",
             Message::ComposerSelectSession => "Select a local session card to reply",
             Message::ComposerInput => "One-line reply to selected session",
             Message::ComposerSend => "Send",
@@ -1048,7 +1072,7 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::Unknown => "Unknown",
             Message::Offline => "Offline",
             Message::NoSessions => "No sessions",
-            Message::NoMatches => "No matches",
+            Message::NoMatches => "No matching items",
             Message::UnnamedSession => "Unnamed session",
             Message::UnnamedTab => "Unnamed tab",
             Message::Workspace => "Workspace",
@@ -1222,32 +1246,11 @@ pub(crate) fn disconnected_sources(locale: UiLocale, count: usize) -> String {
     }
 }
 
-pub(crate) fn session_summary(
-    locale: UiLocale,
-    total: usize,
-    matched: usize,
-    omitted: usize,
-) -> String {
-    let mut summary = match locale {
-        UiLocale::Ko if total == 0 => text(locale, Message::NoSessions).to_owned(),
-        UiLocale::Ko if matched == total => format!("세션 {total}개"),
-        UiLocale::Ko => format!("{total}개 중 {matched}개 일치"),
-        UiLocale::En if total == 0 => text(locale, Message::NoSessions).to_owned(),
-        UiLocale::En if matched == total && total == 1 => "1 session".to_owned(),
-        UiLocale::En if matched == total => format!("{total} sessions"),
-        UiLocale::En => format!("{matched} of {total} matched"),
-    };
-    if omitted > 0 {
-        match locale {
-            UiLocale::Ko => {
-                let _ = write!(summary, " · +{omitted}개 생략");
-            }
-            UiLocale::En => {
-                let _ = write!(summary, " · +{omitted} omitted");
-            }
-        }
+pub(crate) fn session_list_summary(locale: UiLocale, matched: usize, omitted: usize) -> String {
+    match locale {
+        UiLocale::Ko => format!("일치: {matched}개\n제외: {omitted}개"),
+        UiLocale::En => format!("Matched: {matched}\nOmitted: {omitted}"),
     }
-    summary
 }
 
 pub(crate) fn session_empty(locale: UiLocale, total: usize, matched: usize) -> &'static str {
@@ -1577,10 +1580,6 @@ mod tests {
         assert_eq!(
             disconnected_sources(UiLocale::En, 2),
             "2 disconnected sources"
-        );
-        assert_eq!(
-            session_summary(UiLocale::En, 2, 1, 1),
-            "1 of 2 matched · +1 omitted"
         );
         assert_eq!(
             pack_operation_state_label(UiLocale::Ko, "future_state"),
