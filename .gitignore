@@ -10,13 +10,8 @@ __pycache__/
 .agents/skills/open-code-review/
 skills-lock.json
 
-# Optional PACK artwork stays in herdr-characters; allow only the bundled default and approved README portrait copies.
+# Optional artwork lives in herdr-characters; retain only the bundled default.
 assets/*
 !assets/rubelia-default/
 !assets/rubelia-default/**
 !assets/rubelia-thumbnail.png
-!assets/character-previews/
-assets/character-previews/*
-!assets/character-previews/coding-cat-profile.png
-!assets/character-previews/arin-research-profile.png
-!assets/character-previews/NOTICE.txt

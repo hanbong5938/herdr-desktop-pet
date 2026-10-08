@@ -8,20 +8,9 @@
 
 > **이 체크아웃의 미출시 기능:** 세션 목록 검색·정렬·실행 중 우선, 새 네이티브 자동화 명령, 대사 초안 충돌 처리, 드래그로 말풍선 크기 조절, 캐릭터 브라우저와 공식 캐릭터 다운로드·적용은 고정된 공개 v0.2.0·과거 beta1/2/3 바이너리에는 없습니다. 과거 프리뷰의 네 네이티브 묶음과 메뉴 막대·워크트리 추가 기능, beta3 답장 수정은 **이미 안정판 v0.2.0에 포함됩니다**. 이 체크아웃도 버전은 `0.2.0`으로 표시합니다. 이 소스를 사용하려면 `bash scripts/install.sh --source`로 빌드하세요. 기본 설치/`--prebuilt`는 고정된 공개 릴리스를 사용합니다. 기존 데몬을 먼저 종료하거나 설정·상태 디렉터리를 **둘 다** 일관되게 분리하고, `--version` 대신 `status`의 실제 실행 파일을 확인하세요. [미출시 변경](docs/releases/unreleased.md#current-unreleased-checkout--현재-미출시-체크아웃) · [네이티브 CLI 한국어 계약](docs/cli.md#한국어). 이 안내는 새 베타 공개 또는 실제 GUI·IME 검증 통과를 뜻하지 않습니다.
 
-<table>
-  <tr>
-    <td align="center" width="180"><a href="assets/rubelia-thumbnail.png"><img src="assets/rubelia-thumbnail.png" alt="기본 제공 데스크톱 캐릭터 루벨리아" width="140"></a></td>
-    <td align="center" width="180"><a href="assets/character-previews/coding-cat-profile.png"><img src="assets/character-previews/coding-cat-profile.png" alt="코딩 캣 캐릭터 초상화" width="140"></a></td>
-    <td align="center" width="180"><a href="assets/character-previews/arin-research-profile.png"><img src="assets/character-previews/arin-research-profile.png" alt="아린 연구용 캐릭터 초상화" width="140"></a></td>
-  </tr>
-  <tr>
-    <td align="center" width="180">루벨리아<br>기본 제공</td>
-    <td align="center" width="180"><a href="https://github.com/hanbong5938/herdr-characters/blob/main/readme.ko.md#캐릭터-미리보기">코딩 캣</a><br>선택 다운로드</td>
-    <td align="center" width="180"><a href="https://github.com/hanbong5938/herdr-characters/blob/main/readme.ko.md#캐릭터-미리보기">아린</a><br>연구용 소스 공개<br>공식 팩 미출시</td>
-  </tr>
-</table>
+<img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">
 
-<a href="https://github.com/hanbong5938/herdr-characters/blob/main/readme.ko.md#캐릭터-미리보기">캐릭터 미리보기 모두 보기</a> · [초상화 권리·출처 안내](assets/character-previews/NOTICE.txt). 기본 제공 캐릭터는 루벨리아뿐이며, 초상화는 팩 다운로드가 아닙니다. 아린 연구용 소스는 별도 조건에 따른 비상업적 연구·평가 용도로 공개되어 있지만, 공식 아린 PACK RELEASE나 카탈로그 다운로드·설치는 제공하지 않습니다.
+기본 제공 캐릭터는 루벨리아뿐입니다. [선택형 캐릭터 미리보기 보기](https://github.com/hanbong5938/herdr-characters/blob/main/readme.ko.md#캐릭터-미리보기).
 
 ## 주요 기능
 

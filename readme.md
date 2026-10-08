@@ -8,20 +8,9 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 > **Unreleased checkout only:** This working copy adds session-list Search/Sort/Running first, native automation commands, conflict-aware dialogue drafts, drag-resizable status bubbles, and a native character browser with an explicit verified official **Download & Apply** action. They are **not** part of the pinned published v0.2.0 or historical beta1/2/3 binaries, even though this checkout still reports version `0.2.0`. The four older native preview groups, menu-bar/worktree additions, and beta3 reply fixes **are already in stable v0.2.0**. Build this checkout explicitly with `bash scripts/install.sh --source`; the default installer and `--prebuilt` use the pinned release. Stop an older daemon before running the source executable (or use matching isolated config **and** state directories), and inspect `status` for the actual running executable rather than trusting `--version`. See [unreleased changes](docs/releases/unreleased.md#current-unreleased-checkout--현재-미출시-체크아웃) and the [native CLI contract](docs/cli.md#english). No new beta publication or physical GUI/IME acceptance is established by this checkout documentation.
 
-<table>
-  <tr>
-    <td align="center" width="180"><a href="assets/rubelia-thumbnail.png"><img src="assets/rubelia-thumbnail.png" alt="Rubelia, bundled default desktop companion" width="140"></a></td>
-    <td align="center" width="180"><a href="assets/character-previews/coding-cat-profile.png"><img src="assets/character-previews/coding-cat-profile.png" alt="Coding Cat character portrait" width="140"></a></td>
-    <td align="center" width="180"><a href="assets/character-previews/arin-research-profile.png"><img src="assets/character-previews/arin-research-profile.png" alt="Arin research character portrait" width="140"></a></td>
-  </tr>
-  <tr>
-    <td align="center" width="180">Rubelia<br>Bundled default</td>
-    <td align="center" width="180"><a href="https://github.com/hanbong5938/herdr-characters#character-previews">Coding Cat</a><br>Optional download</td>
-    <td align="center" width="180"><a href="https://github.com/hanbong5938/herdr-characters#character-previews">Arin</a><br>Research source published<br>No official pack release</td>
-  </tr>
-</table>
+<img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
-<a href="https://github.com/hanbong5938/herdr-characters#character-previews">Browse all character previews</a> · [Portrait artwork terms and provenance](assets/character-previews/NOTICE.txt). Only Rubelia is bundled; a portrait is not a pack download. Arin's research sources are public for noncommercial research/evaluation under separate terms, but no official Arin PACK RELEASE or catalog download/installation is offered.
+Only Rubelia is bundled. [Browse optional character previews](https://github.com/hanbong5938/herdr-characters#character-previews).
 
 ## Features
 
