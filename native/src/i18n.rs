@@ -1,5 +1,5 @@
 use crate::dialogue::DialogueSlot;
-use crate::session_view::{DisplayStatus, SessionStatusSummary};
+use crate::session_view::{DisplayStatus, SessionSort, SessionStatusSummary};
 use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
@@ -1260,6 +1260,27 @@ pub(crate) fn session_empty(locale: UiLocale, total: usize, matched: usize) -> &
         text(locale, Message::NoMatches)
     } else {
         ""
+    }
+}
+
+pub(crate) fn session_sort_title(
+    locale: UiLocale,
+    sort: SessionSort,
+    running_first: bool,
+) -> &'static str {
+    match (locale, sort, running_first) {
+        (UiLocale::Ko, SessionSort::Stable, false) => text(locale, Message::SessionSortStable),
+        (UiLocale::Ko, SessionSort::TitleAsc, false) => text(locale, Message::SessionSortName),
+        (UiLocale::Ko, SessionSort::SourceAsc, false) => text(locale, Message::SessionSortSource),
+        (UiLocale::En, SessionSort::Stable, false) => text(locale, Message::SessionSortStable),
+        (UiLocale::En, SessionSort::TitleAsc, false) => text(locale, Message::SessionSortName),
+        (UiLocale::En, SessionSort::SourceAsc, false) => text(locale, Message::SessionSortSource),
+        (UiLocale::Ko, SessionSort::Stable, true) => "기본순 · 실행 중 우선",
+        (UiLocale::Ko, SessionSort::TitleAsc, true) => "이름순 · 실행 중 우선",
+        (UiLocale::Ko, SessionSort::SourceAsc, true) => "출처순 · 실행 중 우선",
+        (UiLocale::En, SessionSort::Stable, true) => "Stable · Running first",
+        (UiLocale::En, SessionSort::TitleAsc, true) => "Name · Running first",
+        (UiLocale::En, SessionSort::SourceAsc, true) => "Source · Running first",
     }
 }
 

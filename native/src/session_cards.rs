@@ -1,8 +1,8 @@
 use crate::herdr_protocol::AgentStatus;
 use crate::i18n::{
     display_status_label, offline_status, session_empty, session_filter_label,
-    session_list_summary, session_pane, session_source, session_status_label, text, Message,
-    SessionFilterLabel, SessionStatusLabel, UiLocale,
+    session_list_summary, session_pane, session_sort_title, session_source, session_status_label,
+    text, Message, SessionFilterLabel, SessionStatusLabel, UiLocale,
 };
 use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, SessionListPreferences};
 use crate::session_view::{
@@ -17,9 +17,10 @@ use objc2::Message as _;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSButton, NSColor, NSControlSize,
-    NSControlStateValueOn, NSEvent, NSFont, NSLineBreakMode, NSPopUpButton, NSScrollElasticity,
-    NSScrollView, NSScrollerStyle, NSSearchField, NSTextAlignment, NSTextField, NSView,
+    NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSColor, NSControlSize,
+    NSControlStateValueOn, NSEvent, NSFont, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
+    NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSearchField, NSTextAlignment, NSTextField,
+    NSView,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSString};
 use std::cell::{Cell, RefCell};
@@ -41,6 +42,8 @@ const SESSION_SORTS: [SessionSort; 3] = [
     SessionSort::TitleAsc,
     SessionSort::SourceAsc,
 ];
+const SORT_ITEM_START: isize = 1;
+const RUNNING_ITEM_INDEX: isize = SORT_ITEM_START + SESSION_SORTS.len() as isize + 1;
 const HEADER_GAP: f64 = 5.0;
 const ROW_HEIGHT: f64 = 46.0;
 const EMPTY_HEIGHT: f64 = 20.0;
@@ -94,6 +97,11 @@ impl CardsIntent {
         })
     }
 
+    fn toggle_running_first(&mut self, applied: SessionListPreferences) {
+        self.pending_running_first =
+            Some(!self.pending_running_first.unwrap_or(applied.running_first));
+    }
+
     fn clear_pending_preferences(&mut self) {
         self.pending_sort = None;
         self.pending_running_first = None;
@@ -113,9 +121,10 @@ struct SessionCardsRootIvars {
     search: Retained<NSSearchField>,
     popup: Retained<NSPopUpButton>,
     sort_popup: Retained<NSPopUpButton>,
-    running_toggle: Retained<NSButton>,
     applied_filter: Cell<SessionFilter>,
     applied_options: Cell<SessionListPreferences>,
+    locale: Cell<UiLocale>,
+    displayed_options: Cell<Option<(UiLocale, SessionListPreferences)>>,
 }
 
 struct SessionCardViewIvars {
@@ -181,9 +190,20 @@ define_class!(
         }
 
         #[unsafe(method(sortChanged:))]
-        fn sort_changed(&self, _sender: Option<&AnyObject>) {
-            let index: isize = unsafe { msg_send![&*self.ivars().sort_popup, indexOfSelectedItem] };
-            let Some(sort) = SESSION_SORTS.get(index.max(0) as usize).copied() else {
+        fn sort_changed(&self, sender: Option<&AnyObject>) {
+            let Some(item) = sender.and_then(|sender| sender.downcast_ref::<NSMenuItem>()) else {
+                return;
+            };
+            let Some(menu) = self.ivars().sort_popup.menu() else {
+                return;
+            };
+            let index: isize = unsafe { msg_send![&*menu, indexOfItem: item] };
+            let Some(sort) = (index - SORT_ITEM_START)
+                .try_into()
+                .ok()
+                .and_then(|index: usize| SESSION_SORTS.get(index))
+                .copied()
+            else {
                 return;
             };
             self.ivars().intent.borrow_mut().pending_sort = Some(sort);
@@ -192,9 +212,21 @@ define_class!(
         }
 
         #[unsafe(method(runningChanged:))]
-        fn running_changed(&self, _sender: Option<&AnyObject>) {
-            self.ivars().intent.borrow_mut().pending_running_first =
-                Some(self.ivars().running_toggle.state() == NSControlStateValueOn);
+        fn running_changed(&self, sender: Option<&AnyObject>) {
+            let Some(item) = sender.and_then(|sender| sender.downcast_ref::<NSMenuItem>()) else {
+                return;
+            };
+            let Some(menu) = self.ivars().sort_popup.menu() else {
+                return;
+            };
+            let index: isize = unsafe { msg_send![&*menu, indexOfItem: item] };
+            if index != RUNNING_ITEM_INDEX {
+                return;
+            }
+            self.ivars()
+                .intent
+                .borrow_mut()
+                .toggle_running_first(self.ivars().applied_options.get());
             self.restore_options();
             crate::ui::cards_options_changed();
         }
@@ -254,21 +286,46 @@ impl SessionCardsRoot {
 
     fn restore_options(&self) {
         let options = self.ivars().applied_options.get();
-        let index = SESSION_SORTS
-            .iter()
-            .position(|sort| *sort == options.sort)
-            .unwrap_or(0) as isize;
-        let selected: isize = unsafe { msg_send![&*self.ivars().sort_popup, indexOfSelectedItem] };
-        if selected != index {
-            let _: () = unsafe { msg_send![&*self.ivars().sort_popup, selectItemAtIndex: index] };
-        }
-        let state = if options.running_first {
-            NSControlStateValueOn
-        } else {
-            objc2_app_kit::NSControlStateValueOff
+        let Some(menu) = self.ivars().sort_popup.menu() else {
+            return;
         };
-        if self.ivars().running_toggle.state() != state {
-            self.ivars().running_toggle.setState(state);
+        for (index, sort) in SESSION_SORTS.into_iter().enumerate() {
+            if let Some(item) = menu.itemAtIndex(SORT_ITEM_START + index as isize) {
+                let state = if sort == options.sort {
+                    NSControlStateValueOn
+                } else {
+                    objc2_app_kit::NSControlStateValueOff
+                };
+                if item.state() != state {
+                    item.setState(state);
+                }
+            }
+        }
+        if let Some(item) = menu.itemAtIndex(RUNNING_ITEM_INDEX) {
+            let state = if options.running_first {
+                NSControlStateValueOn
+            } else {
+                objc2_app_kit::NSControlStateValueOff
+            };
+            if item.state() != state {
+                item.setState(state);
+            }
+        }
+        let locale = self.ivars().locale.get();
+        if self.ivars().displayed_options.get() != Some((locale, options)) {
+            let title = NSString::from_str(session_sort_title(
+                locale,
+                options.sort,
+                options.running_first,
+            ));
+            if let Some(trigger) = menu.itemAtIndex(0) {
+                trigger.setTitle(&title);
+            }
+            unsafe {
+                let _: () =
+                    msg_send![&*self.ivars().sort_popup, setAccessibilityValue: Some(&*title)];
+            }
+            self.ivars().displayed_options.set(Some((locale, options)));
         }
     }
 
@@ -458,7 +515,7 @@ impl SessionCardsRoot {
         search: Retained<NSSearchField>,
         popup: Retained<NSPopUpButton>,
         sort_popup: Retained<NSPopUpButton>,
-        running_toggle: Retained<NSButton>,
+        locale: UiLocale,
         options: SessionListPreferences,
         inner: Weak<RefCell<SessionCardsInner>>,
         intent: Rc<RefCell<CardsIntent>>,
@@ -470,9 +527,10 @@ impl SessionCardsRoot {
             search,
             popup,
             sort_popup,
-            running_toggle,
             applied_filter: Cell::new(SessionFilter::All),
             applied_options: Cell::new(options),
+            locale: Cell::new(locale),
+            displayed_options: Cell::new(None),
         });
         // SAFETY: NSView's initWithFrame: has the expected signature.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -819,7 +877,8 @@ impl SessionCardsInner {
             NSPoint::new(inset, search_y),
             objc2_foundation::NSSize::new(header_width, SEARCH_HEIGHT),
         ));
-        let popup_width = ((header_width - POPUP_GAP) / 2.0).max(1.0);
+        let available_width = (header_width - POPUP_GAP).max(1.0);
+        let popup_width = (available_width * 0.35).min(140.0);
         let popup_y = header_y + SUMMARY_HEIGHT + TOOLBAR_GAP;
         self.root.ivars().popup.setFrame(NSRect::new(
             NSPoint::new(inset, popup_y),
@@ -827,19 +886,11 @@ impl SessionCardsInner {
         ));
         self.root.ivars().sort_popup.setFrame(NSRect::new(
             NSPoint::new(inset + popup_width + POPUP_GAP, popup_y),
-            objc2_foundation::NSSize::new(popup_width, POPUP_HEIGHT),
-        ));
-        let toggle_width = 150.0_f64.min(header_width);
-        self.root.ivars().running_toggle.setFrame(NSRect::new(
-            NSPoint::new(inset, header_y + (SUMMARY_HEIGHT - 18.0) / 2.0),
-            objc2_foundation::NSSize::new(toggle_width, 18.0),
+            objc2_foundation::NSSize::new((available_width - popup_width).max(1.0), POPUP_HEIGHT),
         ));
         self.summary.setFrame(NSRect::new(
-            NSPoint::new(inset + toggle_width + POPUP_GAP, header_y),
-            objc2_foundation::NSSize::new(
-                (header_width - toggle_width - POPUP_GAP).max(1.0),
-                SUMMARY_HEIGHT,
-            ),
+            NSPoint::new(inset, header_y),
+            objc2_foundation::NSSize::new(header_width, SUMMARY_HEIGHT),
         ));
         let scroll_y = inset;
         let scroll_height = (header_y - HEADER_GAP - scroll_y).max(1.0);
@@ -957,14 +1008,6 @@ impl SessionCardsInner {
             .ivars()
             .search
             .setAppearance(appearance.as_deref());
-        self.root
-            .ivars()
-            .running_toggle
-            .setAppearance(appearance.as_deref());
-        self.root
-            .ivars()
-            .running_toggle
-            .setContentTintColor(Some(&palette_color(palette.text, 1.0)));
         self.root
             .ivars()
             .search
@@ -1183,9 +1226,21 @@ impl SessionCardsInner {
                     item.setTitle(&NSString::from_str(filter_label(self.locale, filter)));
                 }
             }
-            for (index, sort) in SESSION_SORTS.into_iter().enumerate() {
-                if let Some(item) = self.root.ivars().sort_popup.itemAtIndex(index as isize) {
-                    item.setTitle(&NSString::from_str(sort_label(self.locale, sort)));
+            if let Some(menu) = self.root.ivars().sort_popup.menu() {
+                for (index, sort) in SESSION_SORTS.into_iter().enumerate() {
+                    if let Some(item) = menu.itemAtIndex(SORT_ITEM_START + index as isize) {
+                        item.setTitle(&NSString::from_str(session_sort_title(
+                            self.locale,
+                            sort,
+                            false,
+                        )));
+                    }
+                }
+                if let Some(item) = menu.itemAtIndex(RUNNING_ITEM_INDEX) {
+                    item.setTitle(&NSString::from_str(text(
+                        self.locale,
+                        Message::SessionRunningFirst,
+                    )));
                 }
             }
             let search_label = NSString::from_str(text(self.locale, Message::SessionSearch));
@@ -1202,9 +1257,7 @@ impl SessionCardsInner {
                 &self.root.ivars().sort_popup,
                 &NSString::from_str(text(self.locale, Message::SessionSortLabel)),
             );
-            let running_label = NSString::from_str(text(self.locale, Message::SessionRunningFirst));
-            self.root.ivars().running_toggle.setTitle(&running_label);
-            set_accessibility_label(&self.root.ivars().running_toggle, &running_label);
+            self.root.ivars().locale.set(self.locale);
             self.controls_locale = Some(self.locale);
         }
         self.root.ivars().applied_filter.set(self.filter);
@@ -1388,18 +1441,6 @@ impl SessionCards {
                 locale,
                 Message::SessionSearch,
             ))));
-            let running_toggle: Retained<NSButton> = unsafe {
-                msg_send![NSButton::alloc(mtm), initWithFrame: NSRect::new(
-                    NSPoint::new(0.0, 0.0), objc2_foundation::NSSize::new(150.0, 18.0)
-                )]
-            };
-            running_toggle.setButtonType(objc2_app_kit::NSButtonType::Switch);
-            running_toggle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-            running_toggle.setRefusesFirstResponder(false);
-            running_toggle.setTitle(&NSString::from_str(text(
-                locale,
-                Message::SessionRunningFirst,
-            )));
             popup.setRefusesFirstResponder(false);
             sort_popup.setRefusesFirstResponder(false);
             let root = SessionCardsRoot::new(
@@ -1407,7 +1448,7 @@ impl SessionCards {
                 search,
                 popup,
                 sort_popup,
-                running_toggle,
+                locale,
                 options,
                 weak.clone(),
                 Rc::clone(&intent),
@@ -1416,11 +1457,18 @@ impl SessionCards {
             unsafe {
                 let _: () = msg_send![&*root.ivars().popup, setTarget: Some(&*root)];
                 let _: () = msg_send![&*root.ivars().popup, setAction: sel!(filterChanged:)];
-                let _: () = msg_send![&*root.ivars().sort_popup, setTarget: Some(&*root)];
-                let _: () = msg_send![&*root.ivars().sort_popup, setAction: sel!(sortChanged:)];
-                let _: () = msg_send![&*root.ivars().running_toggle, setTarget: Some(&*root)];
-                let _: () =
-                    msg_send![&*root.ivars().running_toggle, setAction: sel!(runningChanged:)];
+                if let Some(menu) = root.ivars().sort_popup.menu() {
+                    for index in SORT_ITEM_START..SORT_ITEM_START + SESSION_SORTS.len() as isize {
+                        if let Some(item) = menu.itemAtIndex(index) {
+                            item.setTarget(Some(&*root));
+                            let _: () = msg_send![&*item, setAction: sel!(sortChanged:)];
+                        }
+                    }
+                    if let Some(item) = menu.itemAtIndex(RUNNING_ITEM_INDEX) {
+                        item.setTarget(Some(&*root));
+                        let _: () = msg_send![&*item, setAction: sel!(runningChanged:)];
+                    }
+                }
                 let _: () = msg_send![&*root.ivars().search, setTarget: Some(&*root)];
                 let _: () = msg_send![&*root.ivars().search, setAction: sel!(searchChanged:)];
                 let _: () = msg_send![&*root.ivars().search, setDelegate: Some(&*root)];
@@ -1471,7 +1519,6 @@ impl SessionCards {
             root.addSubview(&summary);
             root.addSubview(&root.ivars().search);
             root.addSubview(&root.ivars().sort_popup);
-            root.addSubview(&root.ivars().running_toggle);
             // The root retains these controls for the lifetime of their unretained links.
             unsafe {
                 root.ivars()
@@ -1482,9 +1529,6 @@ impl SessionCards {
                     .setNextKeyView(Some(&root.ivars().sort_popup));
                 root.ivars()
                     .sort_popup
-                    .setNextKeyView(Some(&root.ivars().running_toggle));
-                root.ivars()
-                    .running_toggle
                     .setNextKeyView(Some(&root.ivars().search));
             }
 
@@ -1787,28 +1831,33 @@ fn make_sort_popup(locale: UiLocale, mtm: MainThreadMarker) -> Retained<NSPopUpB
                 NSPoint::new(0.0, 0.0),
                 objc2_foundation::NSSize::new(140.0, POPUP_HEIGHT),
             ),
-            pullsDown: false
+            pullsDown: true
         ]
     };
     popup.setControlSize(NSControlSize::Small);
     popup.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-    for sort in SESSION_SORTS {
-        let _: () = unsafe {
-            msg_send![&*popup, addItemWithTitle: &*NSString::from_str(sort_label(locale, sort))]
-        };
-    }
-    popup
-}
-
-fn sort_label(locale: UiLocale, sort: SessionSort) -> &'static str {
-    text(
+    let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(""));
+    menu.setAutoenablesItems(false);
+    let item = |title: &str| unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(title),
+            None,
+            &NSString::from_str(""),
+        )
+    };
+    menu.addItem(&item(session_sort_title(
         locale,
-        match sort {
-            SessionSort::Stable => Message::SessionSortStable,
-            SessionSort::TitleAsc => Message::SessionSortName,
-            SessionSort::SourceAsc => Message::SessionSortSource,
-        },
-    )
+        SessionSort::Stable,
+        false,
+    )));
+    for sort in SESSION_SORTS {
+        menu.addItem(&item(session_sort_title(locale, sort, false)));
+    }
+    menu.addItem(&NSMenuItem::separatorItem(mtm));
+    menu.addItem(&item(text(locale, Message::SessionRunningFirst)));
+    popup.setMenu(Some(&menu));
+    popup
 }
 
 fn native_string_equal(a: &NSString, b: &NSString) -> bool {
@@ -2150,6 +2199,34 @@ mod tests {
         assert_eq!(intent.pending_preferences(applied), None);
         assert_eq!(intent.pending_filter, Some(SessionFilter::Offline));
         assert_eq!(intent.pending_query.as_deref(), Some("latest"));
+    }
+
+    #[test]
+    fn repeated_running_menu_actions_toggle_pending_value_and_preserve_latest_sort() {
+        let applied = SessionListPreferences::default();
+        let mut intent = CardsIntent {
+            search_composition_active: true,
+            ..CardsIntent::default()
+        };
+        intent.toggle_running_first(applied);
+        intent.pending_sort = Some(SessionSort::TitleAsc);
+        assert_eq!(
+            intent.pending_preferences(applied),
+            Some(SessionListPreferences {
+                sort: SessionSort::TitleAsc,
+                running_first: true,
+            })
+        );
+        intent.toggle_running_first(applied);
+        intent.pending_sort = Some(SessionSort::SourceAsc);
+        assert!(intent.composing());
+        assert_eq!(
+            intent.pending_preferences(applied),
+            Some(SessionListPreferences {
+                sort: SessionSort::SourceAsc,
+                running_first: false,
+            })
+        );
     }
 
     #[test]
