@@ -163,6 +163,13 @@ export function applyRigOverrides(rig: RigDefinition, overrides: RigOverrides): 
   layers = layers.map(layer => attach(layer) ?? layer)
   const referenceOnly = new Set((overrides.excludeAfterMeshResolution ?? []).map(normalized))
   layers = layers.filter(layer => !referenceOnly.has(normalized(layer.name)))
+  // Mesh resolution already baked the reference geometry into each child.
+  // A removed reference cannot remain a runtime spring/mesh parent.
+  for (const layer of layers) {
+    if (layer.meshSource && referenceOnly.has(normalized(layer.meshSource))) {
+      delete layer.meshSource
+    }
+  }
 
   const anchors = { ...rig.anchors, ...(overrides.anchorOverrides ?? {}) }
   for (const side of ["eyeL", "eyeR"] as const) {
