@@ -1,7 +1,10 @@
 use crate::agent_outcome::{AgentOutcome, OutcomeReport};
 use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
+use crate::i18n::{session_local_source, text, Message, UiLocale};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::borrow::Cow;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 const MAX_SOURCES: usize = 64;
@@ -81,6 +84,45 @@ impl SessionFilter {
         Self::Offline,
     ];
 }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum SessionSort {
+    #[default]
+    Stable,
+    TitleAsc,
+    SourceAsc,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SessionListOptions<'a> {
+    pub(crate) filter: SessionFilter,
+    pub(crate) query: &'a str,
+    pub(crate) sort: SessionSort,
+    pub(crate) running_first: bool,
+    pub(crate) locale: UiLocale,
+}
+
+impl Default for SessionListOptions<'_> {
+    fn default() -> Self {
+        Self {
+            filter: SessionFilter::All,
+            query: "",
+            sort: SessionSort::Stable,
+            running_first: false,
+            locale: UiLocale::En,
+        }
+    }
+}
+
+impl<'a> SessionListOptions<'a> {
+    #[cfg(test)]
+    pub(crate) fn with_filter(filter: SessionFilter) -> Self {
+        Self {
+            filter,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SessionView {
     pub(crate) key: SessionKey,
@@ -125,6 +167,7 @@ fn display_status(
 pub(crate) struct SessionSnapshot {
     pub(crate) revision: u64,
     pub(crate) rows: Vec<SessionView>,
+    pub(crate) displays: Vec<CardDisplay>,
     pub(crate) status_summary: SessionStatusSummary,
     pub(crate) total: usize,
     pub(crate) matched: usize,
@@ -178,6 +221,7 @@ pub(crate) enum SessionPageError {
 
 struct CollectedRows {
     rows: Vec<SessionView>,
+    displays: Vec<CardDisplay>,
     status_summary: SessionStatusSummary,
     total: usize,
     matched: usize,
@@ -724,18 +768,82 @@ impl SessionStore {
         let record = source.records.get(&key.terminal_id)?;
         Some(Self::view_from_record(source, &key.terminal_id, record))
     }
+    /// Present a retained target against the complete visible universe, even
+    /// when it is outside the current filter or the bounded list.
+    pub(crate) fn display_for_key(
+        &self,
+        locale: UiLocale,
+        key: &SessionKey,
+    ) -> Option<CardDisplay> {
+        if !self.contains_key(key) {
+            return None;
+        }
+        let entries = self.presentation_rows();
+        let index = entries.iter().position(|entry| {
+            entry.key.source_id == key.source_id && entry.key.terminal_id == key.terminal_id
+        })?;
+        Some(presentation_displays(locale, &entries).swap_remove(index))
+    }
+    pub(crate) fn displays_for_keys(
+        &self,
+        locale: UiLocale,
+        keys: &[&SessionKey],
+    ) -> Vec<Option<CardDisplay>> {
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        let entries = self.presentation_rows();
+        let mut indices = HashMap::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            indices.insert((entry.key.source_id, entry.key.terminal_id), index);
+        }
+        let displays = presentation_displays(locale, &entries);
+        keys.iter()
+            .map(|key| {
+                if !self.contains_key(key) {
+                    return None;
+                }
+                indices
+                    .get(&(key.source_id, key.terminal_id.as_str()))
+                    .map(|&index| displays[index].clone())
+            })
+            .collect()
+    }
+
+    fn presentation_rows(&self) -> Vec<PresentationRow<'_>> {
+        self.sources
+            .iter()
+            .filter(|source| source.visible)
+            .flat_map(|source| {
+                let is_local = crate::sources::remote_machine_id(&source.source).is_none();
+                source
+                    .records
+                    .iter()
+                    .map(move |(terminal_id, record)| PresentationRow {
+                        key: PresentationKey {
+                            source_id: source.source_id,
+                            terminal_id,
+                        },
+                        source_label: &source.label,
+                        is_local,
+                        metadata: &record.metadata,
+                    })
+            })
+            .collect()
+    }
 
     pub(crate) fn snapshot(
         &self,
-        filter: SessionFilter,
+        options: &SessionListOptions<'_>,
         selected: Option<&SessionKey>,
     ) -> SessionSnapshot {
-        let collected = self.collect_rows(filter, None, MAX_ROWS);
+        let collected = self.collect_rows(options.filter, None, MAX_ROWS, Some(options));
         let selected = selected.and_then(|key| self.contains_key(key).then(|| key.clone()));
         let omitted = collected.matched.saturating_sub(collected.rows.len());
         SessionSnapshot {
             revision: self.revision,
             rows: collected.rows,
+            displays: collected.displays,
             status_summary: collected.status_summary,
             total: collected.total,
             matched: collected.matched,
@@ -744,9 +852,9 @@ impl SessionStore {
         }
     }
 
-    /// Return an exclusive page from the same visible, filtered ordering as
-    /// `snapshot`, without the GUI's 128-row truncation. Totals and the status
-    /// summary describe *all* visible rows, not just this page.
+    /// Return an exclusive page in stable source-id/terminal-id order, without
+    /// the GUI's search, sort, running priority, or 128-row truncation. Totals
+    /// and the status summary describe *all* visible rows, not just this page.
     pub(crate) fn page(
         &self,
         filter: SessionFilter,
@@ -760,7 +868,7 @@ impl SessionStore {
         if limit == 0 || limit > MAX_PAGE_ROWS {
             return Err(SessionPageError::InvalidLimit);
         }
-        let collected = self.collect_rows(filter, after, limit);
+        let collected = self.collect_rows(filter, after, limit, None);
         let next_cursor = if collected.has_more {
             collected.rows.last().map(|row| SessionCursor {
                 source_id: row.key.source_id,
@@ -784,18 +892,29 @@ impl SessionStore {
         filter: SessionFilter,
         after: Option<&SessionCursor>,
         limit: usize,
+        options: Option<&SessionListOptions<'_>>,
     ) -> CollectedRows {
         let mut total = 0usize;
         let mut matched = 0usize;
-        let mut rows = Vec::with_capacity(limit);
+        let mut rows = Vec::with_capacity(if options.is_some() { 0 } else { limit });
         let mut has_more = false;
-
+        let mut candidates = Vec::with_capacity(if options.is_some() { limit } else { 0 });
+        let query = options
+            .map(|options| options.query.trim().to_lowercase())
+            .unwrap_or_default();
+        // Names are computed against the entire visible universe before filtering;
+        // pagination does not need to materialize or sort any card displays.
+        let presentation = options.map(|options| {
+            let all = self.presentation_rows();
+            let displays = presentation_displays(options.locale, &all);
+            (all, displays)
+        });
+        let mut global_index = 0usize;
         let mut buckets = [0usize; 10];
         let mut included_sources = 0usize;
         let mut disconnected = false;
-        // Sources are kept in monotonically assigned source-id order and each
-        // record map is ordered by terminal ID. This streams deterministic rows
-        // without collecting or sorting all retained records.
+        // Source and terminal iteration share the order of `presentation_rows`.
+        // A snapshot retains only the best 128 matching record references.
         for source in &self.sources {
             if !source.visible {
                 continue;
@@ -804,9 +923,11 @@ impl SessionStore {
             disconnected |= source.availability == Availability::Offline;
             total = total.saturating_add(source.records.len());
             for (terminal_id, record) in &source.records {
+                let index = global_index;
+                global_index += 1;
                 let availability = source.availability;
                 let bucket = display_status(availability, record.status, record.outcome);
-                let index = match bucket {
+                let bucket_index = match bucket {
                     DisplayStatus::NoSessions => 0,
                     DisplayStatus::Idle => 1,
                     DisplayStatus::Running => 2,
@@ -818,22 +939,62 @@ impl SessionStore {
                     DisplayStatus::Unknown => 8,
                     DisplayStatus::Offline => 9,
                 };
-                buckets[index] += 1;
+                buckets[bucket_index] += 1;
                 if !filter_matches(filter, availability, record.status) {
                     continue;
                 }
-                matched = matched.saturating_add(1);
-                if after.is_some_and(|cursor| {
-                    source.source_id < cursor.source_id
-                        || (source.source_id == cursor.source_id
-                            && terminal_id.as_str() <= cursor.terminal_id.as_str())
-                }) {
-                    continue;
+                if let Some((options, (_, displays))) = options.zip(presentation.as_ref()) {
+                    if !query.is_empty()
+                        && !search_matches(&query, options.locale, source, record, &displays[index])
+                    {
+                        continue;
+                    }
                 }
-                if rows.len() < limit {
-                    rows.push(Self::view_from_record(source, terminal_id, record));
+                matched = matched.saturating_add(1);
+                if let Some((options, (all, displays))) = options.zip(presentation.as_ref()) {
+                    let running = bucket == DisplayStatus::Running;
+                    let title = &displays[index].title;
+                    let unnamed = displays[index].unnamed;
+                    let sort_key = match options.sort {
+                        SessionSort::Stable => String::new(),
+                        SessionSort::TitleAsc => title.to_lowercase(),
+                        SessionSort::SourceAsc => {
+                            card_source_label(options.locale, &all[index]).to_lowercase()
+                        }
+                    };
+                    let candidate = Candidate {
+                        source,
+                        terminal_id,
+                        record,
+                        index,
+                        running,
+                        unnamed,
+                        sort_key,
+                    };
+                    let position = candidates
+                        .binary_search_by(|existing| {
+                            compare_candidates(existing, &candidate, options)
+                        })
+                        .unwrap_or_else(|position| position);
+                    if position < limit {
+                        candidates.insert(position, candidate);
+                        if candidates.len() > limit {
+                            candidates.pop();
+                        }
+                    }
                 } else {
-                    has_more = true;
+                    if after.is_some_and(|cursor| {
+                        source.source_id < cursor.source_id
+                            || (source.source_id == cursor.source_id
+                                && terminal_id.as_str() <= cursor.terminal_id.as_str())
+                    }) {
+                        continue;
+                    }
+                    if rows.len() < limit {
+                        rows.push(Self::view_from_record(source, terminal_id, record));
+                    } else {
+                        has_more = true;
+                    }
                 }
             }
         }
@@ -876,8 +1037,21 @@ impl SessionStore {
             count,
             total,
         };
+        let mut chosen_displays = Vec::with_capacity(candidates.len());
+        if let Some((_, displays)) = presentation {
+            rows.reserve(candidates.len());
+            for candidate in candidates {
+                rows.push(Self::view_from_record(
+                    candidate.source,
+                    candidate.terminal_id,
+                    candidate.record,
+                ));
+                chosen_displays.push(displays[candidate.index].clone());
+            }
+        }
         CollectedRows {
             rows,
+            displays: chosen_displays,
             status_summary,
             total,
             matched,
@@ -939,6 +1113,385 @@ fn filter_matches(filter: SessionFilter, availability: Availability, status: Age
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CardDisplay {
+    pub(crate) title: String,
+    pub(crate) context: String,
+    unnamed: bool,
+    directory_fallback: bool,
+    directory_context: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+struct PresentationKey<'a> {
+    source_id: u64,
+    terminal_id: &'a str,
+}
+
+struct PresentationRow<'a> {
+    key: PresentationKey<'a>,
+    source_label: &'a str,
+    is_local: bool,
+    metadata: &'a SessionMetadata,
+}
+
+struct Candidate<'a> {
+    source: &'a SourceState,
+    terminal_id: &'a str,
+    record: &'a StoredRecord,
+    index: usize,
+    running: bool,
+    unnamed: bool,
+    sort_key: String,
+}
+
+fn compare_candidates(
+    left: &Candidate<'_>,
+    right: &Candidate<'_>,
+    options: &SessionListOptions<'_>,
+) -> Ordering {
+    let priority = options
+        .running_first
+        .then(|| right.running.cmp(&left.running))
+        .unwrap_or(Ordering::Equal);
+    let sorted = match options.sort {
+        SessionSort::Stable => Ordering::Equal,
+        SessionSort::TitleAsc => left
+            .unnamed
+            .cmp(&right.unnamed)
+            .then_with(|| left.sort_key.cmp(&right.sort_key)),
+        SessionSort::SourceAsc => left.sort_key.cmp(&right.sort_key),
+    };
+    priority
+        .then(sorted)
+        .then_with(|| left.source.source_id.cmp(&right.source.source_id))
+        .then_with(|| left.terminal_id.cmp(right.terminal_id))
+}
+
+fn search_matches(
+    query: &str,
+    locale: UiLocale,
+    source: &SourceState,
+    record: &StoredRecord,
+    display: &CardDisplay,
+) -> bool {
+    let contains = |value: &str| value.to_lowercase().contains(query);
+    [
+        record.metadata.title.as_deref(),
+        record.metadata.tab_label.as_deref(),
+        record.metadata.workspace_label.as_deref(),
+        record.metadata.agent.as_deref(),
+        record.metadata.cwd.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| {
+        contains(field) || display_value(Some(field)).is_some_and(|shown| contains(&shown))
+    }) || contains(&display.title)
+        || (record
+            .metadata
+            .tab_label
+            .as_deref()
+            .is_none_or(|tab| tab.trim().is_empty())
+            && contains(text(locale, Message::UnnamedTab)))
+        || (record.metadata.tab_label.as_deref().is_some_and(|tab| {
+            tab.trim()
+                .chars()
+                .all(|character| character.is_ascii_digit())
+                && contains(&format!("{} {}", text(locale, Message::Tab), tab.trim()))
+        }))
+        || (crate::sources::remote_machine_id(&source.source).is_none()
+            && contains(session_local_source(locale)))
+        || (crate::sources::remote_machine_id(&source.source).is_some()
+            && display_value(Some(&source.label)).is_some_and(|label| contains(&label)))
+}
+
+pub(crate) fn display_value(value: Option<&str>) -> Option<String> {
+    let value = value?;
+    let mut result = String::with_capacity(value.len());
+    let mut space = false;
+    for character in value.chars() {
+        if character.is_whitespace() {
+            space = !result.is_empty();
+        } else if !unsafe_identifier_char(character) {
+            if space {
+                result.push(' ');
+                space = false;
+            }
+            result.push(character);
+        }
+    }
+    (!result.is_empty()).then_some(result)
+}
+
+fn meaningful_title(value: Option<&str>) -> Option<String> {
+    let title = display_value(value)?;
+    if [
+        "omp",
+        "claude",
+        "claude code",
+        "codex",
+        "openai codex",
+        "terminal",
+        "shell",
+        "bash",
+        "zsh",
+        "fish",
+        "sh",
+        "nu",
+        "pwsh",
+        "powershell",
+    ]
+    .iter()
+    .any(|generic| title.eq_ignore_ascii_case(generic))
+    {
+        return None;
+    }
+    Some(title)
+}
+
+fn tab_location(locale: UiLocale, view: &PresentationRow<'_>) -> String {
+    match display_value(view.metadata.tab_label.as_deref()) {
+        Some(label) if label.chars().all(|c| c.is_ascii_digit()) => {
+            format!("{} {label}", text(locale, Message::Tab))
+        }
+        Some(label) => label,
+        None => text(locale, Message::UnnamedTab).to_owned(),
+    }
+}
+
+fn card_source_label<'a>(locale: UiLocale, view: &'a PresentationRow<'_>) -> Cow<'a, str> {
+    if view.is_local {
+        Cow::Borrowed(session_local_source(locale))
+    } else {
+        display_value(Some(&view.source_label))
+            .map(Cow::Owned)
+            .unwrap_or_else(|| Cow::Owned(format!("#{}", view.key.source_id)))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn card_displays(locale: UiLocale, rows: &[SessionView]) -> Vec<CardDisplay> {
+    let entries: Vec<_> = rows
+        .iter()
+        .map(|view| PresentationRow {
+            key: PresentationKey {
+                source_id: view.key.source_id,
+                terminal_id: &view.key.terminal_id,
+            },
+            source_label: &view.source_label,
+            is_local: view.is_local,
+            metadata: &view.metadata,
+        })
+        .collect();
+    presentation_displays(locale, &entries)
+}
+
+fn presentation_displays(locale: UiLocale, rows: &[PresentationRow<'_>]) -> Vec<CardDisplay> {
+    let cwd_paths: Vec<_> = rows
+        .iter()
+        .map(|view| display_value(view.metadata.cwd.as_deref()))
+        .collect();
+    let mut displays: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, view)| {
+            let workspace = display_value(view.metadata.workspace_label.as_deref());
+            let agent = display_value(view.metadata.agent.as_deref());
+            let cwd = cwd_paths[index].as_deref();
+            let directory = cwd
+                .and_then(|path| path.rsplit('/').find(|part| !part.is_empty()))
+                .map(str::to_owned);
+            let tab = tab_location(locale, view);
+            let title = meaningful_title(view.metadata.title.as_deref()).or_else(|| {
+                meaningful_title(view.metadata.tab_label.as_deref())
+                    .filter(|label| !label.chars().all(|c| c.is_ascii_digit()))
+            });
+            let directory_context = workspace.is_none() && directory.is_some();
+            let directory_fallback = title.is_none() && directory_context;
+            let unnamed = title.is_none() && workspace.is_none() && directory.is_none();
+            let title = title.unwrap_or_else(|| {
+                workspace
+                    .clone()
+                    .or(directory.clone())
+                    .map(|base| format!("{base} · {tab}"))
+                    .unwrap_or_else(|| text(locale, Message::UnnamedSession).to_owned())
+            });
+            let context = [workspace.or(directory), Some(tab), agent]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            CardDisplay {
+                title,
+                context,
+                unnamed,
+                directory_fallback,
+                directory_context,
+            }
+        })
+        .collect();
+
+    // Compare original basenames before modifying either display.
+    let original_groups: Vec<Vec<usize>> = {
+        let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+        for (index, display) in displays.iter().enumerate() {
+            if display.directory_context {
+                groups
+                    .entry((&display.title, &display.context))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        groups
+            .into_values()
+            .filter(|group| group.len() > 1)
+            .collect()
+    };
+
+    // Refine only colliding directory groups. A short, exhausted path stays in
+    // its previous collision group until the longer paths have been partitioned.
+    #[derive(Clone, Copy)]
+    struct SuffixState<'a> {
+        index: usize,
+        remaining: &'a str,
+        depth: usize,
+    }
+
+    for group in &original_groups {
+        let mut frontier = vec![group
+            .iter()
+            .map(|&index| SuffixState {
+                index,
+                remaining: cwd_paths[index]
+                    .as_deref()
+                    .expect("directory context has cwd"),
+                depth: 0,
+            })
+            .collect::<Vec<_>>()];
+        let mut chosen = Vec::with_capacity(group.len());
+        while let Some(states) = frontier.pop() {
+            let mut buckets: HashMap<&str, Vec<SuffixState<'_>>> = HashMap::new();
+            for mut state in states {
+                let component = loop {
+                    match state.remaining.rsplit_once('/') {
+                        Some((prefix, "")) => state.remaining = prefix,
+                        Some((prefix, part)) => {
+                            state.remaining = prefix;
+                            break Some(part);
+                        }
+                        None if state.remaining.is_empty() => break None,
+                        None => {
+                            let part = state.remaining;
+                            state.remaining = "";
+                            break Some(part);
+                        }
+                    }
+                };
+                if let Some(component) = component {
+                    state.depth += 1;
+                    buckets.entry(component).or_default().push(state);
+                } else {
+                    chosen.push(state);
+                }
+            }
+            for (_, mut bucket) in buckets {
+                if bucket.len() == 1 {
+                    chosen.push(bucket.pop().expect("singleton suffix bucket"));
+                } else {
+                    frontier.push(bucket);
+                }
+            }
+        }
+        for state in chosen {
+            debug_assert!(state.depth > 0);
+            let index = state.index;
+            let path = cwd_paths[index]
+                .as_deref()
+                .expect("directory context has cwd");
+            let mut directory = String::new();
+            for part in path[state.remaining.len()..]
+                .split('/')
+                .filter(|part| !part.is_empty())
+            {
+                if !directory.is_empty() {
+                    directory.push('/');
+                }
+                directory.push_str(part);
+            }
+            if displays[index].directory_fallback {
+                displays[index].title =
+                    format!("{directory} · {}", tab_location(locale, &rows[index]));
+            }
+            let basename = path
+                .rsplit('/')
+                .find(|part| !part.is_empty())
+                .expect("directory context has basename");
+            if let Some(rest) = displays[index].context.strip_prefix(basename) {
+                displays[index].context = format!("{directory}{rest}");
+            }
+        }
+    }
+    let mut collision_groups: Vec<Vec<usize>> = {
+        let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+        for (index, display) in displays.iter().enumerate() {
+            groups
+                .entry((&display.title, &display.context))
+                .or_default()
+                .push(index);
+        }
+        groups.into_values().collect()
+    };
+    // Keys, not current filter/order, define compact ranks.
+    for group in &mut collision_groups {
+        if group.len() == 1 {
+            let index = group[0];
+            let label = card_source_label(locale, &rows[index]);
+            if displays[index].title == text(locale, Message::UnnamedSession) {
+                let source = rows[index].key.source_id;
+                displays[index].context =
+                    format!("(#{source}) · {label} · {}", displays[index].context);
+            } else {
+                displays[index].context = format!("{label} · {}", displays[index].context);
+            }
+            continue;
+        }
+        group.sort_unstable_by_key(|&index| rows[index].key);
+        let mut source_counts: HashMap<u64, usize> = HashMap::new();
+        for &index in group.iter() {
+            *source_counts.entry(rows[index].key.source_id).or_default() += 1;
+        }
+        let mut ranks: HashMap<u64, usize> = HashMap::new();
+        for &index in group.iter() {
+            let source = rows[index].key.source_id;
+            let rank = ranks.entry(source).or_default();
+            *rank += 1;
+            let label = card_source_label(locale, &rows[index]);
+            let discriminator = if source_counts[&source] > 1 {
+                format!("#{source} · {rank}")
+            } else {
+                format!("#{source}")
+            };
+            displays[index].context =
+                format!("({discriminator}) · {label} · {}", displays[index].context);
+        }
+    }
+    displays
+}
+fn unsafe_identifier_char(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{200B}'
+                | '\u{200E}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+        )
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,6 +1519,508 @@ mod tests {
         row
     }
 
+    fn path_record(terminal_id: &str, cwd: &str, status: AgentStatus) -> AgentRecord {
+        let mut row = record(terminal_id, terminal_id, status);
+        row.metadata.cwd = Some(cwd.into());
+        row.metadata.tab_label = Some("2".into());
+        row
+    }
+
+    #[test]
+    fn directory_names_partition_short_normalized_and_unrelated_paths() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("socket", 1));
+        let mut rows = vec![
+            path_record("short", "/src", AgentStatus::Idle),
+            path_record("alpha", "/alpha/src", AgentStatus::Idle),
+            path_record("beta", "/beta/src", AgentStatus::Idle),
+            path_record("deep", "/alpha/deep/src", AgentStatus::Idle),
+            path_record("n1", "/same//src//", AgentStatus::Idle),
+            path_record("n2", "///same/src/", AgentStatus::Idle),
+            path_record("root", "////", AgentStatus::Idle),
+        ];
+        let mut titled = path_record("titled", "/alpha/src", AgentStatus::Idle);
+        titled.metadata.title = Some("Build".into());
+        rows.push(titled);
+        let mut workspace = path_record("workspace", "/alpha/src", AgentStatus::Idle);
+        workspace.metadata.workspace_label = Some("Project".into());
+        rows.push(workspace);
+        assert!(store.replace_source("socket", 1, rows.iter()));
+        let snapshot = store.snapshot(&SessionListOptions::default(), None);
+        let display = |id: &str| {
+            let index = snapshot
+                .rows
+                .iter()
+                .position(|row| row.key.terminal_id == id)
+                .unwrap();
+            &snapshot.displays[index]
+        };
+        for (id, expected) in [
+            ("short", "src · Tab 2"),
+            ("alpha", "alpha/src · Tab 2"),
+            ("beta", "beta/src · Tab 2"),
+            ("deep", "deep/src · Tab 2"),
+            ("n1", "same/src · Tab 2"),
+            ("n2", "same/src · Tab 2"),
+        ] {
+            assert_eq!(display(id).title, expected, "{id}");
+            assert!(display(id).context.contains(expected), "{id}");
+        }
+        assert!(display("n1").context.starts_with("(#0 · 1) · "));
+        assert!(display("n2").context.starts_with("(#0 · 2) · "));
+        assert_eq!(
+            display("root").title,
+            text(UiLocale::En, Message::UnnamedSession)
+        );
+        assert!(!display("root").context.contains("src"));
+        assert_eq!(display("titled").title, "Build");
+        assert!(display("titled").context.contains(" · src · Tab 2"));
+        assert_eq!(display("workspace").title, "Project · Tab 2");
+        assert!(display("workspace").context.contains(" · Project · Tab 2"));
+    }
+
+    #[test]
+    fn directory_names_refine_long_shared_suffix_without_depth_limit() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("socket", 1));
+        let shared = "nested/".repeat(160);
+        let west = format!("/west/{shared}src");
+        let east = format!("/east/{shared}src");
+        let other = path_record("other", "/other/src", AgentStatus::Idle);
+        let rows = [
+            path_record("west", &west, AgentStatus::Idle),
+            path_record("east", &east, AgentStatus::Idle),
+            other,
+        ];
+        assert!(store.replace_source("socket", 1, rows.iter()));
+        let snapshot = store.snapshot(&SessionListOptions::default(), None);
+        for (id, expected) in [
+            ("west", west.trim_start_matches('/').to_owned()),
+            ("east", east.trim_start_matches('/').to_owned()),
+            ("other", "other/src".to_owned()),
+        ] {
+            let index = snapshot
+                .rows
+                .iter()
+                .position(|row| row.key.terminal_id == id)
+                .unwrap();
+            assert_eq!(
+                snapshot.displays[index].title,
+                format!("{expected} · Tab 2")
+            );
+            assert!(snapshot.displays[index].context.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn identical_suffixes_keep_source_ranks_after_reordering() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("first", 1));
+        assert!(store.begin_source("second", 1));
+        let first = [
+            path_record("z", "/one//src/", AgentStatus::Idle),
+            path_record("a", "/one/src", AgentStatus::Idle),
+        ];
+        let second = [
+            path_record("b", "/one/src", AgentStatus::Idle),
+            path_record("c", "/two/src", AgentStatus::Idle),
+        ];
+        assert!(store.replace_source("first", 1, first.iter()));
+        assert!(store.replace_source("second", 1, second.iter()));
+        let expected = [
+            ("a", "one/src · Tab 2", "(#0 · 1) · "),
+            ("z", "one/src · Tab 2", "(#0 · 2) · "),
+            ("b", "one/src · Tab 2", "(#1) · "),
+            ("c", "two/src · Tab 2", "This Mac · "),
+        ];
+        for reverse in [false, true] {
+            if reverse {
+                assert!(store.replace_source("first", 1, first.iter().rev()));
+                assert!(store.replace_source("second", 1, second.iter().rev()));
+            }
+            let snapshot = store.snapshot(&SessionListOptions::default(), None);
+            for (id, title, prefix) in expected {
+                let index = snapshot
+                    .rows
+                    .iter()
+                    .position(|row| row.key.terminal_id == id)
+                    .unwrap();
+                assert_eq!(snapshot.displays[index].title, title, "{id}");
+                assert!(snapshot.displays[index].context.starts_with(prefix), "{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn names_use_full_visible_universe_before_query_filter_sort_cap_and_lookup() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("first", 1));
+        assert!(store.begin_source("second", 1));
+        let mut rows: Vec<_> = (0..129)
+            .map(|index| {
+                path_record(
+                    &format!("a-{index:03}"),
+                    &format!("/filler-{index:03}/src"),
+                    AgentStatus::Idle,
+                )
+            })
+            .collect();
+        rows.push(path_record(
+            "z-target",
+            "/north/needle/src",
+            AgentStatus::Working,
+        ));
+        let rival = path_record("rival", "/south/needle/src", AgentStatus::Idle);
+        assert!(store.replace_source("first", 1, rows.iter()));
+        assert!(store.replace_source("second", 1, [&rival]));
+        let key = SessionKey {
+            source_id: 0,
+            generation: 1,
+            terminal_id: "z-target".into(),
+        };
+        let original = store.display_for_key(UiLocale::En, &key).unwrap();
+        assert_eq!(original.title, "north/needle/src · Tab 2");
+        let full = store.snapshot(&SessionListOptions::default(), Some(&key));
+        assert_eq!((full.total, full.matched, full.omitted), (131, 131, 3));
+        assert!(full.rows.iter().all(|row| row.key != key));
+        assert_eq!(full.selected, Some(key.clone()));
+        for options in [
+            SessionListOptions {
+                query: "north",
+                ..SessionListOptions::default()
+            },
+            SessionListOptions::with_filter(SessionFilter::Working),
+            SessionListOptions {
+                sort: SessionSort::TitleAsc,
+                query: "north",
+                ..SessionListOptions::default()
+            },
+            SessionListOptions {
+                sort: SessionSort::SourceAsc,
+                running_first: true,
+                filter: SessionFilter::Working,
+                ..SessionListOptions::default()
+            },
+        ] {
+            let snapshot = store.snapshot(&options, Some(&key));
+            assert_eq!(snapshot.matched, 1);
+            assert_eq!(snapshot.rows[0].key, key);
+            assert_eq!(snapshot.displays[0], original);
+        }
+        store.set_visibility("second", false);
+        let narrowed = store.display_for_key(UiLocale::En, &key).unwrap();
+        assert_eq!(narrowed.title, "needle/src · Tab 2");
+        assert_eq!(
+            store
+                .snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Working),
+                    None
+                )
+                .displays[0],
+            narrowed
+        );
+        store.set_visibility("second", true);
+        assert_eq!(store.display_for_key(UiLocale::En, &key), Some(original));
+    }
+
+    #[test]
+    fn search_intersects_status_before_cap_and_uses_localized_visible_fields() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("socket-private-id", 1));
+        let mut rows: Vec<_> = (0..130)
+            .map(|index| {
+                let mut row = record(&format!("hidden-{index:03}"), "pane", AgentStatus::Idle);
+                row.metadata.title = Some("Irrelevant".into());
+                row
+            })
+            .collect();
+        let mut target = record("opaque-needlestem", "pane-target", AgentStatus::Working);
+        target.metadata.title = Some("🧪 한국어 LATIN".into());
+        target.metadata.cwd = Some("/workspace/src".into());
+        target.metadata.tab_label = Some("2".into());
+        rows.push(target);
+        assert!(store.replace_source("socket-private-id", 1, rows.iter()));
+        let key = store
+            .snapshot(
+                &SessionListOptions::with_filter(SessionFilter::Working),
+                None,
+            )
+            .rows[0]
+            .key
+            .clone();
+        for query in [" 한국어 ", "🧪", "latin", "/WORKSPACE/SRC", "Tab 2"] {
+            let options = SessionListOptions {
+                query,
+                filter: SessionFilter::Working,
+                ..SessionListOptions::default()
+            };
+            let snapshot = store.snapshot(&options, Some(&key));
+            assert_eq!(
+                (snapshot.total, snapshot.matched, snapshot.omitted),
+                (131, 1, 0)
+            );
+            assert_eq!(snapshot.rows[0].key, key);
+            assert_eq!(snapshot.selected, Some(key.clone()));
+        }
+        let across_cap = store.snapshot(
+            &SessionListOptions {
+                query: "latin",
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!(across_cap.rows[0].key, key);
+        assert_eq!((across_cap.matched, across_cap.omitted), (1, 0));
+        let whitespace = store.snapshot(
+            &SessionListOptions {
+                query: "   ",
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!((whitespace.matched, whitespace.omitted), (131, 3));
+        for query in ["needlestem", "socket-private-id", "pane-target"] {
+            let snapshot = store.snapshot(
+                &SessionListOptions {
+                    query,
+                    ..SessionListOptions::default()
+                },
+                None,
+            );
+            assert_eq!(snapshot.matched, 0, "{query}");
+        }
+        let snapshot = store.snapshot(
+            &SessionListOptions {
+                query: "🧪",
+                filter: SessionFilter::Idle,
+                ..SessionListOptions::default()
+            },
+            Some(&key),
+        );
+        assert_eq!(snapshot.matched, 0);
+        assert_eq!(snapshot.selected, Some(key));
+        assert_eq!(snapshot.status_summary.total, 131);
+        let unnamed = record("blank", "pane", AgentStatus::Idle);
+        assert!(store.replace_source("socket-private-id", 1, [&unnamed]));
+        let korean = store.snapshot(
+            &SessionListOptions {
+                query: text(UiLocale::Ko, Message::UnnamedSession),
+                locale: UiLocale::Ko,
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!(korean.matched, 1);
+        let local = store.snapshot(
+            &SessionListOptions {
+                query: session_local_source(UiLocale::Ko),
+                locale: UiLocale::Ko,
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!(local.matched, 1);
+    }
+
+    #[test]
+    fn running_priority_is_global_bounded_and_requires_effective_live_running() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("first", 1));
+        assert!(store.begin_source("second", 1));
+        let first: Vec<_> = (0..140)
+            .map(|index| record(&format!("idle-{index:03}"), "pane", AgentStatus::Idle))
+            .collect();
+        let second: Vec<_> = (0..140)
+            .map(|index| record(&format!("running-{index:03}"), "pane", AgentStatus::Working))
+            .collect();
+        assert!(store.replace_source("first", 1, first.iter()));
+        assert!(store.replace_source("second", 1, second.iter()));
+        let pinned = SessionListOptions {
+            running_first: true,
+            ..SessionListOptions::default()
+        };
+        let snapshot = store.snapshot(&pinned, None);
+        assert_eq!(
+            (snapshot.total, snapshot.matched, snapshot.omitted),
+            (280, 280, 152)
+        );
+        assert_eq!(snapshot.rows.len(), 128);
+        assert!(snapshot
+            .rows
+            .iter()
+            .all(|row| row.display_status() == DisplayStatus::Running));
+        assert_eq!(snapshot.rows[127].key.terminal_id, "running-127");
+        let default = store.snapshot(&SessionListOptions::default(), None);
+        assert!(default
+            .rows
+            .iter()
+            .all(|row| row.status == AgentStatus::Idle));
+        let selected = snapshot.rows[127].key.clone();
+        assert!(store.mark_offline("second", 1));
+        let offline = store.snapshot(&pinned, Some(&selected));
+        assert_eq!(offline.rows[0].key.source_id, default.rows[0].key.source_id);
+        assert_eq!(offline.selected, Some(selected));
+        assert_eq!(offline.status_summary.status, DisplayStatus::Offline);
+        let mut completed = reported("idle-000", "turn", AgentOutcome::Succeeded);
+        completed.status = AgentStatus::Working;
+        completed.pane_id = "pane".into();
+        let mut revised = first.clone();
+        revised[0] = completed;
+        assert!(store.replace_source("first", 1, revised.iter()));
+        assert!(store.accept_outcome("first", 1, "idle-000", "pane", AgentOutcome::Succeeded, 123));
+        let effective = store.snapshot(&pinned, None);
+        assert_eq!(effective.rows[0].display_status(), DisplayStatus::Succeeded);
+        assert!(effective
+            .rows
+            .iter()
+            .all(|row| row.display_status() != DisplayStatus::Running));
+    }
+
+    #[test]
+    fn sorting_and_duplicate_discriminators_hold_outside_default_cap() {
+        let mut store = SessionStore::new();
+        let first = crate::sources::remote_source("east");
+        let second = crate::sources::remote_source("west");
+        assert!(store.begin_source(&first, 1));
+        assert!(store.begin_source(&second, 1));
+        store.set_label(&first, "Zulu");
+        store.set_label(&second, "Alpha");
+        let mut early: Vec<_> = (0..130)
+            .map(|index| {
+                let mut row = record(&format!("a-{index:03}"), "pane", AgentStatus::Idle);
+                row.metadata.title = Some("Shared".into());
+                row.metadata.tab_label = Some("2".into());
+                row.metadata.workspace_label = Some("Idea".into());
+                row
+            })
+            .collect();
+        early[129].metadata.cwd = Some("/secret/only".into());
+        let mut later = record("z-later", "pane", AgentStatus::Idle);
+        later.metadata.title = Some("Aardvark".into());
+        assert!(store.replace_source(&first, 1, early.iter()));
+        assert!(store.replace_source(&second, 1, [&later]));
+        let title = SessionListOptions {
+            sort: SessionSort::TitleAsc,
+            ..SessionListOptions::default()
+        };
+        let snapshot = store.snapshot(&title, None);
+        assert_eq!(snapshot.rows[0].key.terminal_id, "z-later");
+        assert_eq!((snapshot.matched, snapshot.omitted), (131, 3));
+        let page = store
+            .page(SessionFilter::All, snapshot.revision, None, 1)
+            .unwrap();
+        assert_eq!(page.rows[0].key.terminal_id, "a-000");
+        assert_eq!(page.rows[0].metadata.title.as_deref(), Some("Shared"));
+        assert_eq!(page.matched, snapshot.matched);
+        assert_eq!(page.status_summary, snapshot.status_summary);
+        let source = store.snapshot(
+            &SessionListOptions {
+                sort: SessionSort::SourceAsc,
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!(source.rows[0].key.terminal_id, "z-later");
+        let selected = SessionKey {
+            source_id: 0,
+            generation: 1,
+            terminal_id: "a-129".into(),
+        };
+        let display = store.display_for_key(UiLocale::En, &selected).unwrap();
+        let displayed = store.snapshot(
+            &SessionListOptions {
+                query: "Shared",
+                ..title
+            },
+            Some(&selected),
+        );
+        assert!(displayed.rows.iter().all(|row| row.key != selected));
+        assert!(display.context.starts_with("(#0 · 130) · "));
+        let narrow = store.snapshot(
+            &SessionListOptions {
+                query: "SECRET",
+                ..title
+            },
+            Some(&selected),
+        );
+        assert_eq!(narrow.matched, 1);
+        assert_eq!(narrow.rows[0].key, selected);
+        assert_eq!(narrow.displays[0], display);
+        assert_eq!(displayed.selected, Some(selected));
+        assert_eq!(displayed.matched, 130);
+        assert_eq!(store.revision(), snapshot.revision);
+        let named_source = store.snapshot(
+            &SessionListOptions {
+                query: "aLpHa",
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!(named_source.matched, 1);
+        assert_eq!(named_source.rows[0].key.terminal_id, "z-later");
+        store.set_label(&second, "Beta");
+        assert_eq!(
+            store
+                .snapshot(
+                    &SessionListOptions {
+                        query: "Alpha",
+                        ..SessionListOptions::default()
+                    },
+                    None
+                )
+                .matched,
+            0
+        );
+        assert_eq!(
+            store
+                .snapshot(
+                    &SessionListOptions {
+                        query: "beta",
+                        ..SessionListOptions::default()
+                    },
+                    None
+                )
+                .matched,
+            1
+        );
+    }
+
+    #[test]
+    fn title_sort_prefers_named_tab_then_workspace_and_leaves_unnamed_last() {
+        let mut store = SessionStore::new();
+        assert!(store.begin_source("socket", 1));
+        let mut explicit = record("a", "pane-a", AgentStatus::Idle);
+        explicit.metadata.title = Some("Zebra".into());
+        let mut named_tab = record("b", "pane-b", AgentStatus::Idle);
+        named_tab.metadata.title = Some("zsh".into());
+        named_tab.metadata.tab_label = Some("Alpha".into());
+        let mut workspace = record("c", "pane-c", AgentStatus::Idle);
+        workspace.metadata.tab_label = Some("2".into());
+        workspace.metadata.workspace_label = Some("Beta".into());
+        let unnamed = record("d", "pane-d", AgentStatus::Idle);
+        assert!(store.replace_source("socket", 1, [&explicit, &named_tab, &workspace, &unnamed]));
+        let snapshot = store.snapshot(
+            &SessionListOptions {
+                sort: SessionSort::TitleAsc,
+                ..SessionListOptions::default()
+            },
+            None,
+        );
+        assert_eq!(
+            snapshot
+                .rows
+                .iter()
+                .map(|row| row.key.terminal_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c", "a", "d"]
+        );
+        assert_eq!(snapshot.displays[1].title, "Beta · Tab 2");
+        assert_eq!(
+            snapshot.displays[3].title,
+            text(UiLocale::En, Message::UnnamedSession)
+        );
+    }
+
     #[test]
     fn terminal_results_require_acceptance_and_new_activity_invalidates_them() {
         let mut store = SessionStore::new();
@@ -978,19 +2033,19 @@ mod tests {
             let row = reported("terminal", "1", outcome);
             assert!(store.replace_source("socket", 1, [&row]));
             assert_eq!(
-                store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+                store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
                 DisplayStatus::Completed
             );
             let revision = store.revision();
             assert!(store.accept_outcome("socket", 1, "terminal", "terminal", outcome, 123));
             assert!(store.revision() > revision);
             assert_eq!(
-                store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+                store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
                 display
             );
             assert!(store.update_status("socket", 1, "terminal", "terminal", AgentStatus::Working));
             assert_eq!(
-                store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+                store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
                 DisplayStatus::Running
             );
         }
@@ -1008,12 +2063,12 @@ mod tests {
         running.status = AgentStatus::Working;
         assert!(store.replace_source("socket", 1, [&running]));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Running
         );
         assert!(store.replace_source("socket", 1, [&row]));
         assert_ne!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Succeeded
         );
         // A new running report clears an accepted result even if raw Working
@@ -1030,19 +2085,19 @@ mod tests {
             123
         ));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Succeeded
         );
         let mut new_work = reported("terminal", "5", AgentOutcome::Running);
         new_work.status = AgentStatus::Working;
         assert!(store.replace_source("socket", 1, [&new_work]));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Running
         );
         assert!(store.replace_source("socket", 1, [&lagging]));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Running
         );
     }
@@ -1082,18 +2137,18 @@ mod tests {
         assert!(store.replace_source("socket", 1, [&next]));
         assert!(store.replace_source("socket", 1, [&row]));
         assert_ne!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Succeeded
         );
         assert!(store.mark_offline("socket", 1));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Offline
         );
         assert!(store.begin_source("socket", 2));
         assert!(store.replace_source("socket", 2, [&row]));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Completed
         );
         assert!(!store.accept_outcome(
@@ -1116,13 +2171,13 @@ mod tests {
         changed.outcome.as_mut().unwrap().session = "session-two".into();
         assert!(store.replace_source("socket", 2, [&changed]));
         assert_ne!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Succeeded
         );
         changed.pane_id = "replacement".into();
         assert!(store.replace_source("socket", 2, [&changed]));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].outcome,
+            store.snapshot(&SessionListOptions::default(), None).rows[0].outcome,
             None
         );
     }
@@ -1146,7 +2201,7 @@ mod tests {
                 ));
                 assert_eq!(
                     store
-                        .snapshot(SessionFilter::All, None)
+                        .snapshot(&SessionListOptions::default(), None)
                         .status_summary
                         .status,
                     DisplayStatus::Succeeded
@@ -1157,7 +2212,8 @@ mod tests {
                 let revision = store.revision();
                 assert!(store.replace_source("socket", 1, [&row]));
                 assert_eq!(store.revision(), revision + 1);
-                let snapshot = store.snapshot(SessionFilter::All, None);
+                let snapshot =
+                    store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
                 assert_eq!(snapshot.rows[0].outcome, None);
                 assert_eq!(snapshot.rows[0].status, status);
                 assert_eq!(
@@ -1203,7 +2259,8 @@ mod tests {
                 row.outcome.as_mut().unwrap().at_unix_ms = 124;
             }
             assert!(store.replace_source("socket", 1, [&row]));
-            let snapshot = store.snapshot(SessionFilter::All, None);
+            let snapshot =
+                store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
             assert_eq!(snapshot.rows[0].outcome, None);
             assert_eq!(snapshot.status_summary.status, DisplayStatus::Completed);
             assert!(!store.accept_outcome(
@@ -1234,7 +2291,7 @@ mod tests {
         let revision = store.revision();
         assert!(store.replace_source("socket", 1, [&row]));
         assert_eq!(store.revision(), revision);
-        let snapshot = store.snapshot(SessionFilter::All, None);
+        let snapshot = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(snapshot.rows[0].outcome, Some(AgentOutcome::Succeeded));
         assert_eq!(snapshot.status_summary.status, DisplayStatus::Succeeded);
     }
@@ -1244,7 +2301,7 @@ mod tests {
         let mut store = SessionStore::new();
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::NoSessions
@@ -1252,7 +2309,7 @@ mod tests {
         assert!(store.begin_source("socket", 1));
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::Offline
@@ -1277,7 +2334,10 @@ mod tests {
                 123
             ));
         }
-        let filtered = store.snapshot(SessionFilter::Working, None);
+        let filtered = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Working),
+            None,
+        );
         assert!(filtered.rows.is_empty());
         assert_eq!(
             filtered.status_summary,
@@ -1288,12 +2348,17 @@ mod tests {
             }
         );
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows.len(),
+            store
+                .snapshot(&SessionListOptions::default(), None)
+                .rows
+                .len(),
             MAX_ROWS
         );
         assert!(store.begin_source("other", 1));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).status_summary,
+            store
+                .snapshot(&SessionListOptions::default(), None)
+                .status_summary,
             SessionStatusSummary {
                 status: DisplayStatus::Offline,
                 count: 0,
@@ -1303,7 +2368,7 @@ mod tests {
         assert!(store.replace_source("other", 1, std::iter::empty::<&AgentRecord>()));
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::Succeeded
@@ -1312,7 +2377,10 @@ mod tests {
         assert!(store.replace_source("socket", 1, records.iter().chain([&idle])));
         assert_ne!(
             store
-                .snapshot(SessionFilter::Working, None)
+                .snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Working),
+                    None
+                )
                 .status_summary
                 .status,
             DisplayStatus::Succeeded
@@ -1320,7 +2388,7 @@ mod tests {
         assert!(store.mark_offline("other", 1));
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::Offline
@@ -1337,7 +2405,7 @@ mod tests {
         assert!(store.replace_source("/private/one.sock", 1, [&first]));
         assert!(store.replace_source("/private/two.sock", 1, [&second]));
 
-        let snapshot = store.snapshot(SessionFilter::All, None);
+        let snapshot = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(snapshot.rows.len(), 2);
         assert_ne!(
             snapshot.rows[0].key.source_id,
@@ -1358,7 +2426,8 @@ mod tests {
         let old = record("terminal", "pane", AgentStatus::Working);
         assert!(store.replace_source("socket", 1, [&old]));
         assert!(store.begin_source("socket", 2));
-        let after_begin = store.snapshot(SessionFilter::All, None);
+        let after_begin =
+            store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(after_begin.rows[0].availability, Availability::Offline);
         assert_eq!(after_begin.rows[0].key.generation, 2);
         assert!(!store.replace_source("socket", 1, [&old]));
@@ -1366,7 +2435,10 @@ mod tests {
         assert!(!store.mark_offline("socket", 1));
         assert!(!store.remove_source("socket", 1));
         assert!(store.replace_source("socket", 2, std::iter::empty::<&AgentRecord>(),));
-        assert!(store.snapshot(SessionFilter::All, None).rows.is_empty());
+        assert!(store
+            .snapshot(&SessionListOptions::default(), None)
+            .rows
+            .is_empty());
     }
 
     #[test]
@@ -1376,23 +2448,46 @@ mod tests {
         let cached = record("terminal", "pane", AgentStatus::Done);
         assert!(store.replace_source("socket", 1, [&cached]));
         assert!(store.mark_offline("socket", 1));
-        let offline = store.snapshot(SessionFilter::All, None);
+        let offline = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(offline.rows[0].status, AgentStatus::Done);
-        assert_eq!(store.snapshot(SessionFilter::Completed, None).matched, 0);
-        assert_eq!(store.snapshot(SessionFilter::Offline, None).matched, 1);
+        assert_eq!(
+            store
+                .snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Completed),
+                    None
+                )
+                .matched,
+            0
+        );
+        assert_eq!(
+            store
+                .snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Offline),
+                    None
+                )
+                .matched,
+            1
+        );
 
         assert!(store.begin_source("socket", 2));
-        let reconnecting = store.snapshot(SessionFilter::All, None);
+        let reconnecting =
+            store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(reconnecting.rows[0].availability, Availability::Offline);
         assert!(store.replace_source("socket", 2, std::iter::empty::<&AgentRecord>(),));
-        assert_eq!(store.snapshot(SessionFilter::All, None).total, 0);
+        assert_eq!(
+            store.snapshot(&SessionListOptions::default(), None).total,
+            0
+        );
         assert!(store.replace_source("socket", 2, [&cached]));
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].availability,
+            store.snapshot(&SessionListOptions::default(), None).rows[0].availability,
             Availability::Live
         );
         assert!(store.remove_source("socket", 2));
-        assert_eq!(store.snapshot(SessionFilter::All, None).total, 0);
+        assert_eq!(
+            store.snapshot(&SessionListOptions::default(), None).total,
+            0
+        );
     }
 
     #[test]
@@ -1411,12 +2506,15 @@ mod tests {
             .collect();
         assert!(store.replace_source("socket", 1, records.iter()));
 
-        let all = store.snapshot(SessionFilter::All, None);
+        let all = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(all.total, 200);
         assert_eq!(all.matched, 200);
         assert_eq!(all.rows.len(), 128);
         assert_eq!(all.omitted, 72);
-        let working = store.snapshot(SessionFilter::Working, None);
+        let working = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Working),
+            None,
+        );
         assert_eq!(working.matched, 50);
         assert_eq!(working.rows.len(), 50);
         assert_eq!(working.omitted, 0);
@@ -1440,7 +2538,7 @@ mod tests {
         assert!(store.replace_source("second", 1, second.iter()));
         assert!(store.replace_source("hidden", 1, [&hidden]));
         store.set_visibility("hidden", false);
-        let gui = store.snapshot(SessionFilter::All, None);
+        let gui = store.snapshot(&SessionListOptions::default(), None);
         assert_eq!(gui.rows.len(), 128);
         assert_eq!(gui.omitted, 3);
 
@@ -1514,7 +2612,10 @@ mod tests {
         assert!(store.replace_source("offline", 1, [&cached]));
         assert!(store.mark_offline("offline", 1));
         let revision = store.revision();
-        let gui = store.snapshot(SessionFilter::Working, None);
+        let gui = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Working),
+            None,
+        );
         let first = store
             .page(SessionFilter::Working, revision, None, 32)
             .unwrap();
@@ -1586,11 +2687,20 @@ mod tests {
             .collect();
         records.push(record("working", "working-pane", AgentStatus::Working));
         assert!(store.replace_source("socket", 1, records.iter()));
-        let filtered = store.snapshot(SessionFilter::Working, None);
+        let filtered = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Working),
+            None,
+        );
         let key = filtered.rows[0].key.clone();
-        assert_eq!(store.snapshot(SessionFilter::All, None).rows.len(), 128);
+        assert_eq!(
+            store
+                .snapshot(&SessionListOptions::default(), None)
+                .rows
+                .len(),
+            128
+        );
         assert!(!store
-            .snapshot(SessionFilter::All, None)
+            .snapshot(&SessionListOptions::default(), None)
             .rows
             .iter()
             .any(|row| row.key == key));
@@ -1600,7 +2710,13 @@ mod tests {
             DisplayStatus::Running
         );
         assert!(store.update_status("socket", 1, "working", "working-pane", AgentStatus::Done));
-        assert!(store.snapshot(SessionFilter::Working, None).rows.is_empty());
+        assert!(store
+            .snapshot(
+                &SessionListOptions::with_filter(SessionFilter::Working),
+                None
+            )
+            .rows
+            .is_empty());
         let completed = store.view_for_key(&key).unwrap();
         assert_eq!(completed.status, AgentStatus::Done);
         assert_eq!(completed.display_status(), DisplayStatus::Completed);
@@ -1653,7 +2769,11 @@ mod tests {
         assert!(store.begin_source(&remote, 1));
         let remote_row = record("remote", "remote-pane", AgentStatus::Working);
         assert!(store.replace_source(&remote, 1, [&remote_row]));
-        let remote_key = store.snapshot(SessionFilter::All, None).rows[0].key.clone();
+        let remote_key = store
+            .snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
         assert_eq!(
             store.view_for_key(&remote_key).unwrap().status,
             AgentStatus::Working
@@ -1667,7 +2787,7 @@ mod tests {
         let first = record("first", "shared-pane", AgentStatus::Idle);
         let second = record("second", "shared-pane", AgentStatus::Done);
         assert!(store.replace_source("socket", 1, [&first, &second]));
-        let local = store.snapshot(SessionFilter::All, None);
+        let local = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         let ambiguous = local
             .rows
             .iter()
@@ -1701,7 +2821,9 @@ mod tests {
         let mut second = record("second", "pane-two", AgentStatus::Working);
         second.metadata = first.metadata.clone();
         assert!(store.replace_source("/local.sock", 1, [&first, &second]));
-        let rows = store.snapshot(SessionFilter::All, None).rows;
+        let rows = store
+            .snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         let key = rows[1].key.clone();
         let target = store.worktree_remove_target(&key).unwrap();
         assert_eq!(target.key, key);
@@ -1770,7 +2892,7 @@ mod tests {
         assert!(store.begin_source(&remote, 1));
         assert!(store.replace_source(&remote, 1, [&first]));
         let remote_key = store
-            .snapshot(SessionFilter::All, None)
+            .snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows
             .into_iter()
             .find(|row| row.key.terminal_id == "first" && row.key.source_id != key.source_id)
@@ -1788,14 +2910,23 @@ mod tests {
         assert!(store.begin_source("socket", 1));
         let initial = record("terminal", "pane", AgentStatus::Working);
         assert!(store.replace_source("socket", 1, [&initial]));
-        let key = store.snapshot(SessionFilter::All, None).rows[0].key.clone();
+        let key = store
+            .snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
         assert!(store.update_status("socket", 1, "terminal", "pane", AgentStatus::Done));
-        let changed = store.snapshot(SessionFilter::Working, Some(&key));
+        let changed = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Working),
+            Some(&key),
+        );
         assert_eq!(changed.selected, Some(key.clone()));
         assert!(changed.rows.is_empty());
         assert!(store.begin_source("socket", 2));
         assert_eq!(
-            store.snapshot(SessionFilter::All, Some(&key)).selected,
+            store
+                .snapshot(&SessionListOptions::default(), Some(&key))
+                .selected,
             None
         );
     }
@@ -1810,7 +2941,9 @@ mod tests {
         let second_a = record("a", "pane-c", AgentStatus::Idle);
         assert!(store.replace_source("first", 1, [&first_b, &first_a]));
         assert!(store.replace_source("second", 1, [&second_a]));
-        let rows = store.snapshot(SessionFilter::All, None).rows;
+        let rows = store
+            .snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         assert_eq!(rows[0].pane_id, "pane-a");
         assert_eq!(rows[1].pane_id, "pane-b");
         assert_eq!(rows[2].pane_id, "pane-c");
@@ -1842,14 +2975,17 @@ mod tests {
         first.metadata.title = Some("Initial task".to_owned());
         let second = record("b", "pane-b", AgentStatus::Working);
         assert!(store.replace_source("socket", 1, [&second, &first]));
-        let initial = store.snapshot(SessionFilter::All, None);
+        let initial = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         let selected = initial.rows[0].key.clone();
         let keys: Vec<_> = initial.rows.iter().map(|row| row.key.clone()).collect();
 
         let mut renamed = first.clone();
         renamed.metadata.title = Some("Renamed task".to_owned());
         assert!(store.replace_source("socket", 1, [&renamed, &second]));
-        let changed = store.snapshot(SessionFilter::All, Some(&selected));
+        let changed = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::All),
+            Some(&selected),
+        );
         assert_eq!(changed.revision, initial.revision + 1);
         assert_eq!(changed.selected, Some(selected));
         assert_eq!(
@@ -1879,14 +3015,20 @@ mod tests {
         cached.metadata.title = Some("Cached task".to_owned());
         assert!(store.replace_source("socket", 1, [&cached]));
         assert!(store.mark_offline("socket", 1));
-        let offline = store.snapshot(SessionFilter::Offline, None);
+        let offline = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Offline),
+            None,
+        );
         assert_eq!(
             offline.rows[0].metadata.title.as_deref(),
             Some("Cached task")
         );
 
         assert!(store.begin_source("socket", 2));
-        let reconnecting = store.snapshot(SessionFilter::Offline, None);
+        let reconnecting = store.snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Offline),
+            None,
+        );
         assert_eq!(
             reconnecting.rows[0].metadata.title.as_deref(),
             Some("Cached task")
@@ -1900,10 +3042,10 @@ mod tests {
         let mut current = cached.clone();
         current.metadata.title = Some("Current task".to_owned());
         assert!(store.replace_source("socket", 2, [&current]));
-        let live = store.snapshot(SessionFilter::All, None);
+        let live = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(live.rows[0].metadata.title.as_deref(), Some("Current task"));
         assert!(!store.replace_source("socket", 1, [&stale]));
-        assert_eq!(store.snapshot(SessionFilter::All, None), live);
+        assert_eq!(store.snapshot(&SessionListOptions::default(), None), live);
     }
 
     #[test]
@@ -1912,13 +3054,19 @@ mod tests {
         assert!(store.begin_source("socket", 1));
         let row = record("terminal", "pane", AgentStatus::Idle);
         assert!(store.replace_source("socket", 1, [&row]));
-        let key = store.snapshot(SessionFilter::All, None).rows[0].key.clone();
+        let key = store
+            .snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
+            .key
+            .clone();
         assert!(store.mark_offline("socket", 1));
         let revision = store.revision();
         assert!(store.begin_source("socket", 2));
         assert!(store.revision() > revision);
         assert_eq!(
-            store.snapshot(SessionFilter::All, Some(&key)).selected,
+            store
+                .snapshot(&SessionListOptions::default(), Some(&key))
+                .selected,
             None
         );
     }
@@ -1977,7 +3125,8 @@ mod tests {
                 ));
                 assert!(store.accept_outcome("socket", 1, "terminal", "terminal", outcome, 123));
                 assert_eq!(store.revision(), revision);
-                let snapshot = store.snapshot(SessionFilter::All, None);
+                let snapshot =
+                    store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
                 assert_eq!(snapshot.rows[0].status, AgentStatus::Idle);
                 assert_eq!(snapshot.rows[0].display_status(), display);
                 assert_eq!(snapshot.status_summary.status, display);
@@ -1992,7 +3141,7 @@ mod tests {
         let mut row = reported("terminal", "1", AgentOutcome::Succeeded);
         row.status = AgentStatus::Idle;
         assert!(store.replace_source("socket", 1, [&row]));
-        let snapshot = store.snapshot(SessionFilter::All, None);
+        let snapshot = store.snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(snapshot.rows[0].outcome, None);
         assert_eq!(snapshot.status_summary.status, DisplayStatus::Idle);
         assert!(store.accept_outcome(
@@ -2018,7 +3167,7 @@ mod tests {
         assert!(store.update_status("socket", 1, "terminal", "terminal", AgentStatus::Working));
         assert_eq!(store.revision(), revision + 1);
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Running
         );
         let revision = store.revision();
@@ -2037,7 +3186,7 @@ mod tests {
         assert!(store.update_status("socket", 1, "terminal", "terminal", AgentStatus::Blocked));
         assert_eq!(store.revision(), revision + 1);
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).rows[0].display_status(),
+            store.snapshot(&SessionListOptions::default(), None).rows[0].display_status(),
             DisplayStatus::Waiting
         );
     }
@@ -2047,7 +3196,7 @@ mod tests {
         let mut store = SessionStore::new();
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::NoSessions
@@ -2055,7 +3204,9 @@ mod tests {
         assert!(store.begin_source("socket", 1));
         let before_snapshot = store.revision();
         assert_eq!(
-            store.snapshot(SessionFilter::All, None).status_summary,
+            store
+                .snapshot(&SessionListOptions::default(), None)
+                .status_summary,
             SessionStatusSummary {
                 status: DisplayStatus::Offline,
                 count: 0,
@@ -2070,7 +3221,7 @@ mod tests {
         assert_eq!(store.revision(), before_snapshot + 1);
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::Idle
@@ -2080,7 +3231,7 @@ mod tests {
         assert!(store.mark_offline("socket", 1));
         assert_eq!(
             store
-                .snapshot(SessionFilter::All, None)
+                .snapshot(&SessionListOptions::default(), None)
                 .status_summary
                 .status,
             DisplayStatus::Offline
