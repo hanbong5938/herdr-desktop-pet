@@ -72,6 +72,109 @@ pub(crate) fn screen_rect_for_image_bounds(
     }
 }
 
+/// Requested visible body dimensions, excluding the transparent window inset.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BubbleSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+impl BubbleSize {
+    pub(crate) fn is_valid(self) -> bool {
+        self.width.is_finite() && self.width > 0.0 && self.height.is_finite() && self.height > 0.0
+    }
+}
+
+/// Resize a screen-space body from its bottom-right corner while keeping its
+/// top-left fixed. AppKit's upward-positive Y makes downward drag negative.
+/// The pointer's initial offset from the corner is already accounted for by
+/// passing the drag displacement, rather than an absolute pointer location.
+pub(crate) fn resize_bubble_body(
+    start_body: Rect,
+    delta: (f64, f64),
+    minimum: BubbleSize,
+    visible: Rect,
+) -> Rect {
+    let start = normalize_rect(start_body);
+    let visible = normalize_rect(visible);
+    let visible_right = right(visible);
+    let visible_top = top(visible);
+    let width_capacity = body_capacity(visible.width, BUBBLE_WINDOW_INSET * 2.0);
+    let height_capacity = body_capacity(visible.height, BUBBLE_WINDOW_INSET * 2.0);
+    let left = if width_capacity > 0.0 {
+        saturating_add(visible.x, BUBBLE_WINDOW_INSET)
+    } else {
+        visible.x
+    };
+    let right_edge = if width_capacity > 0.0 {
+        saturating_sub(visible_right, BUBBLE_WINDOW_INSET)
+    } else {
+        visible_right
+    };
+    let bottom = if height_capacity > 0.0 {
+        saturating_add(visible.y, BUBBLE_WINDOW_INSET)
+    } else {
+        visible.y
+    };
+    let top_edge = if height_capacity > 0.0 {
+        saturating_sub(visible_top, BUBBLE_WINDOW_INSET)
+    } else {
+        visible_top
+    };
+    let x = clamp_scalar(start.x, left, right_edge);
+    let top = clamp_scalar(top(start), bottom, top_edge);
+    let max_width = if width_capacity > 0.0 {
+        saturating_sub(right_edge, x)
+    } else {
+        0.0
+    };
+    let max_height = if height_capacity > 0.0 {
+        saturating_sub(top, bottom)
+    } else {
+        0.0
+    };
+    let width = clamp_scalar(
+        saturating_add(start.width, finite_coordinate(delta.0)),
+        finite_non_negative(minimum.width).min(max_width),
+        max_width,
+    );
+    let height = clamp_scalar(
+        saturating_sub(start.height, finite_coordinate(delta.1)),
+        finite_non_negative(minimum.height).min(max_height),
+        max_height,
+    );
+    Rect {
+        x,
+        y: saturating_sub(top, height),
+        width,
+        height,
+    }
+}
+
+/// Lay out a resized screen-space body without selecting a different pet side.
+/// An attached bubble loses its tail if its original side is no longer external;
+/// the caller retains attached intent independently of `side`.
+pub(crate) fn place_resizing_bubble(
+    body: Rect,
+    visible: Rect,
+    attached: Option<(Rect, Option<BubbleSide>)>,
+) -> BubbleGeometry {
+    let body = normalize_rect(body);
+    let mut geometry =
+        place_standalone_bubble((body.x, body.y), (body.width, body.height), visible);
+    if let Some((pet, Some(side))) = attached {
+        let pet = normalize_rect(pet);
+        let tail = tail_geometry(side, geometry.window, geometry.body, pet);
+        geometry.tail = tail;
+        if is_external(side, &geometry, pet) {
+            geometry.side = Some(side);
+        } else {
+            geometry.tail = None;
+        }
+    }
+    geometry
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BubbleGeometry {
     pub window: Rect,
@@ -619,6 +722,155 @@ mod tests {
             geometry.window.x + tail.tip.0,
             geometry.window.y + tail.tip.1,
         )
+    }
+
+    #[test]
+    fn resize_changes_axes_independently_without_moving_top_left() {
+        let visible = rect(-500.0, -400.0, 1000.0, 800.0);
+        let start = rect(-200.0, -100.0, 120.0, 60.0);
+        let minimum = BubbleSize {
+            width: 80.0,
+            height: 35.0,
+        };
+        assert!(minimum.is_valid());
+        assert_eq!(
+            resize_bubble_body(start, (0.0, 0.0), minimum, visible),
+            start
+        );
+        assert_eq!(
+            resize_bubble_body(start, (25.0, 0.0), minimum, visible),
+            rect(-200.0, -100.0, 145.0, 60.0)
+        );
+        assert_eq!(
+            resize_bubble_body(start, (0.0, -30.0), minimum, visible),
+            rect(-200.0, -130.0, 120.0, 90.0)
+        );
+        assert_eq!(
+            resize_bubble_body(start, (-1000.0, 1000.0), minimum, visible),
+            rect(-200.0, -75.0, 80.0, 35.0)
+        );
+    }
+
+    #[test]
+    fn resize_caps_at_screen_inset_even_with_negative_monitor_origin() {
+        let visible = rect(-300.0, -200.0, 240.0, 160.0);
+        let minimum = BubbleSize {
+            width: 90.0,
+            height: 40.0,
+        };
+        let body = resize_bubble_body(
+            rect(-250.0, -150.0, 100.0, 50.0),
+            (1000.0, -1000.0),
+            minimum,
+            visible,
+        );
+        assert_eq!(body, rect(-250.0, -188.0, 178.0, 88.0));
+        let geometry = place_resizing_bubble(body, visible, None);
+        assert_eq!(geometry.window.x + geometry.body.x, body.x);
+        assert_eq!(geometry.window.y + geometry.body.y, body.y);
+        assert_eq!(geometry.body.width, body.width);
+        assert_eq!(geometry.body.height, body.height);
+        assert_bounded(geometry.window, visible);
+        assert_local_body(geometry);
+
+        let tiny = rect(-2.0, -3.0, 3.0, 2.0);
+        let tiny_body = resize_bubble_body(body, (f64::INFINITY, f64::NAN), minimum, tiny);
+        assert_eq!(tiny_body.width, 0.0);
+        assert_eq!(tiny_body.height, 0.0);
+        let geometry = place_resizing_bubble(tiny_body, tiny, None);
+        assert_eq!(geometry.window, tiny);
+        assert_bounded(geometry.window, tiny);
+        assert_local_body(geometry);
+    }
+
+    #[test]
+    fn resize_sanitizes_invalid_inputs_without_nonfinite_geometry() {
+        for size in [
+            BubbleSize {
+                width: f64::NAN,
+                height: 50.0,
+            },
+            BubbleSize {
+                width: 10.0,
+                height: f64::INFINITY,
+            },
+            BubbleSize {
+                width: -1.0,
+                height: 10.0,
+            },
+        ] {
+            assert!(!size.is_valid());
+        }
+        let visible = rect(-200.0, -100.0, 300.0, 200.0);
+        let body = resize_bubble_body(
+            rect(f64::NAN, f64::INFINITY, f64::INFINITY, -1.0),
+            (f64::NAN, f64::NEG_INFINITY),
+            BubbleSize {
+                width: f64::INFINITY,
+                height: f64::NAN,
+            },
+            visible,
+        );
+        let geometry = place_resizing_bubble(body, visible, None);
+        assert_bounded(geometry.window, visible);
+        assert_local_body(geometry);
+    }
+
+    #[test]
+    fn attached_resize_keeps_original_side_or_drops_tail_on_overlap() {
+        let visible = rect(0.0, 0.0, 500.0, 400.0);
+        let pet = rect(100.0, 100.0, 80.0, 60.0);
+        let start = place_bubble(pet, (120.0, 40.0), visible, BubblePlacement::Above);
+        let start_body = rect(
+            start.window.x + start.body.x,
+            start.window.y + start.body.y,
+            start.body.width,
+            start.body.height,
+        );
+        let same = place_resizing_bubble(start_body, visible, Some((pet, start.side)));
+        assert_eq!(same.side, Some(BubbleSide::Above));
+        assert_eq!(same.body.width, start.body.width);
+        assert_eq!(same.window.x + same.body.x, start_body.x);
+        assert_eq!(same.window.y + same.body.y, start_body.y);
+
+        let expanded = resize_bubble_body(
+            start_body,
+            (80.0, 10.0),
+            BubbleSize {
+                width: 80.0,
+                height: 30.0,
+            },
+            visible,
+        );
+        let resized = place_resizing_bubble(expanded, visible, Some((pet, start.side)));
+        assert_eq!(resized.side, Some(BubbleSide::Above));
+        assert_eq!(resized.body.width, 200.0);
+        assert_eq!(resized.body.height, 30.0);
+        assert_bounded(resized.window, visible);
+        assert_local_body(resized);
+
+        let overlapping = place_resizing_bubble(
+            rect(100.0, 120.0, 120.0, 40.0),
+            visible,
+            Some((pet, Some(BubbleSide::Above))),
+        );
+        assert_eq!(overlapping.side, None);
+        assert_eq!(overlapping.tail, None);
+        assert_eq!(
+            place_resizing_bubble(start_body, visible, Some((pet, None))).side,
+            None
+        );
+        assert_eq!(place_resizing_bubble(start_body, visible, None).tail, None);
+
+        let edge_pet = rect(160.0, 360.0, 80.0, 30.0);
+        let retained = place_resizing_bubble(
+            rect(140.0, 352.0, 120.0, 40.0),
+            visible,
+            Some((edge_pet, Some(BubbleSide::Above))),
+        );
+        assert_ne!(retained.side, Some(BubbleSide::Below));
+        assert_eq!(retained.side, None);
+        assert_eq!(retained.tail, None);
     }
 
     #[test]

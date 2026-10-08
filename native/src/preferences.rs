@@ -1,13 +1,15 @@
-use crate::bubble::BubblePlacement;
+use crate::bubble::{BubblePlacement, BubbleSize};
 use crate::dialogue::{DialogueOverrides, DialogueSlot, DialogueTarget};
 use crate::i18n::LanguagePreference;
 use crate::lifecycle::config_directory;
 use crate::session_view::SessionSort;
 use crate::sources::ObservationPreferences;
 use crate::state::{normalize_scale, DEFAULT_SCALE};
+use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::env;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -235,6 +237,175 @@ impl Default for PositionSpace {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
+pub(crate) struct BubbleSizes {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_tolerant_bubble_size",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compact: Option<BubbleSize>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_tolerant_bubble_size",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expanded: Option<BubbleSize>,
+}
+
+impl BubbleSizes {
+    fn sanitize(&mut self) {
+        self.compact = self.compact.filter(|size| size.is_valid());
+        self.expanded = self.expanded.filter(|size| size.is_valid());
+    }
+}
+
+fn deserialize_tolerant_bubble_size<'de, D>(deserializer: D) -> Result<Option<BubbleSize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<TolerantBubbleSize>::deserialize(deserializer)?.and_then(|size| size.0))
+}
+
+struct TolerantBubbleSize(Option<BubbleSize>);
+
+#[derive(Deserialize)]
+#[serde(field_identifier)]
+enum BubbleSizeField {
+    #[serde(rename = "width")]
+    Width,
+    #[serde(rename = "height")]
+    Height,
+    #[serde(other)]
+    Other,
+}
+
+struct TolerantDimension(Option<f64>);
+
+impl<'de> Deserialize<'de> for TolerantDimension {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(DimensionVisitor)
+    }
+}
+
+struct DimensionVisitor;
+
+impl<'de> Visitor<'de> for DimensionVisitor {
+    type Value = TolerantDimension;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a positive finite number")
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+        self.visit_f64(value as f64)
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+        self.visit_f64(value as f64)
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(TolerantDimension(
+            (value.is_finite() && value > 0.0).then_some(value),
+        ))
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(TolerantDimension(None))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(TolerantDimension(None))
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(TolerantDimension(None))
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(TolerantDimension(None))
+    }
+
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(TolerantDimension(None))
+    }
+}
+
+impl<'de> Deserialize<'de> for TolerantBubbleSize {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(BubbleSizeVisitor)
+    }
+}
+
+struct BubbleSizeVisitor;
+
+impl<'de> Visitor<'de> for BubbleSizeVisitor {
+    type Value = TolerantBubbleSize;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a bubble size object")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let (mut width, mut height) = (None, None);
+        let mut duplicate = false;
+        while let Some(key) = map.next_key::<BubbleSizeField>()? {
+            match key {
+                BubbleSizeField::Width => {
+                    let value = map.next_value::<TolerantDimension>()?.0;
+                    duplicate |= width.is_some();
+                    width = Some(value);
+                }
+                BubbleSizeField::Height => {
+                    let value = map.next_value::<TolerantDimension>()?.0;
+                    duplicate |= height.is_some();
+                    height = Some(value);
+                }
+                BubbleSizeField::Other => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        let size = match (width.flatten(), height.flatten()) {
+            (Some(width), Some(height)) if !duplicate => Some(BubbleSize { width, height }),
+            _ => None,
+        };
+        Ok(TolerantBubbleSize(size))
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(TolerantBubbleSize(None))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(TolerantBubbleSize(None))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(TolerantBubbleSize(None))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(TolerantBubbleSize(None))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(TolerantBubbleSize(None))
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(TolerantBubbleSize(None))
+    }
+
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(TolerantBubbleSize(None))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SessionListPreferences {
     pub(crate) sort: SessionSort,
@@ -299,6 +470,7 @@ pub struct Preferences {
     scale: f64,
     position: Option<(f64, f64)>,
     standalone_bubble_position: Option<(f64, f64)>,
+    bubble_sizes: BubbleSizes,
     position_space: PositionSpace,
     language: LanguagePreference,
     bubble_appearance: BubbleAppearance,
@@ -330,6 +502,8 @@ struct DiskPreferences {
     position: Option<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     standalone_bubble_position: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bubble_sizes: Option<BubbleSizes>,
     #[serde(default)]
     position_space: PositionSpace,
     #[serde(default)]
@@ -368,6 +542,7 @@ impl Default for Preferences {
             scale: DEFAULT_SCALE,
             position: None,
             standalone_bubble_position: None,
+            bubble_sizes: BubbleSizes::default(),
             position_space: PositionSpace::Display,
             language: LanguagePreference::default(),
             bubble_appearance: BubbleAppearance::default(),
@@ -468,6 +643,7 @@ impl Preferences {
             standalone_bubble_position: disk
                 .standalone_bubble_position
                 .map(|value| (value[0], value[1])),
+            bubble_sizes: disk.bubble_sizes.unwrap_or_default(),
             position_space: disk.position_space,
             language: disk.language,
             bubble_appearance: disk.bubble_appearance,
@@ -728,6 +904,7 @@ impl Preferences {
             scale: self.scale,
             position: self.position.map(|(x, y)| [x, y]),
             standalone_bubble_position: self.standalone_bubble_position.map(|(x, y)| [x, y]),
+            bubble_sizes: Some(self.bubble_sizes),
             position_space: self.position_space,
             language: self.language,
             bubble_appearance: self.bubble_appearance,
@@ -821,6 +998,10 @@ impl Preferences {
         self.standalone_bubble_position
     }
 
+    pub(crate) fn bubble_sizes(&self) -> BubbleSizes {
+        self.bubble_sizes
+    }
+
     pub fn position_is_legacy(&self) -> bool {
         self.position_space == PositionSpace::LegacyCanvas
     }
@@ -872,6 +1053,11 @@ impl Preferences {
         self.standalone_bubble_position = position.filter(|(x, y)| x.is_finite() && y.is_finite());
     }
 
+    pub(crate) fn set_bubble_sizes(&mut self, mut sizes: BubbleSizes) {
+        sizes.sanitize();
+        self.bubble_sizes = sizes;
+    }
+
     fn sanitize(&mut self) {
         self.scale = normalize_scale(self.scale).unwrap_or(DEFAULT_SCALE);
         self.position = self
@@ -880,6 +1066,7 @@ impl Preferences {
         self.standalone_bubble_position = self
             .standalone_bubble_position
             .filter(|(x, y)| x.is_finite() && y.is_finite());
+        self.bubble_sizes.sanitize();
         self.observation.sanitize();
     }
 }
@@ -959,6 +1146,312 @@ mod tests {
     static TEST_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
+    fn bubble_sizes_roundtrip_independently_and_reset_without_moving_bubble() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let sizes = BubbleSizes {
+            compact: Some(BubbleSize {
+                width: 275.5,
+                height: 140.25,
+            }),
+            expanded: Some(BubbleSize {
+                width: 490.0,
+                height: 315.75,
+            }),
+        };
+        let mut preferences = Preferences::default();
+        preferences.set_standalone_bubble_position(Some((-52.0, 87.0)));
+        preferences.set_bubble_sizes(sizes);
+        preferences.save_in_directory(&directory).unwrap();
+        let mut loaded = Preferences::load_path(&path).unwrap();
+        assert_eq!(loaded.bubble_sizes(), sizes);
+        assert_eq!(loaded.standalone_bubble_position(), Some((-52.0, 87.0)));
+        loaded.set_standalone_bubble_position(None);
+        assert_eq!(loaded.bubble_sizes(), sizes);
+        loaded.set_bubble_sizes(BubbleSizes::default());
+        loaded.save_in_directory(&directory).unwrap();
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().bubble_sizes(),
+            BubbleSizes::default()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn old_and_null_bubble_sizes_use_automatic_layout() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        for payload in [
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null}"#,
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":null}"#,
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":null}}"#,
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"expanded":null}}"#,
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":[]}"#,
+        ] {
+            fs::write(&path, payload).unwrap();
+            assert_eq!(
+                Preferences::load_path(&path).unwrap().bubble_sizes(),
+                BubbleSizes::default()
+            );
+        }
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn invalid_bubble_size_mode_does_not_discard_valid_peer() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        fs::write(
+            &path,
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":{"width":0,"height":120},"expanded":{"width":420,"height":260}}}"#,
+        )
+        .unwrap();
+        let mut loaded = Preferences::load_path(&path).unwrap();
+        assert_eq!(loaded.bubble_sizes().compact, None);
+        assert_eq!(
+            loaded.bubble_sizes().expanded,
+            Some(BubbleSize {
+                width: 420.0,
+                height: 260.0
+            })
+        );
+        loaded.set_bubble_sizes(BubbleSizes {
+            compact: Some(BubbleSize {
+                width: f64::NAN,
+                height: 120.0,
+            }),
+            expanded: Some(BubbleSize {
+                width: 420.0,
+                height: 260.0,
+            }),
+        });
+        assert_eq!(loaded.bubble_sizes().compact, None);
+        loaded.save_in_directory(&directory).unwrap();
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().bubble_sizes(),
+            loaded.bubble_sizes()
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn malformed_bubble_size_shapes_and_dimensions_preserve_valid_peer_without_quarantine() {
+        for invalid_value in [
+            "null",
+            "false",
+            r#""large""#,
+            "42",
+            "[]",
+            r#"[{"width":287,"height":134}]"#,
+            r#"{"width":287}"#,
+            r#"{"height":134}"#,
+            r#"{"width":null,"height":134}"#,
+            r#"{"width":"287","height":134}"#,
+            r#"{"width":true,"height":134}"#,
+            r#"{"width":{"nested":[1,{"deep":true}]},"height":134}"#,
+            r#"{"width":[287,{"nested":[1,2]}],"height":134}"#,
+            r#"{"width":287,"height":null}"#,
+            r#"{"width":287,"height":"134"}"#,
+            r#"{"width":287,"height":false}"#,
+            r#"{"width":287,"height":{"nested":[1,2]}}"#,
+            r#"{"width":287,"height":[134,{"nested":true}]}"#,
+            r#"{"width":0,"height":134}"#,
+            r#"{"width":-287,"height":134}"#,
+            r#"{"width":287,"height":0}"#,
+            r#"{"width":287,"height":-134}"#,
+            r#"{"width":287,"width":288,"height":134}"#,
+            r#"{"width":287,"\u0077idth":288,"height":134}"#,
+            r#"{"width":287,"height":134,"height":135}"#,
+            r#"{"width":287,"height":134,"\u0068eight":135}"#,
+        ] {
+            for invalid_mode in ["compact", "expanded"] {
+                let valid_mode = if invalid_mode == "compact" {
+                    "expanded"
+                } else {
+                    "compact"
+                };
+                let directory = isolated_preferences_directory();
+                let path = directory.join(PREFERENCES_FILE);
+                let payload = format!(
+                    r##"{{"visible":false,"passthrough":true,"bubble_visible":false,"scale":1.25,"position":[12.5,34.5],"standalone_bubble_position":[-52,87],"position_space":"display","bubble_appearance":{{"theme":"custom","custom":{{"surface":"#112233","text":"#445566","muted":"#778899","border":"#AABBCC","accent":"#DDEEFF"}}}},"bubble_sizes":{{"{invalid_mode}":{invalid_value},"{valid_mode}":{{"width":420,"height":260}}}},"future_setting":{{"keep":[1,2]}}}}"##
+                );
+                fs::write(&path, payload.as_bytes()).unwrap();
+                let expected = BubbleSize {
+                    width: 420.0,
+                    height: 260.0,
+                };
+                for daemon in [false, true] {
+                    let loaded = Preferences::load_in_directory(&directory, None, daemon)
+                        .expect("a malformed individual mode must not reject preferences");
+                    let sizes = loaded.bubble_sizes();
+                    if invalid_mode == "compact" {
+                        assert_eq!(sizes.compact, None);
+                        assert_eq!(sizes.expanded, Some(expected));
+                    } else {
+                        assert_eq!(sizes.compact, Some(expected));
+                        assert_eq!(sizes.expanded, None);
+                    }
+                    assert!(!loaded.visible());
+                    assert!(loaded.passthrough());
+                    assert!(!loaded.bubble_visible());
+                    assert_eq!(loaded.scale(), 1.25);
+                    assert_eq!(loaded.position(), Some((12.5, 34.5)));
+                    assert_eq!(loaded.standalone_bubble_position(), Some((-52.0, 87.0)));
+                    assert_eq!(loaded.bubble_appearance().theme, BubbleTheme::Custom);
+                    assert_eq!(
+                        loaded.extra["future_setting"],
+                        serde_json::json!({"keep":[1,2]})
+                    );
+                }
+                assert_eq!(fs::read(&path).unwrap(), payload.as_bytes());
+                assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+                let _ = fs::remove_dir_all(directory);
+            }
+        }
+    }
+
+    #[test]
+    fn escaped_bubble_size_keys_unknown_nested_values_and_unrelated_save_keep_valid_mode() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        fs::write(
+            &path,
+            br#"{"visible":false,"passthrough":true,"scale":1.25,"position":null,"bubble_sizes":{"compact":{"\u0077idth":287,"\u0068eight":134,"Width":{"future":[{"nested":true}]},"future":[[1,2],{"deep":false}]},"expanded":{"width":"bad","height":260}},"future_setting":{"keep":[1,2]}}"#,
+        )
+        .unwrap();
+        let mut loaded = Preferences::load_path(&path).unwrap();
+        let expected = BubbleSizes {
+            compact: Some(BubbleSize {
+                width: 287.0,
+                height: 134.0,
+            }),
+            expanded: None,
+        };
+        assert_eq!(loaded.bubble_sizes(), expected);
+        loaded
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::Ko),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .unwrap();
+        let saved = Preferences::load_path(&path).unwrap();
+        assert_eq!(saved.bubble_sizes(), expected);
+        assert_eq!(saved.language(), LanguagePreference::Ko);
+        assert_eq!(saved.scale(), 1.25);
+        assert!(!saved.visible());
+        assert!(saved.passthrough());
+        assert_eq!(
+            saved.extra["future_setting"],
+            serde_json::json!({"keep":[1,2]})
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn unrelated_patch_preserves_bubble_sizes_and_unknown_fields() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        fs::write(
+            &path,
+            r#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":{"width":287,"height":134},"expanded":{"width":487,"height":280}},"future_setting":{"keep":[1,2]}}"#,
+        )
+        .unwrap();
+        let mut preferences = Preferences::load_path(&path).unwrap();
+        let sizes = preferences.bubble_sizes();
+        preferences
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::Ko),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .unwrap();
+        let raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["future_setting"], serde_json::json!({"keep":[1,2]}));
+        assert_eq!(
+            raw["bubble_sizes"]["compact"]["width"],
+            serde_json::json!(287.0)
+        );
+        preferences.set_bubble_visible(false);
+        preferences.save_in_directory(&directory).unwrap();
+        let loaded = Preferences::load_path(&path).unwrap();
+        assert_eq!(loaded.bubble_sizes(), sizes);
+        assert_eq!(loaded.language(), LanguagePreference::Ko);
+        assert!(!loaded.bubble_visible());
+        let raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["future_setting"], serde_json::json!({"keep":[1,2]}));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_bubble_size_candidate_does_not_leak_into_later_save() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let backup = directory.join("original-preferences.json");
+        fs::write(
+            &path,
+            br#"{"visible":false,"passthrough":true,"scale":1.25,"position":null,"bubble_sizes":{"compact":{"width":287,"height":134},"expanded":{"width":{"invalid":[1,2]},"height":260}},"future_setting":{"keep":[1,2]}}"#,
+        )
+        .unwrap();
+        let mut preferences = Preferences::load_path(&path).unwrap();
+        let original_sizes = BubbleSizes {
+            compact: Some(BubbleSize {
+                width: 287.0,
+                height: 134.0,
+            }),
+            expanded: None,
+        };
+        assert_eq!(preferences.bubble_sizes(), original_sizes);
+        let before = fs::read(&path).unwrap();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("sentinel"), b"untouched").unwrap();
+        let mut candidate = preferences.candidate();
+        candidate.set_bubble_sizes(BubbleSizes {
+            compact: Some(BubbleSize {
+                width: 280.0,
+                height: 140.0,
+            }),
+            expanded: Some(BubbleSize {
+                width: 480.0,
+                height: 290.0,
+            }),
+        });
+        preferences
+            .save_candidate_in_directory(candidate, &directory)
+            .expect_err("target-path directory prevents atomic rename");
+        assert_eq!(preferences.bubble_sizes(), original_sizes);
+        assert_eq!(fs::read(&backup).unwrap(), before);
+        assert_eq!(fs::read(path.join("sentinel")).unwrap(), b"untouched");
+        fs::remove_dir_all(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        preferences
+            .apply_patch_in_directory(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..PreferencePatch::default()
+                },
+                &directory,
+            )
+            .unwrap();
+        let saved = Preferences::load_path(&path).unwrap();
+        assert_eq!(saved.bubble_sizes(), original_sizes);
+        assert_eq!(saved.language(), LanguagePreference::En);
+        assert_eq!(saved.scale(), 1.25);
+        assert!(!saved.visible());
+        assert!(saved.passthrough());
+        assert_eq!(
+            saved.extra["future_setting"],
+            serde_json::json!({"keep":[1,2]})
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn sanitizes_invalid_scale_and_position() {
         let mut preferences = Preferences {
             visible: true,
@@ -972,6 +1465,7 @@ mod tests {
             menu_bar_icon: None,
             position: Some((f64::INFINITY, 2.0)),
             standalone_bubble_position: Some((f64::NAN, 3.0)),
+            bubble_sizes: BubbleSizes::default(),
             position_space: PositionSpace::LegacyCanvas,
             language: LanguagePreference::default(),
             bubble_appearance: BubbleAppearance::default(),
@@ -1067,12 +1561,24 @@ mod tests {
                 "session_list": {
                     "sort": "future_sort", "running_first": "invalid",
                     "future_field": {"nested": [3, 4]}
+                },
+                "bubble_sizes": {
+                    "compact": {"width": "invalid", "height": 120},
+                    "expanded": {"width": 490, "height": 310}
                 }
             }))
             .unwrap(),
         )
         .unwrap();
         let mut preferences = Preferences::load_path(&path).unwrap();
+        let expected_sizes = BubbleSizes {
+            compact: None,
+            expanded: Some(BubbleSize {
+                width: 490.0,
+                height: 310.0,
+            }),
+        };
+        assert_eq!(preferences.bubble_sizes(), expected_sizes);
         let requested = SessionListPreferences {
             sort: SessionSort::SourceAsc,
             running_first: true,
@@ -1081,6 +1587,7 @@ mod tests {
             .save_session_list_in_directory(requested, &directory)
             .unwrap();
         assert_eq!(preferences.session_list(), requested);
+        assert_eq!(preferences.bubble_sizes(), expected_sizes);
         let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["session_list"]["sort"], "source_asc");
         assert_eq!(saved["session_list"]["running_first"], true);
@@ -1092,6 +1599,10 @@ mod tests {
         assert_eq!(saved["menu_bar_mode"], "recovery_only");
         assert_eq!(saved["position"], serde_json::json!([3.0, 9.0]));
 
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().bubble_sizes(),
+            expected_sizes
+        );
         let mut reloaded = Preferences::load_path(&path).unwrap();
         assert_eq!(reloaded.session_list(), requested);
         let mut candidate = reloaded.candidate();
@@ -1105,6 +1616,10 @@ mod tests {
         assert_eq!(
             Preferences::load_path(&path).unwrap().session_list(),
             requested
+        );
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().bubble_sizes(),
+            expected_sizes
         );
         let _ = fs::remove_dir_all(directory);
     }
@@ -2054,6 +2569,7 @@ mod tests {
             scale: valid.scale,
             position: None,
             standalone_bubble_position: None,
+            bubble_sizes: None,
             language: valid.language,
             position_space: valid.position_space,
             bubble_appearance: valid.bubble_appearance,
@@ -2405,11 +2921,17 @@ mod tests {
 
     #[test]
     fn unusable_preferences_are_quarantined_only_for_the_daemon() {
-        let fixtures: [&[u8]; 4] = [
+        let fixtures: [&[u8]; 10] = [
             b"{not json",
             br#"{"visible":true,"passthrough":false,"bubble_placement":"diagonal","scale":0.65,"position":null}"#,
             br#"{"visible":true,"passthrough":false,"menu_bar_mode":"sometimes","scale":0.65,"position":null}"#,
             br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"dialogue_overrides":{"characters":{"forest":{"fr":{"phases":{"idle":"wrong locale"}}}}}}"#,
+            br#"{"visible":"false","passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":{"width":287,"height":134}}}"#,
+            br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":true}"#,
+            br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":"bad"}"#,
+            br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":{"width":1e400,"height":134}}}"#,
+            br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":{"width":NaN,"height":134}}}"#,
+            br#"{"visible":true,"passthrough":false,"scale":1,"position":null,"bubble_sizes":{"compact":{"width":Infinity,"height":134}}}"#,
         ];
         for invalid in fixtures {
             let directory = isolated_preferences_directory();

@@ -66,6 +66,7 @@ pub(crate) const fn maximum_cards_height() -> f64 {
 struct CardsIntent {
     reply_composition_active: bool,
     search_composition_active: bool,
+    resize_frozen: bool,
     pending_selection: Option<SessionKey>,
     pending_filter: Option<SessionFilter>,
     pending_query: Option<String>,
@@ -98,12 +99,38 @@ impl CardsIntent {
         self.pending_sort = None;
         self.pending_running_first = None;
     }
+    fn retain_saved_preferences(
+        &mut self,
+        applied: SessionListPreferences,
+        saved: SessionListPreferences,
+    ) {
+        // A later failed choice cannot discard an earlier, already persisted
+        // choice that the frozen native rows have not consumed yet.
+        self.pending_sort = (saved.sort != applied.sort).then_some(saved.sort);
+        self.pending_running_first =
+            (saved.running_first != applied.running_first).then_some(saved.running_first);
+        self.deferred_refresh = true;
+    }
 
     fn request_selection(&mut self, key: SessionKey, marked: bool) {
         self.pending_selection = Some(key);
         self.pending_selection_deferred = true;
         self.reply_composition_active |= marked;
         self.deferred_refresh = true;
+    }
+
+    fn set_resize_frozen(&mut self, frozen: bool) {
+        if self.resize_frozen && !frozen {
+            self.deferred_refresh = true;
+        }
+        self.resize_frozen = frozen;
+    }
+
+    fn accept_deferred_selection(&mut self, valid: bool) -> bool {
+        let reveal = valid && self.pending_selection_deferred;
+        self.deferred_selection_applied |= reveal;
+        self.pending_selection_deferred = false;
+        reveal
     }
 }
 
@@ -186,15 +213,21 @@ define_class!(
             let Some(sort) = SESSION_SORTS.get(index.max(0) as usize).copied() else {
                 return;
             };
-            self.ivars().intent.borrow_mut().pending_sort = Some(sort);
+            let mut intent = self.ivars().intent.borrow_mut();
+            intent.pending_sort = Some(sort);
+            intent.deferred_refresh = true;
+            drop(intent);
             self.restore_options();
             crate::ui::cards_options_changed();
         }
 
         #[unsafe(method(runningChanged:))]
         fn running_changed(&self, _sender: Option<&AnyObject>) {
-            self.ivars().intent.borrow_mut().pending_running_first =
+            let mut intent = self.ivars().intent.borrow_mut();
+            intent.pending_running_first =
                 Some(self.ivars().running_toggle.state() == NSControlStateValueOn);
+            intent.deferred_refresh = true;
+            drop(intent);
             self.restore_options();
             crate::ui::cards_options_changed();
         }
@@ -423,11 +456,13 @@ impl SessionCardView {
             let mut intent = self.ivars().intent.borrow_mut();
             intent.request_selection(self.ivars().key.clone(), marked);
         }
-        if marked {
+        if marked || self.ivars().intent.borrow().resize_frozen {
             return;
         }
         let ready = if let Ok(mut cards) = inner.try_borrow_mut() {
-            if !self.ivars().intent.borrow().composing() {
+            if !self.ivars().intent.borrow().composing()
+                && !self.ivars().intent.borrow().resize_frozen
+            {
                 self.ivars().intent.borrow_mut().pending_selection_deferred = false;
                 cards.reveal_selection = true;
                 cards.refresh();
@@ -782,11 +817,19 @@ struct SessionCardsInner {
 
 impl SessionCardsInner {
     fn content_height(&self) -> f64 {
-        let document_height = self.rows_height();
         OUTER_INSET * 2.0
             + HEADER_HEIGHT
             + HEADER_GAP
-            + document_height.min(LIST_VIEWPORT_MAX_HEIGHT)
+            + self.rows_height().min(LIST_VIEWPORT_MAX_HEIGHT)
+    }
+
+    fn document_content_height(&self) -> f64 {
+        OUTER_INSET * 2.0 + HEADER_HEIGHT + HEADER_GAP + self.rows_height()
+    }
+
+    fn minimum_content_width(&self) -> f64 {
+        // Keep each native popup at its 82pt minimum beside the other.
+        OUTER_INSET * 2.0 + 82.0 * 2.0 + POPUP_GAP
     }
 
     fn rows_height(&self) -> f64 {
@@ -981,6 +1024,12 @@ impl SessionCardsInner {
     }
 
     fn refresh(&mut self) {
+        // A resize only reflows the already displayed hierarchy. In particular
+        // do not consume a pending selection or detach its reply during a drag.
+        if self.intent.borrow().resize_frozen {
+            self.intent.borrow_mut().deferred_refresh = true;
+            return;
+        }
         let scroll_origin = self.scroll.contentView().bounds().origin;
         let search_marked = self.root.search_marked();
         let search_value = self.root.ivars().search.stringValue();
@@ -1130,9 +1179,7 @@ impl SessionCardsInner {
             intent.pending_query_native = None;
             intent.pending_selection = None;
             intent.deferred_refresh = false;
-            intent.deferred_selection_applied |=
-                selection_valid && intent.pending_selection_deferred;
-            intent.pending_selection_deferred = false;
+            self.reveal_selection |= intent.accept_deferred_selection(selection_valid);
         }
         self.filter = filter;
         if self.query != *query {
@@ -1662,11 +1709,22 @@ impl SessionCards {
         }
     }
 
-    pub(crate) fn reject_options(&self) {
-        let mut intent = self.intent.borrow_mut();
-        intent.clear_pending_preferences();
-        drop(intent);
+    pub(crate) fn reject_options(&self, saved: SessionListPreferences) {
+        let applied = {
+            let inner = self.inner.borrow();
+            SessionListPreferences {
+                sort: inner.sort,
+                running_first: inner.running_first,
+            }
+        };
+        self.intent
+            .borrow_mut()
+            .retain_saved_preferences(applied, saved);
         self.root.restore_options();
+    }
+
+    pub(crate) fn set_resize_frozen(&self, frozen: bool) {
+        self.intent.borrow_mut().set_resize_frozen(frozen);
     }
 
     pub(crate) fn has_deferred_refresh(&self) -> bool {
@@ -1699,8 +1757,18 @@ impl SessionCards {
     pub(crate) fn content_height(&self) -> f64 {
         self.inner.borrow().content_height()
     }
+
+    /// Full requested viewport height, before the automatic bubble's 180pt cap.
+    pub(crate) fn document_content_height(&self) -> f64 {
+        self.inner.borrow().document_content_height()
+    }
+
+    pub(crate) fn minimum_content_width(&self) -> f64 {
+        self.inner.borrow().minimum_content_width()
+    }
+
     pub(crate) fn attach_reply(&self, key: &SessionKey, view: &NSView, height: f64) -> bool {
-        if self.intent.borrow().composing() {
+        if self.intent.borrow().composing() || self.intent.borrow().resize_frozen {
             self.intent.borrow_mut().deferred_refresh = true;
             return self
                 .inner
@@ -1713,7 +1781,7 @@ impl SessionCards {
     }
 
     pub(crate) fn detach_reply(&self) {
-        if self.intent.borrow().composing() {
+        if self.intent.borrow().composing() || self.intent.borrow().resize_frozen {
             self.intent.borrow_mut().deferred_refresh = true;
             return;
         }
@@ -2035,6 +2103,49 @@ mod tests {
     use crate::session_view::card_displays;
 
     #[test]
+    fn resize_freeze_retains_selection_filter_and_real_composition_intents() {
+        let selected = SessionKey {
+            source_id: 7,
+            generation: 2,
+            terminal_id: "terminal".into(),
+        };
+        let mut intent = CardsIntent::default();
+        intent.set_resize_frozen(true);
+        intent.request_selection(selected.clone(), false);
+        intent.pending_filter = Some(SessionFilter::Working);
+        intent.pending_query = Some("needle".into());
+        intent.pending_sort = Some(SessionSort::TitleAsc);
+        intent.pending_running_first = Some(true);
+        intent.search_composition_active = true;
+        assert!(intent.pending_selection_deferred);
+        assert!(!intent.reply_composition_active);
+        assert!(intent.composing());
+        intent.set_resize_frozen(false);
+        assert_eq!(intent.pending_selection, Some(selected.clone()));
+        assert_eq!(intent.pending_filter, Some(SessionFilter::Working));
+        assert_eq!(intent.pending_query.as_deref(), Some("needle"));
+        assert_eq!(
+            intent.pending_preferences(SessionListPreferences::default()),
+            Some(SessionListPreferences {
+                sort: SessionSort::TitleAsc,
+                running_first: true,
+            })
+        );
+        assert!(intent.pending_selection_deferred);
+        assert!(intent.deferred_refresh);
+        intent.search_composition_active = false;
+        assert!(!intent.composing());
+        assert!(intent.accept_deferred_selection(true));
+        assert!(!intent.pending_selection_deferred);
+        assert!(intent.deferred_selection_applied);
+        intent.request_selection(selected, true);
+        intent.set_resize_frozen(true);
+        intent.set_resize_frozen(false);
+        assert!(intent.reply_composition_active);
+        assert!(intent.composing());
+    }
+
+    #[test]
     fn reply_slot_shifts_only_following_rows_and_extends_scroll_tail() {
         let height = 58.0;
         let frames: Vec<_> = (0..3)
@@ -2150,6 +2261,36 @@ mod tests {
         assert_eq!(intent.pending_preferences(applied), None);
         assert_eq!(intent.pending_filter, Some(SessionFilter::Offline));
         assert_eq!(intent.pending_query.as_deref(), Some("latest"));
+    }
+
+    #[test]
+    fn failed_second_choice_keeps_first_saved_choice_pending_through_resize() {
+        let applied = SessionListPreferences::default();
+        let saved = SessionListPreferences {
+            sort: SessionSort::TitleAsc,
+            running_first: false,
+        };
+        let mut intent = CardsIntent::default();
+        intent.set_resize_frozen(true);
+        intent.pending_sort = Some(saved.sort);
+        assert_eq!(intent.pending_preferences(applied), Some(saved));
+        // The next action requests both the saved sort and a new running-first
+        // setting, but its preference write fails while native rows are frozen.
+        intent.pending_running_first = Some(true);
+        assert_eq!(
+            intent.pending_preferences(applied),
+            Some(SessionListPreferences {
+                running_first: true,
+                ..saved
+            })
+        );
+        intent.retain_saved_preferences(applied, saved);
+        assert_eq!(intent.pending_preferences(applied), Some(saved));
+        assert!(intent.deferred_refresh);
+        intent.set_resize_frozen(false);
+        assert_eq!(intent.pending_preferences(applied), Some(saved));
+        intent.clear_pending_preferences();
+        assert_eq!(intent.pending_preferences(saved), None);
     }
 
     #[test]
