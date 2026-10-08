@@ -385,6 +385,7 @@ pub(crate) struct MenuPanel {
     character_view: Retained<NSView>,
     mtm: MainThreadMarker,
     character_editing_open: Retained<NSButton>,
+    character_browser_open: Retained<NSButton>,
     target: Retained<MenuTarget>,
     title: Retained<NSTextField>,
     panel_title: Retained<NSTextField>,
@@ -632,6 +633,34 @@ impl MenuPanel {
             &*character_visible_switch,
             text(locale, Message::MenuCharacterVisible),
         );
+        let character_browser_open = make_action_button(
+            text(locale, Message::CharacterBrowserOpen),
+            target,
+            sel!(openCharacterBrowser:),
+            mtm,
+        );
+        set_accessibility_identifier(&character_browser_open, "herdr.character.open-browser");
+        set_accessibility_label(
+            &character_browser_open,
+            text(locale, Message::CharacterBrowserOpen),
+        );
+        character_browser_open.setFont(Some(&NSFont::systemFontOfSize(11.5)));
+        character_browser_open.setImageHugsTitle(true);
+        character_browser_open.setImagePosition(NSCellImagePosition::ImageLeading);
+        let browser_symbol = NSString::from_str("square.grid.2x2");
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &browser_symbol,
+            Some(&NSString::from_str(text(
+                locale,
+                Message::CharacterBrowserOpen,
+            ))),
+        ) {
+            character_browser_open.setImage(Some(&image));
+        }
+        set_tooltip(
+            &character_browser_open,
+            text(locale, Message::CharacterBrowserOpen),
+        );
         let character_editing_open = make_action_button(
             text(locale, Message::CharacterEditingOpen),
             target,
@@ -659,6 +688,7 @@ impl MenuPanel {
         character_card.addSubview(&character_visible_label);
         character_card.addSubview(&*character_visible_switch);
         character_tab.addSubview(&character_card);
+        character_tab.addSubview(&character_browser_open);
         character_tab.addSubview(&character_editing_open);
         character_tab.addSubview(&character_view);
 
@@ -1186,6 +1216,7 @@ impl MenuPanel {
             character_view,
             mtm,
             character_editing_open,
+            character_browser_open,
             target: target.retain(),
             title,
             panel_title,
@@ -1998,6 +2029,29 @@ impl MenuPanel {
                 locale,
                 Message::MenuCharacterVisible,
             )));
+        self.character_browser_open
+            .setTitle(&NSString::from_str(text(
+                locale,
+                Message::CharacterBrowserOpen,
+            )));
+        set_accessibility_label(
+            &self.character_browser_open,
+            text(locale, Message::CharacterBrowserOpen),
+        );
+        set_tooltip(
+            &self.character_browser_open,
+            text(locale, Message::CharacterBrowserOpen),
+        );
+        let browser_symbol = NSString::from_str("square.grid.2x2");
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &browser_symbol,
+            Some(&NSString::from_str(text(
+                locale,
+                Message::CharacterBrowserOpen,
+            ))),
+        ) {
+            self.character_browser_open.setImage(Some(&image));
+        }
         self.character_editing_open
             .setTitle(&NSString::from_str(text(
                 locale,
@@ -2534,9 +2588,15 @@ impl MenuPanel {
             NSPoint::new(card_width - 58.0, 8.0),
             NSSize::new(46.0, 30.0),
         ));
-        self.character_editing_open.setFrame(NSRect::new(
+        let gap = 8.0;
+        let btn_width = ((card_width - gap) * 0.5).max(1.0);
+        self.character_browser_open.setFrame(NSRect::new(
             NSPoint::new(8.0, 58.0),
-            NSSize::new(card_width, 36.0),
+            NSSize::new(btn_width, 36.0),
+        ));
+        self.character_editing_open.setFrame(NSRect::new(
+            NSPoint::new(8.0 + btn_width + gap, 58.0),
+            NSSize::new((card_width - btn_width - gap).max(1.0), 36.0),
         ));
         self.character_view.setFrame(NSRect::new(
             NSPoint::new(0.0, 106.0),

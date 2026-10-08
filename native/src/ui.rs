@@ -19,14 +19,17 @@ use crate::bubble::{
     place_bubble, place_standalone_bubble, BubbleGeometry, BubblePlacement, Rect as BubbleRect,
     BUBBLE_RADIUS, BUBBLE_WINDOW_INSET,
 };
+use crate::character_browser::{self, BrowserInput, CharacterBrowser};
 use crate::character_menu::{self, CharacterMenu, MenuCommand};
+use crate::character_preview::{CharacterPreviews, PreviewKey, PreviewSource, PreviewState};
 use crate::character_renderer::{
     self, CharacterHit, PrepareBuilder, PreparedCharacter, SpeechAnchorSnapshot, SpeechAnchorStatus,
 };
 use crate::character_selection::{CharacterSelection, SelectionError};
 use crate::character_service::PackService;
 use crate::character_types::{
-    CharacterRef, PackAction, PackListing, PackOperation, PackRequest, RendererToken,
+    CharacterRef, OfficialPackIdentity, PackAction, PackListing, PackOperation, PackRequest,
+    RendererToken,
 };
 use crate::composer_layout::{
     configure_composer, layout_composer, ComposerMetrics, INPUT_ORIGIN_Y,
@@ -52,6 +55,7 @@ use crate::interaction::{GestureAction, Interaction, Point, RegionPolicy};
 use crate::lifecycle::{LifecycleSetting, Paths};
 use crate::menu_bar_icon;
 use crate::menu_panel::MenuPanel;
+use crate::official_characters::OfficialCharacters;
 use crate::preferences::{
     BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarIconPreference, MenuBarMode,
     Preferences,
@@ -1060,6 +1064,11 @@ struct Ui {
     playback: Playback,
     pending_native: Option<PendingNative>,
     character_menu: CharacterMenu,
+    character_browser: CharacterBrowser,
+    official_characters: Arc<OfficialCharacters>,
+    character_previews: CharacterPreviews,
+    browser_timer: Option<Retained<NSTimer>>,
+    browser_preview_revision: u64,
     character_selection: CharacterSelection,
     pack_error: Option<String>,
     behavior: Behavior,
@@ -1176,6 +1185,10 @@ define_class!(
         #[unsafe(method(prepareTick:))]
         fn prepare_tick(&self, _timer: &NSTimer) {
             with_ui_mut(|ui| ui.prepare_tick());
+        }
+        #[unsafe(method(browserTick:))]
+        fn browser_tick(&self, _timer: &NSTimer) {
+            with_ui_mut(|ui| ui.browser_tick());
         }
         #[unsafe(method(pointerTick:))]
         fn pointer_tick(&self, _timer: &NSTimer) {
@@ -2166,6 +2179,28 @@ define_class!(
         #[unsafe(method(packImport:))]
         fn pack_import(&self, _sender: Option<&AnyObject>) {
             begin_pack_import();
+        }
+        #[unsafe(method(openCharacterBrowser:))]
+        fn open_character_browser(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| ui.open_character_browser());
+        }
+        #[unsafe(method(officialDownloadAndApply:))]
+        fn official_download_and_apply(&self, sender: Option<&AnyObject>) {
+            if let Some(intent) = character_browser::official_from_sender(sender) {
+                with_ui_mut(|ui| {
+                    ui.download_official_and_apply(
+                        intent.identity,
+                        intent.catalog_revision,
+                        intent.listing_generation,
+                    );
+                });
+            }
+        }
+        #[unsafe(method(cancelOfficialDownload:))]
+        fn cancel_official_download(&self, sender: Option<&AnyObject>) {
+            if let Some(operation_id) = character_browser::cancel_id_from_sender(sender) {
+                with_ui_mut(|ui| ui.cancel_official_download(&operation_id));
+            }
         }
 
         #[unsafe(method(packSelect:))]
@@ -3819,6 +3854,10 @@ impl Ui {
         bubble_root.set_opaque_surface(prefs.show_status_indicators());
         let menu_target = MenuTarget::new(mtm);
         let character_menu = CharacterMenu::new(&menu_target, locale, mtm);
+        let character_browser = CharacterBrowser::new(&menu_target, locale, mtm);
+        let official_characters = packs.official_catalog();
+        let character_previews =
+            CharacterPreviews::new(Arc::clone(&packs), Arc::clone(&official_characters), mtm)?;
         let mut cards = SessionCards::new(shared.clone(), locale, mtm);
         cards.set_show_status_indicators(prefs.show_status_indicators());
         cards.set_palette(palette);
@@ -4191,6 +4230,11 @@ impl Ui {
             playback,
             pending_native: None,
             character_menu,
+            character_browser,
+            official_characters,
+            character_previews,
+            browser_timer: None,
+            browser_preview_revision: 0,
             character_selection: CharacterSelection::new(),
             pack_error: None,
             behavior: Behavior::new(),
@@ -4523,6 +4567,7 @@ impl Ui {
     fn language_transition_locked(&self) -> bool {
         self.explicit_gesture_active()
             || self.composer_marked()
+            || self.character_browser.has_marked_text()
             || NSEvent::pressedMouseButtons() != 0
             || appkit_event_tracking_active()
     }
@@ -4532,6 +4577,7 @@ impl Ui {
             || self.pending_bubble_scene.is_some()
             || !self.pending_preference_operations.is_empty()
             || self.menu_panel.is_visible()
+            || self.character_browser.is_visible()
             || (self.dialogue_editor.is_visible() && self.dialogue_editor.needs_initial_hydration())
             || self.has_pending_native_dialogue()
     }
@@ -4604,6 +4650,7 @@ impl Ui {
         self.cards.set_composition_active(self.composer_marked());
         self.cards.set_locale(locale);
         self.character_menu.set_locale(locale);
+        self.character_browser.set_locale(locale);
         self.dialogue_editor.set_locale(locale);
         self.editor_content_dirty = true;
         self.bubble_content_dirty = true;
@@ -4637,10 +4684,12 @@ impl Ui {
             let _ = sender.send(Err("native character candidate is unavailable".to_owned()));
             return;
         }
+        self.character_previews.tick(true);
         let timeout = character_renderer::preparation_timeout(&assets);
         let builder = match PrepareBuilder::new(assets, token.clone(), self.mtm) {
             Ok(builder) => builder,
             Err(error) => {
+                self.character_previews.tick(false);
                 let _ = sender.send(Err(error));
                 return;
             }
@@ -5127,6 +5176,28 @@ impl Ui {
         self.stop_prepare_timer();
     }
 
+    fn active_portrait_source(&self, listing: &PackListing) -> Option<PreviewSource> {
+        let reference = listing.active.as_ref()?;
+        let token = self.active.token();
+        if token.reference != *reference
+            || self.dialogue_override_active != listing.override_active
+            || self.dialogue_prepared_epoch != token.backend_epoch
+        {
+            return None;
+        }
+        if listing.override_active {
+            Some(PreviewSource::External {
+                path: self.packs.override_assets.as_ref()?.clone(),
+                content_digest: token.content_digest.clone(),
+            })
+        } else {
+            Some(PreviewSource::Local {
+                reference: reference.clone(),
+                generation: listing.generation,
+            })
+        }
+    }
+
     fn refresh_character_menu(&mut self) {
         if let Some(operation_id) = self.character_selection.operation_id() {
             let operation = self.packs.cached_status(operation_id);
@@ -5155,13 +5226,199 @@ impl Ui {
                 );
             }
         }
+        let busy = self.packs.ui_mutation_busy() || self.character_selection.is_busy();
         self.character_menu.refresh(
             &listing,
             &self.character_selection,
-            self.packs.ui_mutation_busy() || self.character_selection.is_busy(),
+            busy,
             self._menu_target.as_ref(),
             self.mtm,
         );
+        let active_key = self
+            .active_portrait_source(&listing)
+            .map(|source| PreviewKey {
+                source,
+                pixels: 128,
+            });
+        let active_portrait = active_key
+            .as_ref()
+            .and_then(|key| self.character_previews.lookup(key));
+        self.character_menu.set_portrait(match active_portrait {
+            Some(PreviewState::Ready(image)) => Some(image.as_ref()),
+            _ => None,
+        });
+        if self.character_browser.is_visible() {
+            let snapshot = self.official_characters.cached_snapshot();
+            let catalog_error = self.official_characters.catalog_error();
+            let progress = self
+                .character_selection
+                .official_operation_id()
+                .and_then(|id| self.packs.cached_download_progress(id));
+            self.character_browser.refresh(BrowserInput {
+                listing: &listing,
+                selection: &self.character_selection,
+                busy,
+                official_entries: snapshot
+                    .as_ref()
+                    .map_or(&[], |snapshot| snapshot.entries.as_slice()),
+                catalog_revision: snapshot.as_ref().map_or(0, |snapshot| snapshot.revision),
+                catalog_error: catalog_error.as_deref(),
+                progress: progress.as_ref(),
+                active_preview_key: active_key.as_ref(),
+                previews: &self.character_previews,
+            });
+        }
+        let mut keys = Vec::new();
+        if let Some(key) = active_key {
+            keys.push(key);
+        }
+        if let Some(candidate) = self.character_selection.candidate() {
+            let key = PreviewKey {
+                source: PreviewSource::Local {
+                    reference: candidate.reference.clone(),
+                    generation: listing.generation,
+                },
+                pixels: 128,
+            };
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        if self.character_browser.is_visible() {
+            for key in self.character_browser.visible_preview_requests() {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        self.character_previews.request_visible(keys);
+        if self.character_previews.has_pending_work() {
+            self.start_browser_timer();
+        }
+        self.browser_preview_revision = self.character_previews.revision();
+    }
+
+    fn open_character_browser(&mut self) {
+        if self.last_scene.shutdown {
+            return;
+        }
+        self.official_characters.request_catalog();
+        self.menu_panel.hide();
+        self.character_browser.show();
+        self.refresh_character_menu();
+        self.start_browser_timer();
+    }
+
+    fn download_official_and_apply(
+        &mut self,
+        identity: OfficialPackIdentity,
+        catalog_revision: u64,
+        listing_generation: u64,
+    ) {
+        self.refresh_character_menu();
+        if self.ui_mutation_busy() {
+            return;
+        }
+        let listing = self.packs.cached_list();
+        let snapshot = self.official_characters.cached_snapshot();
+        let entry = snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.revision == catalog_revision)
+            .and_then(|snapshot| {
+                snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| entry.identity == identity)
+            });
+        if snapshot.is_none() {
+            self.pack_error = Some(self.official_characters.catalog_error().unwrap_or_else(|| {
+                text(self.locale, Message::OfficialCatalogUnavailable).to_owned()
+            }));
+        } else if listing.generation != listing_generation || entry.is_none() {
+            self.pack_error = Some(text(self.locale, Message::CharacterSelectionStale).to_owned());
+        } else if !entry.is_some_and(|entry| entry.install_supported) {
+            self.pack_error =
+                Some(text(self.locale, Message::OfficialUnsupportedFormat).to_owned());
+        } else if listing.packs.iter().any(|pack| pack.id == identity.id) {
+            self.pack_error = Some(text(self.locale, Message::OfficialLocalIdExists).to_owned());
+        } else if let Err(error) = self.official_characters.resolve(&identity) {
+            self.pack_error = Some(error);
+        } else {
+            let operation_id = next_pack_operation_id();
+            match self
+                .character_selection
+                .reserve_official(operation_id.clone(), identity.id.clone())
+            {
+                Ok(()) => {
+                    let request = PackRequest {
+                        operation_id: operation_id.clone(),
+                        expected_generation: Some(listing_generation),
+                        action: PackAction::ImportAndSelect { official: identity },
+                    };
+                    let result = self.packs.submit_ui_if_idle(request);
+                    self.record_pack_submission(result, &operation_id);
+                    self.start_browser_timer();
+                    return;
+                }
+                Err(error) => {
+                    self.pack_error =
+                        Some(text(self.locale, selection_error_message(error)).to_owned());
+                }
+            }
+        }
+        self.refresh_character_menu();
+    }
+
+    fn cancel_official_download(&mut self, operation_id: &str) {
+        if self.character_selection.official_operation_id() != Some(operation_id) {
+            return;
+        }
+        if self.packs.cancel_download(operation_id) {
+            self.refresh_character_menu();
+        }
+    }
+
+    fn start_browser_timer(&mut self) {
+        if self.browser_timer.is_some() {
+            return;
+        }
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                0.15,
+                &self.timer_target,
+                sel!(browserTick:),
+                None,
+                true,
+            )
+        };
+        let run_loop = NSRunLoop::mainRunLoop();
+        unsafe {
+            run_loop.addTimer_forMode(&timer, NSRunLoopCommonModes);
+        }
+        self.browser_timer = Some(timer);
+    }
+
+    fn stop_browser_timer(&mut self) {
+        if let Some(timer) = self.browser_timer.take() {
+            timer.invalidate();
+        }
+    }
+
+    fn browser_tick(&mut self) {
+        self.character_previews.tick(self.pending_native.is_some());
+        let preview_changed = self.browser_preview_revision != self.character_previews.revision();
+        if self.character_browser.is_visible()
+            || self.character_selection.is_busy()
+            || preview_changed
+        {
+            self.refresh_character_menu();
+        }
+        if !self.character_browser.is_visible()
+            && !self.character_selection.is_busy()
+            && !self.character_previews.has_pending_work()
+        {
+            self.stop_browser_timer();
+        }
     }
 
     fn handle_pack_command(&mut self, command: MenuCommand) {
@@ -6694,7 +6951,10 @@ impl Ui {
         self.remove_menu_event_monitors();
         self.stop_prepare_timer();
         self.stop_language_timer();
+        self.stop_browser_timer();
         self.cancel_pending_native();
+        self.character_previews.shutdown();
+        self.character_browser.shutdown();
         if let Some(timer) = self.pointer_timer.take() {
             timer.invalidate();
         }
@@ -8927,7 +9187,10 @@ impl Drop for Ui {
         self.stop_timer();
         self.stop_prepare_timer();
         self.stop_language_timer();
+        self.stop_browser_timer();
         self.cancel_pending_native();
+        self.character_previews.shutdown();
+        self.character_browser.shutdown();
         if let Some(timer) = self.pointer_timer.take() {
             timer.invalidate();
         }

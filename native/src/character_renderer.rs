@@ -6,7 +6,7 @@ use crate::bubble::{screen_rect_for_image_bounds, Rect};
 use crate::character_types::RendererToken;
 use crate::interaction::{legacy_region, Point, Region, RegionPolicy};
 use crate::rig_renderer::{
-    PreparedRig, RigIntent, RigPreparation, RigRegion, RigSpeechAnchorStatus,
+    PreparedRig, RigIntent, RigPreparation, RigRegion, RigSnapshot, RigSpeechAnchorStatus,
 };
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::{AnyThread, MainThreadMarker};
@@ -257,6 +257,31 @@ impl PreparedCharacter {
         }
     }
 
+    /// Static browser-only sample. This renderer belongs exclusively to the
+    /// preview cache, never to the active or candidate application slots.
+    pub(crate) fn preview_idle_png(&mut self) -> Result<Vec<u8>, String> {
+        let (width, height) = self.canvas_size();
+        self.preview_png(
+            PresentationIntent {
+                now: Duration::ZERO,
+                phase: crate::state::Phase::Idle,
+                phase_age: Duration::ZERO,
+                effect: None,
+                pose: None,
+                visible: true,
+                pointer: None,
+                viewport: PresentationViewport {
+                    width: f64::from(width),
+                    height: f64::from(height),
+                    backing_scale: 1.0,
+                    epoch: 1,
+                },
+                frozen: true,
+            },
+            false,
+        )
+    }
+
     /// Paints the bounded authoring hit overlay over a normalized RGBA preview.
     ///
     /// Samples are taken from the selected frame's rendered alpha on a 16px
@@ -500,6 +525,17 @@ impl PrepareBuilder {
             }
         };
         Ok(Self { backend })
+    }
+    /// The worker has already sealed all rig inputs. Construct only the
+    /// main-thread-owned native host; never materialize a second snapshot.
+    pub(crate) fn from_preview_snapshot(
+        snapshot: RigSnapshot,
+        token: RendererToken,
+        mtm: MainThreadMarker,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            backend: PreparingBackend::Rig(RigPreparation::from_snapshot(snapshot, token, mtm)?),
+        })
     }
 
     /// Returns the completed candidate, or None while preparation is pending.
