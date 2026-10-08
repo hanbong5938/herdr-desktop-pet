@@ -2,6 +2,7 @@ use crate::bubble::BubblePlacement;
 use crate::dialogue::{DialogueOverrides, DialogueSlot, DialogueTarget};
 use crate::i18n::LanguagePreference;
 use crate::lifecycle::config_directory;
+use crate::session_view::SessionSort;
 use crate::sources::ObservationPreferences;
 use crate::state::{normalize_scale, DEFAULT_SCALE};
 use serde::{Deserialize, Serialize};
@@ -149,6 +150,57 @@ impl Default for PositionSpace {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SessionListPreferences {
+    pub(crate) sort: SessionSort,
+    pub(crate) running_first: bool,
+}
+
+impl Default for SessionListPreferences {
+    fn default() -> Self {
+        Self {
+            sort: SessionSort::Stable,
+            running_first: false,
+        }
+    }
+}
+
+impl SessionListPreferences {
+    fn from_disk(value: Value) -> (Self, Map<String, Value>) {
+        let Value::Object(mut fields) = value else {
+            return (Self::default(), Map::new());
+        };
+        let sort = match fields.remove("sort").as_ref().and_then(Value::as_str) {
+            Some("title_asc") => SessionSort::TitleAsc,
+            Some("source_asc") => SessionSort::SourceAsc,
+            _ => SessionSort::Stable,
+        };
+        let running_first = fields
+            .remove("running_first")
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        (
+            Self {
+                sort,
+                running_first,
+            },
+            fields,
+        )
+    }
+
+    fn to_disk(self, mut extra: Map<String, Value>) -> Value {
+        let sort = match self.sort {
+            SessionSort::Stable => "stable",
+            SessionSort::TitleAsc => "title_asc",
+            SessionSort::SourceAsc => "source_asc",
+        };
+        extra.insert("sort".to_owned(), Value::String(sort.to_owned()));
+        extra.insert("running_first".to_owned(), Value::Bool(self.running_first));
+        Value::Object(extra)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Preferences {
     visible: bool,
@@ -167,6 +219,8 @@ pub struct Preferences {
     bubble_appearance: BubbleAppearance,
     observation: ObservationPreferences,
     dialogue_overrides: DialogueOverrides,
+    session_list: SessionListPreferences,
+    session_list_extra: Map<String, Value>,
     /// Top-level keys from a newer build, written back unchanged on save.
     extra: Map<String, Value>,
 }
@@ -201,6 +255,8 @@ struct DiskPreferences {
     observation: ObservationPreferences,
     #[serde(default)]
     dialogue_overrides: DialogueOverrides,
+    #[serde(default)]
+    session_list: Value,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
@@ -232,6 +288,8 @@ impl Default for Preferences {
             bubble_appearance: BubbleAppearance::default(),
             observation: ObservationPreferences::default(),
             dialogue_overrides: DialogueOverrides::default(),
+            session_list: SessionListPreferences::default(),
+            session_list_extra: Map::new(),
             extra: Map::new(),
         }
     }
@@ -309,6 +367,8 @@ impl Preferences {
             .validate()
             .map_err(|error| format!("preferences dialogue overrides are invalid: {error}"))?;
         disk.dialogue_overrides.prune_empty();
+        let (session_list, session_list_extra) =
+            SessionListPreferences::from_disk(disk.session_list);
         let mut preferences = Self {
             visible: disk.visible,
             passthrough: disk.passthrough,
@@ -328,6 +388,8 @@ impl Preferences {
             bubble_appearance: disk.bubble_appearance,
             observation: disk.observation,
             dialogue_overrides: disk.dialogue_overrides,
+            session_list,
+            session_list_extra,
             extra: disk.extra,
         };
         preferences.sanitize();
@@ -433,6 +495,30 @@ impl Preferences {
     ) -> Result<(), String> {
         let directory = preferences_directory()?;
         self.save_observation_in_directory(preference, &directory)
+    }
+
+    pub(crate) fn session_list(&self) -> SessionListPreferences {
+        self.session_list
+    }
+
+    pub(crate) fn save_session_list(
+        &mut self,
+        preference: SessionListPreferences,
+    ) -> Result<(), String> {
+        let directory = preferences_directory()?;
+        self.save_session_list_in_directory(preference, &directory)
+    }
+
+    fn save_session_list_in_directory(
+        &mut self,
+        preference: SessionListPreferences,
+        directory: &Path,
+    ) -> Result<(), String> {
+        let mut candidate = self.clone();
+        candidate.session_list = preference;
+        candidate.save_in_directory(directory)?;
+        self.session_list = preference;
+        Ok(())
     }
 
     fn save_observation_in_directory(
@@ -553,6 +639,7 @@ impl Preferences {
             bubble_appearance: self.bubble_appearance,
             observation: self.observation.clone(),
             dialogue_overrides: self.dialogue_overrides.clone(),
+            session_list: self.session_list.to_disk(self.session_list_extra.clone()),
             extra: self.extra.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&disk)
@@ -771,6 +858,7 @@ fn sync_directory(directory: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -795,6 +883,8 @@ mod tests {
             bubble_appearance: BubbleAppearance::default(),
             observation: ObservationPreferences::default(),
             dialogue_overrides: DialogueOverrides::default(),
+            session_list: SessionListPreferences::default(),
+            session_list_extra: Map::new(),
             extra: Map::new(),
         };
         preferences.sanitize();
@@ -812,6 +902,139 @@ mod tests {
         ));
         fs::create_dir(&path).expect("isolated preferences directory should be created");
         path
+    }
+
+    #[test]
+    fn session_list_old_partial_future_and_malformed_values_do_not_invalidate_preferences() {
+        let cases = [
+            (None, SessionListPreferences::default()),
+            (
+                Some(serde_json::json!({"running_first": true})),
+                SessionListPreferences {
+                    sort: SessionSort::Stable,
+                    running_first: true,
+                },
+            ),
+            (
+                Some(serde_json::json!({"sort": "title_asc"})),
+                SessionListPreferences {
+                    sort: SessionSort::TitleAsc,
+                    running_first: false,
+                },
+            ),
+            (
+                Some(serde_json::json!({"sort": "future_sort", "running_first": true})),
+                SessionListPreferences {
+                    sort: SessionSort::Stable,
+                    running_first: true,
+                },
+            ),
+            (
+                Some(serde_json::json!({"sort": 42, "running_first": "yes"})),
+                SessionListPreferences::default(),
+            ),
+            (
+                Some(serde_json::json!([1, 2])),
+                SessionListPreferences::default(),
+            ),
+            (Some(Value::Null), SessionListPreferences::default()),
+        ];
+        for (session_list, expected) in cases {
+            let directory = isolated_preferences_directory();
+            let path = directory.join(PREFERENCES_FILE);
+            let mut disk = serde_json::json!({
+                "visible": false, "passthrough": true, "scale": 0.875,
+                "position": [13.0, 27.0], "future_setting": {"a": 1}
+            });
+            if let Some(value) = session_list {
+                disk["session_list"] = value;
+            }
+            fs::write(&path, serde_json::to_vec(&disk).unwrap()).unwrap();
+            let loaded = Preferences::load_path(&path).expect("old or new fields should load");
+            assert_eq!(loaded.session_list(), expected);
+            assert!(!loaded.visible());
+            assert!(loaded.passthrough());
+            assert_eq!(loaded.position(), Some((13.0, 27.0)));
+            assert_eq!(loaded.extra["future_setting"], serde_json::json!({"a": 1}));
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
+    fn session_list_roundtrip_and_unrelated_save_retain_existing_and_future_values() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "visible": false, "passthrough": true, "scale": 0.875,
+                "position": [3.0, 9.0], "menu_bar_mode": "recovery_only",
+                "future_setting": {"a": [1, 2]},
+                "session_list": {
+                    "sort": "future_sort", "running_first": "invalid",
+                    "future_field": {"nested": [3, 4]}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut preferences = Preferences::load_path(&path).unwrap();
+        let requested = SessionListPreferences {
+            sort: SessionSort::SourceAsc,
+            running_first: true,
+        };
+        preferences
+            .save_session_list_in_directory(requested, &directory)
+            .unwrap();
+        assert_eq!(preferences.session_list(), requested);
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["session_list"]["sort"], "source_asc");
+        assert_eq!(saved["session_list"]["running_first"], true);
+        assert_eq!(
+            saved["session_list"]["future_field"],
+            serde_json::json!({"nested": [3, 4]})
+        );
+        assert_eq!(saved["future_setting"], serde_json::json!({"a": [1, 2]}));
+        assert_eq!(saved["menu_bar_mode"], "recovery_only");
+        assert_eq!(saved["position"], serde_json::json!([3.0, 9.0]));
+
+        let mut reloaded = Preferences::load_path(&path).unwrap();
+        assert_eq!(reloaded.session_list(), requested);
+        reloaded
+            .save_menu_bar_mode_in_directory(MenuBarMode::Always, &directory)
+            .unwrap();
+        let later: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(later["session_list"], saved["session_list"]);
+        assert_eq!(later["future_setting"], saved["future_setting"]);
+        assert_eq!(
+            Preferences::load_path(&path).unwrap().session_list(),
+            requested
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_session_list_save_keeps_memory_and_existing_disk_unchanged() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let blocked = directory.join("not-a-directory");
+        let original = SessionListPreferences {
+            sort: SessionSort::TitleAsc,
+            running_first: true,
+        };
+        let mut preferences = Preferences::default();
+        preferences
+            .save_session_list_in_directory(original, &directory)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        fs::write(&blocked, b"sentinel").unwrap();
+        preferences
+            .save_session_list_in_directory(SessionListPreferences::default(), &blocked)
+            .expect_err("save through a file path should fail");
+        assert_eq!(preferences.session_list(), original);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&blocked).unwrap(), b"sentinel");
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -1028,20 +1251,73 @@ mod tests {
         }
     }
 
+    fn private_png_asset(
+        managed: &Path,
+        pixel: [u8; 4],
+    ) -> (MenuBarIconPreference, PathBuf, Vec<u8>) {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixel)
+                .unwrap();
+        }
+        let preference = MenuBarIconPreference {
+            asset: format!("icon-{:x}.png", Sha256::digest(&bytes)),
+        };
+        let path = managed.join(&preference.asset);
+        fs::write(&path, &bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        (preference, path, bytes)
+    }
+
+    fn assert_icon_state(
+        preferences: &Preferences,
+        path: &Path,
+        icon: Option<&MenuBarIconPreference>,
+        expected_disk: &Value,
+    ) {
+        assert_eq!(preferences.menu_bar_icon(), icon);
+        assert_eq!(preferences.menu_bar_mode(), MenuBarMode::RecoveryOnly);
+        assert_eq!(preferences.language(), LanguagePreference::En);
+        assert!(!preferences.visible());
+        assert!(preferences.passthrough());
+        assert_eq!(
+            preferences.extra["future_setting"],
+            serde_json::json!({"v": 2})
+        );
+        let disk: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(&disk, expected_disk);
+        let reloaded = Preferences::load_path(path).unwrap();
+        assert_eq!(reloaded.menu_bar_icon(), icon);
+        assert_eq!(reloaded.menu_bar_mode(), preferences.menu_bar_mode());
+        assert_eq!(reloaded.language(), preferences.language());
+        assert_eq!(reloaded.visible(), preferences.visible());
+        assert_eq!(reloaded.passthrough(), preferences.passthrough());
+        assert_eq!(reloaded.extra, preferences.extra);
+    }
+
     #[test]
-    fn icon_roundtrip_survives_other_saves_and_failed_reset_preserves_previous_asset() {
+    fn icon_replacement_and_reset_commit_before_cleaning_previous_asset() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
         let managed = directory.join("menu-bar-icons");
         fs::create_dir(&managed).unwrap();
         fs::set_permissions(&managed, fs::Permissions::from_mode(0o700)).unwrap();
-        let previous = MenuBarIconPreference {
-            asset: format!("icon-{}.png", "a".repeat(64)),
-        };
-        let old_path = managed.join(&previous.asset);
-        fs::write(&old_path, b"old asset").unwrap();
-        fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let (previous, old_path, old_bytes) = private_png_asset(&managed, [200, 20, 30, 255]);
+        let (replacement, new_path, new_bytes) = private_png_asset(&managed, [20, 140, 50, 255]);
+        let (unrelated, unrelated_path, unrelated_bytes) =
+            private_png_asset(&managed, [40, 60, 220, 255]);
         let mut prefs = Preferences::default();
+        prefs.set_visible(false);
+        prefs.set_passthrough(true);
+        prefs
+            .extra
+            .insert("future_setting".to_owned(), serde_json::json!({"v": 2}));
         prefs
             .save_menu_bar_icon_in_directory(Some(previous.clone()), &directory)
             .unwrap();
@@ -1052,27 +1328,69 @@ mod tests {
             .save_menu_bar_mode_in_directory(MenuBarMode::RecoveryOnly, &directory)
             .unwrap();
         let mut restarted = Preferences::load_path(&path).unwrap();
-        assert_eq!(restarted.menu_bar_icon(), Some(&previous));
-        let blocked = directory.join("not-a-directory");
-        fs::write(&blocked, b"sentinel").unwrap();
-        let before = fs::read(&path).unwrap();
+        let previous_disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_icon_state(&restarted, &path, Some(&previous), &previous_disk);
+
+        // Block the actual preferences.json rename in the same root, after publishing
+        // the candidate asset. Moving the previous file aside preserves its exact bytes.
+        let backup = directory.join("preferences.backup");
+        let previous_bytes = fs::read(&path).unwrap();
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
         restarted
-            .save_menu_bar_icon_in_directory(None, &blocked)
+            .save_menu_bar_icon_in_directory(Some(replacement.clone()), &directory)
             .unwrap_err();
         assert_eq!(restarted.menu_bar_icon(), Some(&previous));
-        assert_eq!(fs::read(&path).unwrap(), before);
-        assert!(old_path.exists());
+        assert_eq!(fs::read(&backup).unwrap(), previous_bytes);
+        assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert_icon_state(&restarted, &path, Some(&previous), &previous_disk);
+
+        fs::rename(&path, &backup).unwrap();
+        fs::create_dir(&path).unwrap();
+        restarted
+            .save_menu_bar_icon_in_directory(None, &directory)
+            .unwrap_err();
+        assert_eq!(restarted.menu_bar_icon(), Some(&previous));
+        assert_eq!(fs::read(&backup).unwrap(), previous_bytes);
+        assert_eq!(fs::read(&old_path).unwrap(), old_bytes);
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&backup, &path).unwrap();
+        assert_icon_state(&restarted, &path, Some(&previous), &previous_disk);
+
+        restarted
+            .save_menu_bar_icon_in_directory(Some(replacement.clone()), &directory)
+            .unwrap();
+        let mut replacement_disk = previous_disk.clone();
+        replacement_disk["menu_bar_icon"] = serde_json::json!({"asset": replacement.asset});
+        assert_icon_state(&restarted, &path, Some(&replacement), &replacement_disk);
+        assert!(!old_path.exists());
+        assert_eq!(fs::read(&new_path).unwrap(), new_bytes);
+        assert_eq!(fs::read(&unrelated_path).unwrap(), unrelated_bytes);
+
         restarted
             .save_menu_bar_icon_in_directory(None, &directory)
             .unwrap();
-        assert!(restarted.menu_bar_icon().is_none());
-        assert!(Preferences::load_path(&path)
-            .unwrap()
-            .menu_bar_icon()
-            .is_none());
-        assert!(!old_path.exists());
-        let disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert!(disk.get("menu_bar_icon").is_none());
+        let mut reset_disk = replacement_disk.clone();
+        reset_disk.as_object_mut().unwrap().remove("menu_bar_icon");
+        assert_icon_state(&restarted, &path, None, &reset_disk);
+        assert!(!new_path.exists());
+        assert_eq!(fs::read(&unrelated_path).unwrap(), unrelated_bytes);
+
+        // A previous asset that is not private is not ours to unlink, even if
+        // its name has the right digest and the preferences reset commits.
+        restarted
+            .save_menu_bar_icon_in_directory(Some(unrelated.clone()), &directory)
+            .unwrap();
+        fs::set_permissions(&unrelated_path, fs::Permissions::from_mode(0o644)).unwrap();
+        restarted
+            .save_menu_bar_icon_in_directory(None, &directory)
+            .unwrap();
+        assert_icon_state(&restarted, &path, None, &reset_disk);
+        assert_eq!(fs::read(&unrelated_path).unwrap(), unrelated_bytes);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -1432,6 +1750,7 @@ mod tests {
             bubble_appearance: valid.bubble_appearance,
             observation: valid.observation.clone(),
             dialogue_overrides: DialogueOverrides::default(),
+            session_list: valid.session_list.to_disk(Map::new()),
             extra: Map::new(),
         })
         .unwrap();

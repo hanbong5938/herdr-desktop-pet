@@ -13,7 +13,13 @@
   },
   "devDependencies": {
     "@types/bun": "^1.2.20",
+    "@types/mdast": "^4.0.4",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.2"
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.1.0",
+    "micromark-core-commonmark": "^2.0.4",
+    "micromark-util-normalize-identifier": "^2.0.1"
   }
 }

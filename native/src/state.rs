@@ -3,8 +3,8 @@ use crate::herdr_protocol::{AgentRecord, AgentStatus};
 use crate::lifecycle::LifecycleSettings;
 use crate::session::{CompletionObservation, OutcomeObservation};
 use crate::session_view::{
-    PromptTarget, PromptTargetError, SessionFilter, SessionKey, SessionSnapshot, SessionStore,
-    SessionView, WorktreeRemoveTarget, WorktreeRemoveTargetError,
+    CardDisplay, PromptTarget, PromptTargetError, SessionKey, SessionListOptions, SessionSnapshot,
+    SessionStore, SessionView, WorktreeRemoveTarget, WorktreeRemoveTargetError,
 };
 use crate::sources::{remote_machine_id, remote_source, ObservationPreferences, SourceCatalog};
 use serde::{Deserialize, Serialize};
@@ -330,10 +330,24 @@ impl AppState {
 
     pub(crate) fn session_snapshot(
         &self,
-        filter: SessionFilter,
+        options: &SessionListOptions<'_>,
         selected: Option<&SessionKey>,
     ) -> SessionSnapshot {
-        self.session_store.snapshot(filter, selected)
+        self.session_store.snapshot(options, selected)
+    }
+    pub(crate) fn session_display_for_key(
+        &self,
+        locale: crate::i18n::UiLocale,
+        key: &SessionKey,
+    ) -> Option<CardDisplay> {
+        self.session_store.display_for_key(locale, key)
+    }
+    pub(crate) fn session_displays_for_keys(
+        &self,
+        locale: crate::i18n::UiLocale,
+        keys: &[&SessionKey],
+    ) -> Vec<Option<CardDisplay>> {
+        self.session_store.displays_for_keys(locale, keys)
     }
     pub(crate) fn session_view_for_key(&self, key: &SessionKey) -> Option<SessionView> {
         self.session_store.view_for_key(key)
@@ -850,6 +864,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_view::SessionFilter;
     use std::time::{Duration, Instant};
 
     fn connect(state: &mut AppState, source: &str, generation: u64) {
@@ -941,12 +956,19 @@ mod tests {
         let mut state = AppState::new();
         connect(&mut state, "local.sock", 1);
         publish(&mut state, "local.sock", 1, AgentStatus::Working);
-        let key = state.session_snapshot(SessionFilter::All, None).rows[0]
+        let key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
             .key
             .clone();
         assert_eq!(
             state.session_view_for_key(&key),
-            Some(state.session_snapshot(SessionFilter::All, None).rows[0].clone())
+            Some(
+                state
+                    .session_snapshot(&SessionListOptions::default(), None)
+                    .rows[0]
+                    .clone()
+            )
         );
         assert!(state.update_source(
             "local.sock",
@@ -991,7 +1013,9 @@ mod tests {
             ..SourceCounts::default()
         };
         assert!(state.publish_source_snapshot(source, 1, [&row], counts, &[], Instant::now()));
-        let key = state.session_snapshot(SessionFilter::All, None).rows[0]
+        let key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
             .key
             .clone();
         assert_eq!(
@@ -1015,7 +1039,9 @@ mod tests {
             Err(WorktreeRemoveTargetError::Stale)
         );
         assert!(state.publish_source_snapshot(source, 2, [&row], counts, &[], Instant::now()));
-        let new_key = state.session_snapshot(SessionFilter::All, None).rows[0]
+        let new_key = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
             .key
             .clone();
         state.request_shutdown();
@@ -1034,7 +1060,9 @@ mod tests {
             &[],
             Instant::now()
         ));
-        let relative_key = relative.session_snapshot(SessionFilter::All, None).rows[0]
+        let relative_key = relative
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows[0]
             .key
             .clone();
         assert_eq!(
@@ -1111,7 +1139,10 @@ mod tests {
         state.push_outcome(outcome("local.sock", 1));
         assert!(state.session_revision() > revision);
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None).rows[0].display_status(),
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .rows[0]
+                .display_status(),
             DisplayStatus::Succeeded
         );
         assert_eq!(state.take_outcomes().len(), 1);
@@ -1132,12 +1163,18 @@ mod tests {
         };
         assert!(state.update_session_status(active));
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None).rows[0].display_status(),
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .rows[0]
+                .display_status(),
             DisplayStatus::Running
         );
         state.update_source("local.sock", 1, false, counts);
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None).rows[0].display_status(),
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .rows[0]
+                .display_status(),
             DisplayStatus::Offline
         );
         state.push_outcome(outcome("local.sock", 1));
@@ -1155,7 +1192,8 @@ mod tests {
         state.apply_observation_preferences(policy(true, true, &["east"]));
         connect(&mut state, &remote, 1);
         publish(&mut state, &remote, 1, AgentStatus::Blocked);
-        let both = state.session_snapshot(SessionFilter::All, None);
+        let both =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(both.total, 2);
         assert_eq!(state.scene().phase, Phase::Waiting);
         assert_ne!(both.rows[0].key, both.rows[1].key);
@@ -1166,7 +1204,10 @@ mod tests {
         state.apply_observation_preferences(policy(true, false, &["east"]));
         assert!(state.session_revision() > revision);
         assert_eq!(state.scene().phase, Phase::Running);
-        let local = state.session_snapshot(SessionFilter::Waiting, Some(&local_key));
+        let local = state.session_snapshot(
+            &SessionListOptions::with_filter(SessionFilter::Waiting),
+            Some(&local_key),
+        );
         assert_eq!((local.total, local.matched, local.omitted), (1, 0, 0));
         assert_eq!(local.selected, Some(local_key.clone()));
         assert!(state.take_completions().is_empty());
@@ -1178,15 +1219,23 @@ mod tests {
         assert_eq!(state.scene().phase, Phase::Unknown);
         assert_eq!(
             state
-                .session_snapshot(SessionFilter::All, Some(&local_key))
+                .session_snapshot(&SessionListOptions::default(), Some(&local_key))
                 .selected,
             None
         );
-        assert_eq!(state.session_snapshot(SessionFilter::All, None).total, 0);
+        assert_eq!(
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .total,
+            0
+        );
         publish(&mut state, "local.sock", 1, AgentStatus::Done);
         state.apply_observation_preferences(policy(true, false, &["east"]));
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None).rows[0].status,
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .rows[0]
+                .status,
             AgentStatus::Done
         );
     }
@@ -1202,7 +1251,9 @@ mod tests {
         connect(&mut state, &west, 1);
         publish(&mut state, &east, 1, AgentStatus::Working);
         publish(&mut state, &west, 1, AgentStatus::Blocked);
-        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        let rows = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         assert_eq!(
             (rows[0].source_label.as_str(), rows[1].source_label.as_str()),
             ("East", "West")
@@ -1215,11 +1266,19 @@ mod tests {
         ]));
         assert!(state.session_revision() > previous);
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None).rows[0].source_label,
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .rows[0]
+                .source_label,
             "Renamed"
         );
         state.set_observation_catalog(catalog(&[("east", "Renamed", false)]));
-        assert_eq!(state.session_snapshot(SessionFilter::All, None).total, 0);
+        assert_eq!(
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .total,
+            0
+        );
         assert_eq!(state.scene().phase, Phase::Unknown);
         assert!(!state.begin_source(east.clone(), 1));
         let empty: [AgentRecord; 0] = [];
@@ -1253,7 +1312,12 @@ mod tests {
         let revision = state.session_revision();
         publish(&mut state, &east, 2, AgentStatus::Done);
         assert_eq!(state.session_revision(), revision);
-        assert_eq!(state.session_snapshot(SessionFilter::All, None).total, 1);
+        assert_eq!(
+            state
+                .session_snapshot(&SessionListOptions::default(), None)
+                .total,
+            1
+        );
         assert!(state.take_completions().is_empty());
     }
 
@@ -1275,7 +1339,8 @@ mod tests {
             &[],
             Instant::now(),
         ));
-        let live = state.session_snapshot(SessionFilter::All, None);
+        let live =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(live.rows.len(), 1);
         assert_eq!(
             live.rows[0].availability,
@@ -1284,7 +1349,8 @@ mod tests {
         assert_eq!(live.rows[0].pane_id, "pane-a");
 
         assert!(state.update_source("one.sock", 1, false, initial_counts));
-        let offline = state.session_snapshot(SessionFilter::All, None);
+        let offline =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(offline.rows.len(), 1);
         assert_eq!(
             offline.rows[0].availability,
@@ -1293,7 +1359,8 @@ mod tests {
         assert_eq!(offline.rows[0].status, AgentStatus::Working);
 
         assert!(state.begin_source("one.sock".to_owned(), 2));
-        let restarted = state.session_snapshot(SessionFilter::All, None);
+        let restarted =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(restarted.rows.len(), 1);
         assert_eq!(restarted.rows[0].key.generation, 2);
         assert_eq!(
@@ -1315,7 +1382,8 @@ mod tests {
             completion: true,
             observed_at: Instant::now(),
         }));
-        let still_offline = state.session_snapshot(SessionFilter::All, None);
+        let still_offline =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(still_offline.rows[0].status, AgentStatus::Working);
         assert_eq!(
             still_offline.rows[0].availability,
@@ -1334,14 +1402,16 @@ mod tests {
             &[],
             Instant::now(),
         ));
-        let replaced = state.session_snapshot(SessionFilter::All, None);
+        let replaced =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(replaced.rows[0].status, AgentStatus::Done);
         assert_eq!(
             replaced.rows[0].availability,
             crate::session_view::Availability::Live
         );
 
-        let before_rejected = state.session_snapshot(SessionFilter::All, None);
+        let before_rejected =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         let before_revision = state.session_revision();
         let before_scene = state.scene();
         assert!(!state.update_session_status(SessionStatusUpdate {
@@ -1360,7 +1430,7 @@ mod tests {
         }));
         assert_eq!(state.session_revision(), before_revision);
         assert_eq!(
-            state.session_snapshot(SessionFilter::All, None),
+            state.session_snapshot(&SessionListOptions::default(), None),
             before_rejected
         );
         let after_scene = state.scene();
@@ -1379,7 +1449,8 @@ mod tests {
             &[],
             Instant::now(),
         ));
-        let cleared = state.session_snapshot(SessionFilter::All, None);
+        let cleared =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert!(cleared.rows.is_empty());
         assert_eq!(cleared.total, 0);
         assert_eq!(cleared.matched, 0);
@@ -1591,7 +1662,9 @@ mod tests {
             &[],
             Instant::now()
         ));
-        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        let rows = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         assert_ne!(rows[0].key, rows[1].key);
         assert_eq!(rows[0].metadata, east_record.metadata);
         assert_eq!(rows[1].metadata.title.as_deref(), Some("Build west"));
@@ -1616,19 +1689,29 @@ mod tests {
             ("east", "Renamed", true),
             ("west", "West", true),
         ]));
-        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        let rows = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         assert_eq!(rows[0].metadata, east_record.metadata);
         assert_eq!(rows[0].source_label, "Renamed");
         assert_eq!(rows[0].status, AgentStatus::Done);
         assert_eq!(rows[1].metadata, west_record.metadata);
         assert_eq!(
             state
-                .session_snapshot(SessionFilter::Completed, None)
+                .session_snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Completed),
+                    None
+                )
                 .matched,
             1
         );
         assert_eq!(
-            state.session_snapshot(SessionFilter::Waiting, None).matched,
+            state
+                .session_snapshot(
+                    &SessionListOptions::with_filter(SessionFilter::Waiting),
+                    None
+                )
+                .matched,
             1
         );
     }

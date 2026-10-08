@@ -6,8 +6,8 @@ use std::fmt;
 use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub(crate) const MAX_FRAME_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_AGENT_RECORDS: usize = 16_384;

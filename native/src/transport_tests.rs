@@ -119,7 +119,7 @@ fn empty_buffer_returns_without_waiting() {
 mod prompt {
     use crate::herdr::{PromptError, PromptSender};
     use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata};
-    use crate::session_view::{SessionFilter, SessionKey};
+    use crate::session_view::{SessionFilter, SessionKey, SessionListOptions};
     use crate::sources::{
         remote_source, MachineInfo, MachineStatus, ObservationPreferences, SourceCatalog,
     };
@@ -226,7 +226,7 @@ mod prompt {
             Instant::now()
         ));
         state
-            .session_snapshot(SessionFilter::All, None)
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows
             .into_iter()
             .find(|row| {
@@ -315,7 +315,7 @@ mod prompt {
         assert!(shared
             .lock()
             .unwrap()
-            .session_snapshot(SessionFilter::All, Some(&key))
+            .session_snapshot(&SessionListOptions::default(), Some(&key))
             .rows
             .is_empty());
         assert_eq!(
@@ -337,7 +337,8 @@ mod prompt {
             .unwrap()
             .apply_observation_preferences(ObservationPreferences::default());
         let state = shared.lock().unwrap();
-        let snapshot = state.session_snapshot(SessionFilter::All, None);
+        let snapshot =
+            state.session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None);
         assert_eq!(snapshot.rows[0].key, key);
         assert_eq!(state.prompt_available(&snapshot.rows[0].key), Ok(()));
     }
@@ -429,7 +430,7 @@ mod prompt {
             Instant::now()
         ));
         state
-            .session_snapshot(SessionFilter::All, None)
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows
             .into_iter()
             .find(|row| row.key.terminal_id == agents[0].terminal_id)
@@ -581,7 +582,7 @@ mod prompt {
 mod worktree_remove {
     use crate::herdr::{WorktreeRemoveError, WorktreeRemoveResult, WorktreeRemoveSender};
     use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
-    use crate::session_view::{SessionFilter, SessionKey};
+    use crate::session_view::{SessionFilter, SessionKey, SessionListOptions};
     use crate::state::{AppState, SourceCounts};
     use serde_json::{json, Value};
     use std::fs;
@@ -731,7 +732,7 @@ mod worktree_remove {
             Instant::now()
         ));
         state
-            .session_snapshot(SessionFilter::All, None)
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows
             .into_iter()
             .filter(|row| {
@@ -1302,7 +1303,7 @@ mod worktree_remove {
 mod watcher_lifecycle {
     use crate::herdr::Watchers;
     use crate::lifecycle::LifecycleSettings;
-    use crate::session_view::{Availability, SessionFilter};
+    use crate::session_view::{Availability, SessionFilter, SessionListOptions};
     use crate::state::AppState;
     use serde_json::{json, Value};
     use std::fs;
@@ -1612,7 +1613,9 @@ mod watcher_lifecycle {
         {
             let state = shared.lock().unwrap();
             let scene = state.scene();
-            let rows = state.session_snapshot(SessionFilter::All, None).rows;
+            let rows = state
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows;
             assert_eq!(scene.connected_sources, 1, "survivor baseline");
             assert_eq!(scene.disconnected_sources, 0, "survivor baseline");
             assert!(!scene.shutdown, "survivor baseline");
@@ -1645,7 +1648,7 @@ mod watcher_lifecycle {
         let state = shared.lock().unwrap();
         let scene = state.scene();
         state
-            .session_snapshot(SessionFilter::All, None)
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
             .rows
             .into_iter()
             .find(|row| {
@@ -1681,7 +1684,9 @@ mod watcher_lifecycle {
             "target source remained pending"
         );
         assert!(!scene.shutdown, "watcher shut down");
-        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        let rows = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         assert!(
             rows.iter()
                 .all(|row| row.key.terminal_id != server.terminal),
@@ -1729,7 +1734,9 @@ mod watcher_lifecycle {
         });
         let state = shared.lock().unwrap();
         let scene = state.scene();
-        let rows = state.session_snapshot(SessionFilter::All, None).rows;
+        let rows = state
+            .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+            .rows;
         assert_eq!(scene.connected_sources, 2);
         assert_eq!(scene.disconnected_sources, 0);
         assert!(!scene.shutdown);
@@ -1781,7 +1788,7 @@ mod watcher_lifecycle {
             let state = shared.lock().unwrap();
             state.scene().connected_sources == 1
                 && state
-                    .session_snapshot(SessionFilter::All, None)
+                    .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
                     .rows
                     .iter()
                     .all(|row| row.key.terminal_id != server.terminal)

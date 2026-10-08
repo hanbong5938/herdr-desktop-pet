@@ -15,6 +15,9 @@ use crate::character_service::PackService;
 use crate::character_types::{
     CharacterRef, PackAction, PackListing, PackOperation, PackRequest, RendererToken,
 };
+use crate::composer_layout::{
+    configure_composer, layout_composer, ComposerMetrics, INPUT_ORIGIN_Y,
+};
 use crate::control;
 use crate::dialogue::{effective_metadata, DialogueSlot, DialogueTarget};
 use crate::dialogue_editor::{DialogueChoice, DialogueEditor};
@@ -33,7 +36,9 @@ use crate::preferences::{
     BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarIconPreference, MenuBarMode,
     Preferences,
 };
-use crate::session_cards::{card_header_key_at_hit, minimum_selectable_height, SessionCards};
+use crate::session_cards::{
+    card_header_key_at_hit, maximum_cards_height, minimum_selectable_height, SessionCards,
+};
 use crate::session_view::{SessionKey, SessionStatusSummary, WorktreeRemoveTarget};
 use crate::sources::ObservationPreferences;
 use crate::state::{AppState, Phase, Scene, MAX_SCALE, MIN_SCALE};
@@ -46,24 +51,24 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     define_class, msg_send, sel, AnyThread, ClassType, DefinedClass, MainThreadMarker,
-    MainThreadOnly,
+    MainThreadOnly, Message as ObjcMessage,
 };
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance, NSAppearanceNameAqua,
-    NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSBezelStyle, NSBezierPath, NSBorderType, NSButton, NSButtonCell, NSCell,
-    NSColor, NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections,
-    NSCursorFrameResizePosition, NSEvent, NSEventMask, NSEventModifierFlags,
-    NSEventTrackingRunLoopMode, NSEventType, NSFloatingWindowLevel, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView, NSLayoutManager,
-    NSLineBreakMode, NSMenu, NSMenuItem, NSModalPanelRunLoopMode, NSModalResponseOK,
-    NSMutableParagraphStyle, NSOpenPanel, NSPanel, NSParagraphStyleAttributeName, NSPasteboard,
-    NSPasteboardTypeString, NSPopUpButton, NSRunningApplication, NSScreen, NSScrollView,
-    NSScrollerStyle, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment, NSTextContainer,
-    NSTextField, NSTextStorage, NSTextView, NSTrackingArea, NSTrackingAreaOptions,
-    NSUserInterfaceItemIdentification, NSVariableStatusItemLength, NSView,
-    NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
+    NSBackingStoreType, NSBezelStyle, NSBezierPath, NSButton, NSButtonCell, NSCell, NSColor,
+    NSControlStateValueOn, NSCursor, NSCursorFrameResizeDirections, NSCursorFrameResizePosition,
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventTrackingRunLoopMode, NSEventType,
+    NSFloatingWindowLevel, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
+    NSImageScaling, NSImageView, NSLayoutManager, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSModalPanelRunLoopMode, NSModalResponseOK, NSMutableParagraphStyle, NSOpenPanel, NSPanel,
+    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
+    NSRunningApplication, NSScreen, NSScrollView, NSScrollerStyle, NSStatusBar, NSStatusItem,
+    NSSwitch, NSTextAlignment, NSTextContainer, NSTextField, NSTextStorage, NSTextView,
+    NSTrackingArea, NSTrackingAreaOptions, NSUserInterfaceItemIdentification,
+    NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
+    NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate, NSLocale,
@@ -153,9 +158,7 @@ const BUBBLE_CONTROL_HEIGHT: f64 = 20.0;
 const BUBBLE_COLLAPSE_WIDTH: f64 = 72.0;
 const BUBBLE_CONTENT_GAP: f64 = 4.0;
 const BUBBLE_MESSAGE_MAX_HEIGHT: f64 = 116.0;
-const BUBBLE_CARDS_MAX_HEIGHT: f64 = 180.0;
-const COMPOSER_REPLY_HEIGHT: f64 = 48.0;
-const COMPOSER_INPUT_HEIGHT: f64 = 22.0;
+const COMPOSER_READONLY_HEIGHT: f64 = 25.0;
 const COMPOSER_STATUS_HEIGHT: f64 = 18.0;
 
 fn menu_bar_visible(scene: &Scene, mode: MenuBarMode) -> bool {
@@ -188,8 +191,8 @@ fn expanded_spacing(
     ) > body_height
     {
         ExpandedSpacing {
-            inset: 2.5,
-            gap: 1.0,
+            inset: 1.0,
+            gap: 0.5,
         }
     } else {
         normal
@@ -212,7 +215,7 @@ fn expanded_height_budget(
                 2.0
             })
         + if show_status {
-            STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
+            STATUS_ROW_HEIGHT + if has_message { spacing.gap } else { 0.0 }
         } else {
             0.0
         }
@@ -225,9 +228,10 @@ fn expanded_message_top(
     content_top: f64,
     show_status: bool,
     has_message: bool,
+    spacing: ExpandedSpacing,
 ) -> f64 {
     if show_status {
-        status_bottom - if has_message { BUBBLE_CONTENT_GAP } else { 0.0 }
+        status_bottom - if has_message { spacing.gap } else { 0.0 }
     } else {
         content_top
     }
@@ -256,7 +260,12 @@ fn expanded_heights(
                 2.0
             })
         - if show_status {
-            STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
+            STATUS_ROW_HEIGHT
+                + if desired_message > 0.0 {
+                    spacing.gap
+                } else {
+                    0.0
+                }
         } else {
             0.0
         })
@@ -515,8 +524,29 @@ define_class!(
             self.normalize_committed_text();
         }
 
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            // Like the dialogue editor, this panel has no application Edit menu.
+            if self
+                .window()
+                .and_then(|window| window.firstResponder())
+                .is_some_and(|responder| {
+                    Retained::as_ptr(&responder).cast::<()>()
+                        == (self as *const Self).cast::<()>()
+                })
+                && self.handle_edit_shortcut(event)
+            {
+                return true.into();
+            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            // Some window dispatch paths bypass performKeyEquivalent:.
+            if self.handle_edit_shortcut(event) {
+                return;
+            }
             let marked: bool = unsafe { msg_send![self, hasMarkedText] };
             if !marked && matches!(event.keyCode(), 36 | 76) {
                 with_ui_mut(|ui| ui.submit_composer());
@@ -591,6 +621,34 @@ define_class!(
 );
 
 impl ComposerView {
+    fn handle_edit_shortcut(&self, event: &NSEvent) -> bool {
+        let modifiers = event.modifierFlags()
+            & (NSEventModifierFlags::Command
+                | NSEventModifierFlags::Shift
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option);
+        if modifiers != NSEventModifierFlags::Command || unsafe { msg_send![self, hasMarkedText] } {
+            return false;
+        }
+        let Some(key) = event.charactersIgnoringModifiers() else {
+            return false;
+        };
+        if key.length() != 1 {
+            return false;
+        }
+        let Ok(key) = u8::try_from(key.characterAtIndex(0)) else {
+            return false;
+        };
+        match key.to_ascii_lowercase() {
+            b'a' => unsafe { self.selectAll(None) },
+            b'c' => unsafe { self.copy(None) },
+            b'x' => unsafe { self.cut(None) },
+            b'v' => unsafe { msg_send![self, paste: None::<&AnyObject>] },
+            _ => return false,
+        }
+        true
+    }
+
     fn normalize_committed_text(&self) {
         let marked: bool = unsafe { msg_send![self, hasMarkedText] };
         if marked || self.ivars().normalizing.get() {
@@ -653,7 +711,7 @@ impl ComposerView {
         });
         unsafe {
             msg_send![super(this), initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0), NSSize::new(220.0, COMPOSER_INPUT_HEIGHT)
+                NSPoint::new(0.0, 0.0), NSSize::new(220.0, BUBBLE_LINE_HEIGHT)
             )]
         }
     }
@@ -688,7 +746,7 @@ struct CachedAnchor {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ComposerRenderStamp {
-    cards: (Option<u64>, u64, UiLocale),
+    cards: (Option<u64>, u64, UiLocale, u64),
     locale: UiLocale,
     pending: bool,
     live_revision: Option<u64>,
@@ -822,6 +880,8 @@ struct Ui {
     reply_container: Retained<NSView>,
     composer_scroll: Retained<NSScrollView>,
     composer_view: Retained<ComposerView>,
+    composer_metrics: ComposerMetrics,
+    composer_readonly: bool,
     composer_status: Retained<NSTextField>,
     composer_send: Retained<NSButton>,
     prompt_sender: PromptSender,
@@ -881,6 +941,9 @@ struct Ui {
     bubble_mode: BubbleMode,
     bubble_layout: BubbleLayout,
     bubble_geometry: Option<BubbleGeometry>,
+    // The last successfully applied geometry can be tailless and still attached.
+    bubble_geometry_attached: bool,
+    pending_standalone_body_origin: Option<(f64, f64)>,
     bubble_content_dirty: bool,
     pending_bubble_scene: Option<Scene>,
     pending_bubble_content: bool,
@@ -1107,7 +1170,7 @@ define_class!(
             if !pointer_event_allowed(event, false) { return; }
             let drag = self.ivars().drag.get();
             with_ui_mut(|ui| {
-                ui.cancel_gesture_for(drag);
+                ui.cancel_gesture_for(drag, true);
                 ui.cancel_pointer();
             });
             self.ivars().drag.set(None);
@@ -1181,10 +1244,23 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), sendEvent: event] };
         }
 
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> bool {
+            if self.search_edit_shortcut(event) {
+                return true.into();
+            }
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
+        }
+
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            if self.isKeyWindow() && self.search_edit_shortcut(event) {
+                return;
+            }
             if self.isKeyWindow() && event.keyCode() == 53 {
-                if self.composing_editor().is_some() {
+                if with_ui_read(|ui| ui.cards.search_has_focus()).unwrap_or(false) {
+                    with_ui_mut(|ui| ui.cards.search_escape());
+                } else if self.composing_editor().is_some() {
                     let _: () = unsafe { msg_send![super(self), keyDown: event] };
                 } else {
                     with_ui_mut(|ui| ui.escape_reply_or_collapse());
@@ -1193,11 +1269,12 @@ define_class!(
             }
             let _: () = unsafe { msg_send![super(self), keyDown: event] };
         }
-
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, sender: Option<&AnyObject>) {
             if self.isKeyWindow() {
-                if let Some(editor) = self.composing_editor() {
+                if with_ui_read(|ui| ui.cards.search_has_focus()).unwrap_or(false) {
+                    with_ui_mut(|ui| ui.cards.search_escape());
+                } else if let Some(editor) = self.composing_editor() {
                     let _: () = unsafe { msg_send![editor, cancelOperation: sender] };
                 } else {
                     with_ui_mut(|ui| ui.escape_reply_or_collapse());
@@ -1209,6 +1286,57 @@ define_class!(
     }
 );
 impl BubblePanel {
+    fn search_edit_shortcut(&self, event: &NSEvent) -> bool {
+        if !self.isKeyWindow() {
+            return false;
+        }
+        let modifiers = event.modifierFlags()
+            & (NSEventModifierFlags::Command
+                | NSEventModifierFlags::Shift
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option);
+        if modifiers != NSEventModifierFlags::Command {
+            return false;
+        }
+        let Some(key) = event.charactersIgnoringModifiers() else {
+            return false;
+        };
+        if key.length() != 1 {
+            return false;
+        }
+        let Ok(key) = u8::try_from(key.characterAtIndex(0)) else {
+            return false;
+        };
+        if !matches!(key.to_ascii_lowercase(), b'a' | b'c' | b'x' | b'v') {
+            return false;
+        }
+        let Some(editor) =
+            with_ui_read(|ui| ui.cards.search_editor().map(|editor| editor.retain())).flatten()
+        else {
+            return false;
+        };
+        let marked: bool = unsafe { msg_send![&*editor, hasMarkedText] };
+        if marked {
+            return false;
+        }
+        match key.to_ascii_lowercase() {
+            b'a' => {
+                let _: () = unsafe { msg_send![&*editor, selectAll: None::<&AnyObject>] };
+            }
+            b'c' => {
+                let _: () = unsafe { msg_send![&*editor, copy: None::<&AnyObject>] };
+            }
+            b'x' => {
+                let _: () = unsafe { msg_send![&*editor, cut: None::<&AnyObject>] };
+            }
+            b'v' => {
+                let _: () = unsafe { msg_send![&*editor, paste: None::<&AnyObject>] };
+            }
+            _ => unreachable!(),
+        }
+        true
+    }
+
     fn composing_editor(&self) -> Option<&AnyObject> {
         let responder: Option<&AnyObject> = unsafe { msg_send![self, firstResponder] };
         responder.filter(|responder| {
@@ -1248,7 +1376,7 @@ impl BubblePanel {
             (
                 ui.locale,
                 ui.last_scene.visible,
-                ui.composer_marked(),
+                ui.composer_marked() || ui.cards.is_composing(),
                 ui._menu_target.clone(),
                 ui.mtm,
                 worktree,
@@ -1423,7 +1551,7 @@ define_class!(
                 return;
             }
             let drag = self.ivars().drag.get();
-            with_ui_mut(|ui| ui.cancel_gesture_for(drag));
+            with_ui_mut(|ui| ui.cancel_gesture_for(drag, true));
             self.ivars().drag.set(None);
             self.set_drag_visuals(false);
         }
@@ -1518,7 +1646,7 @@ define_class!(
         #[unsafe(method(closeBubbleWindow:))]
         fn close_bubble_window(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| {
-                if ui.composer_marked() {
+                if ui.composer_marked() || ui.cards.is_composing() {
                     return;
                 }
                 if ui.apply_control("hide_bubble").is_err() {
@@ -1721,7 +1849,7 @@ define_class!(
         #[unsafe(method(openContextSettings:))]
         fn open_context_settings(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| {
-                if !ui.composer_marked() {
+                if !ui.composer_marked() && !ui.cards.is_composing() {
                     if let Some(anchor) = ui.context_anchor {
                         ui.open_settings_at(anchor);
                     }
@@ -2771,6 +2899,24 @@ pub(crate) fn cards_content_changed() {
     });
 }
 
+pub(crate) fn cards_options_changed() {
+    with_ui_mut(|ui| {
+        ui.cards.set_composition_active(ui.composer_marked());
+        ui.cards.sync_search_composition();
+        if ui.cards.is_composing() {
+            return;
+        }
+        ui.apply_pending_cards_options();
+        ui.composer_render_stamp = None;
+        ui.sync_composer();
+        if ui.bubble_mode == BubbleMode::Expanded {
+            ui.bubble_content_dirty = true;
+            let scene = ui.last_scene.clone();
+            ui.refresh_bubble_content(&scene);
+        }
+    });
+}
+
 pub(crate) fn cards_selection_changed() {
     with_ui_mut(|ui| {
         if ui.bubble_mode != BubbleMode::Expanded {
@@ -2801,6 +2947,58 @@ where
         let slot = cell.try_borrow().ok()?;
         slot.as_ref().map(f)
     })
+}
+
+// Local monitors retain their handler. Drop the token before interpreting a
+// modal answer so neither its alert controls nor its window outlive the modal.
+struct AlertEscapeMonitor {
+    token: Retained<AnyObject>,
+    _main_thread: MainThreadMarker,
+}
+
+impl Drop for AlertEscapeMonitor {
+    fn drop(&mut self) {
+        unsafe { NSEvent::removeMonitor(&*self.token) };
+    }
+}
+
+fn install_alert_escape_monitor(
+    mtm: MainThreadMarker,
+    alert: &NSAlert,
+    cancel: &NSButton,
+) -> Option<AlertEscapeMonitor> {
+    let window = alert.window();
+    let cancel = objc2::Message::retain(cancel);
+    let app = NSApplication::sharedApplication(mtm);
+    let local: RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> =
+        RcBlock::new(move |event: NonNull<NSEvent>| {
+            let pointer = event.as_ptr();
+            let event = unsafe { event.as_ref() };
+            let modifiers = NSEventModifierFlags::Command
+                | NSEventModifierFlags::Control
+                | NSEventModifierFlags::Option
+                | NSEventModifierFlags::Shift;
+            if event.keyCode() == 53
+                && !event.modifierFlags().intersects(modifiers)
+                && event
+                    .window(mtm)
+                    .is_some_and(|current| current.windowNumber() == window.windowNumber())
+                && window.isKeyWindow()
+                && app
+                    .modalWindow()
+                    .is_some_and(|current| current.windowNumber() == window.windowNumber())
+            {
+                unsafe { cancel.performClick(None) };
+                std::ptr::null_mut()
+            } else {
+                pointer
+            }
+        });
+    unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &*local) }
+        .map(|token| AlertEscapeMonitor {
+            token,
+            _main_thread: mtm,
+        })
 }
 
 fn begin_worktree_remove(target: WorktreeRemoveTarget) {
@@ -2857,13 +3055,11 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
         target.worktree.pane_count,
     )));
     let cancel = alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::Cancel)));
-    cancel.setKeyEquivalent(&NSString::from_str("\u{1b}"));
     alert.addButtonWithTitle(&NSString::from_str(text(
         locale,
         Message::WorktreeRemoveAction,
     )));
-    // Escape's key equivalent can displace AppKit's automatic first-button
-    // default. Assign the non-destructive Return/Enter default after layout.
+    // Keep Cancel as the default for Return, including when Delete has focus.
     alert.layout();
     let Some(cell) = cancel
         .cell()
@@ -2881,7 +3077,20 @@ fn begin_worktree_remove(target: WorktreeRemoveTarget) {
         return;
     };
     alert.window().setDefaultButtonCell(Some(&cell));
+    let Some(monitor) = install_alert_escape_monitor(mtm, &alert, &cancel) else {
+        with_ui_mut(|ui| {
+            ui.worktree_confirming = false;
+            ui.set_worktree_feedback(WorktreeFeedback::Finished(
+                target,
+                Err(WorktreeRemoveError::Other(
+                    text(locale, Message::WorktreeConfirmUnavailable).to_owned(),
+                )),
+            ));
+        });
+        return;
+    };
     let answer = alert.runModal();
+    drop(monitor);
     with_ui_mut(|ui| {
         ui.worktree_confirming = false;
         if answer != NSAlertSecondButtonReturn || ui.composer_marked() {
@@ -3350,7 +3559,7 @@ impl Ui {
         bubble_root.set_opaque_surface(prefs.show_status_indicators());
         let menu_target = MenuTarget::new(mtm);
         let character_menu = CharacterMenu::new(&menu_target, locale, mtm);
-        let mut cards = SessionCards::new(shared.clone(), locale, mtm);
+        let mut cards = SessionCards::new(shared.clone(), locale, prefs.session_list(), mtm);
         cards.set_show_status_indicators(prefs.show_status_indicators());
         cards.set_palette(palette);
         cards.set_frame(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0)));
@@ -3505,34 +3714,19 @@ impl Ui {
         composer_view.setFont(Some(&NSFont::systemFontOfSize(BUBBLE_PRIMARY_FONT_SIZE)));
         composer_view.setTextColor(Some(&ivory));
         composer_view.setDrawsBackground(false);
-        composer_view.setHorizontallyResizable(true);
-        composer_view.setVerticallyResizable(false);
-        composer_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewHeightSizable);
-        if let Some(container) = unsafe { composer_view.textContainer() } {
-            container.setWidthTracksTextView(false);
-            container.setContainerSize(NSSize::new(1_000_000.0, COMPOSER_INPUT_HEIGHT));
-            container.setLineBreakMode(NSLineBreakMode::ByClipping);
-            container.setLineFragmentPadding(4.0);
-        }
-        composer_view.setTextContainerInset(NSSize::new(3.0, 3.0));
         set_accessibility_identifier(&composer_view, "pet-message-input");
         set_accessibility_label(&composer_view, text(locale, Message::ComposerInput));
         let composer_scroll: Retained<NSScrollView> = unsafe {
             msg_send![NSScrollView::alloc(mtm), initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0), NSSize::new(220.0, COMPOSER_INPUT_HEIGHT)
+                NSPoint::new(0.0, 0.0), NSSize::new(220.0, BUBBLE_LINE_HEIGHT)
             )]
         };
-        composer_scroll.setScrollerStyle(NSScrollerStyle::Overlay);
-        composer_scroll.setBorderType(NSBorderType::LineBorder);
-        composer_scroll.setDocumentView(Some(&*composer_view));
-        composer_scroll.setHasVerticalScroller(false);
-        composer_scroll.setHasHorizontalScroller(true);
-        composer_scroll.setAutohidesScrollers(true);
+        let composer_metrics = configure_composer(&composer_view, &composer_scroll);
         composer_scroll.setDrawsBackground(true);
         composer_scroll.setBackgroundColor(&reply_input_color(palette));
         let reply_container: Retained<NSView> = unsafe {
             msg_send![NSView::alloc(mtm), initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0), NSSize::new(270.0, COMPOSER_REPLY_HEIGHT)
+                NSPoint::new(0.0, 0.0), NSSize::new(270.0, composer_metrics.reply_height)
             )]
         };
         reply_container.addSubview(&composer_scroll);
@@ -3666,6 +3860,8 @@ impl Ui {
             reply_container,
             composer_scroll,
             composer_view,
+            composer_metrics,
+            composer_readonly: false,
             composer_status,
             composer_send,
             prompt_sender,
@@ -3743,6 +3939,8 @@ impl Ui {
             bubble_mode: BubbleMode::Compact,
             bubble_layout: BubbleLayout::default(),
             bubble_geometry: None,
+            bubble_geometry_attached: false,
+            pending_standalone_body_origin: None,
             bubble_content_dirty: true,
             pending_bubble_scene: None,
             pending_bubble_content: false,
@@ -4351,8 +4549,9 @@ impl Ui {
                 });
             }
             Ok(true) => {
-                self.cancel_gesture();
-                self.cancel_pointer();
+                self.prepare_bubble_transition(&scene);
+                self.cancel_gesture(false);
+                self.cancel_pointer_state();
                 if let PreparedCharacter::Rig(old) = &mut self.active {
                     old.set_visible(false);
                     old.view().removeFromSuperview();
@@ -4380,7 +4579,7 @@ impl Ui {
                     self.display_geometry.size(scene.scale),
                 );
                 self.set_content_frame(frame, scene.scale, false);
-                self.clamp_panel_for(scene.bubble_placement);
+                self.clamp_panel_origin();
                 self.persist_geometry(&scene, self.panel.frame());
                 self.cached_anchor = None;
                 self.displayed_frame = None;
@@ -4761,7 +4960,8 @@ impl Ui {
             && !self.cards.view().isHidden()
             && !self.composer_scroll.isHidden()
             && self.composer_scroll.frame().size.width > 0.0
-            && self.composer_scroll.frame().size.height > 0.0
+            && self.composer_scroll.frame().size.height >= self.composer_metrics.input_height
+            && self.composer_scroll.contentSize().height >= self.composer_metrics.content_height
     }
 
     fn restore_composer_focus(&self, was_focused: bool) {
@@ -4779,15 +4979,47 @@ impl Ui {
         }
     }
 
+    fn apply_pending_cards_options(&mut self) {
+        self.cards.sync_search_composition();
+        if self.cards.is_composing() {
+            return;
+        }
+        let Some(candidate) = self.cards.pending_options() else {
+            return;
+        };
+        if candidate == self.prefs.session_list() {
+            self.cards.commit_options(candidate);
+            return;
+        }
+        match self.prefs.save_session_list(candidate) {
+            Ok(()) => self.cards.commit_options(candidate),
+            Err(error) => {
+                self.cards.reject_options();
+                let locale = self.locale;
+                DispatchQueue::main().exec_async(move || {
+                    let Some(mtm) = with_ui_read(|ui| ui.mtm) else {
+                        return;
+                    };
+                    show_bubble_appearance_error(
+                        mtm,
+                        locale,
+                        Message::SessionListSaveFailure,
+                        &error,
+                    );
+                });
+            }
+        }
+    }
+
     fn refresh_cards(&mut self) -> bool {
-        let marked = self.composer_marked();
-        self.cards.set_composition_active(marked);
+        self.cards.set_composition_active(self.composer_marked());
+        self.apply_pending_cards_options();
         self.cards.refresh();
-        !marked && self.cards.take_deferred_selection_applied()
+        !self.cards.is_composing() && self.cards.take_deferred_selection_applied()
     }
 
     fn close_reply(&mut self) {
-        if !self.reply_open || self.composer_marked() {
+        if !self.reply_open || self.composer_marked() || self.cards.is_composing() {
             return;
         }
         self.reply_open = false;
@@ -4795,7 +5027,10 @@ impl Ui {
             let draft = self.composer_text();
             self.remember_composer_draft(key, draft);
         }
-        self.cards.set_composition_active(false);
+        if self.composer_has_focus() {
+            let _ = self.bubble_panel.makeFirstResponder(None);
+        }
+        self.cards.set_composition_active(self.composer_marked());
         self.cards.detach_reply();
         self.composer_render_stamp = None;
         self.bubble_content_dirty = true;
@@ -4805,7 +5040,7 @@ impl Ui {
         if !self.reply_open {
             return;
         }
-        if self.composer_marked() {
+        if self.composer_marked() || self.cards.is_composing() {
             return;
         }
         if self.bubble_panel.isKeyWindow() {
@@ -4833,20 +5068,48 @@ impl Ui {
             }
     }
 
-    fn layout_reply_children(&self) {
+    fn desired_cards_height(&self) -> f64 {
+        let desired = self.cards.content_height().min(maximum_cards_height());
+        if self.reply_open {
+            desired.max(self.minimum_cards_height())
+        } else {
+            desired
+        }
+    }
+
+    fn layout_reply_children(&mut self) {
+        if self.composer_marked() || self.cards.is_composing() {
+            self.pending_bubble_scene = Some(self.last_scene.clone());
+            self.queue_language_apply();
+            return;
+        }
         let geometry = reply_child_geometry(
             self.reply_container.frame().size,
-            self.reply_container.frame().size.height <= 25.0,
+            self.composer_readonly,
+            self.composer_metrics,
         );
-        self.composer_status.setFrame(geometry.status);
-        self.composer_scroll.setFrame(geometry.input);
-        self.composer_send.setFrame(geometry.send);
+        if self.composer_status.frame() != geometry.status {
+            self.composer_status.setFrame(geometry.status);
+        }
+        if self.composer_scroll.frame() != geometry.input {
+            self.composer_scroll.setFrame(geometry.input);
+        }
+        if self.composer_send.frame() != geometry.send {
+            self.composer_send.setFrame(geometry.send);
+        }
         self.composer_status
             .setHidden(geometry.status.size.height <= 0.0 || geometry.status.size.width <= 0.0);
         self.composer_scroll
             .setHidden(geometry.readonly || !geometry.interactive);
         self.composer_send
             .setHidden(geometry.readonly || !geometry.interactive);
+        if geometry.interactive {
+            layout_composer(
+                &self.composer_view,
+                &self.composer_scroll,
+                self.composer_metrics,
+            );
+        }
     }
 
     fn sync_composer(&mut self) {
@@ -4860,14 +5123,17 @@ impl Ui {
             .map(|state| state.session_revision());
         let marked = self.composer_marked();
         self.cards.set_composition_active(marked);
+        self.cards.sync_search_composition();
+        let mut composing = marked || self.cards.is_composing();
         let was_focused = self.composer_has_focus();
         let replayed = if self.cards.selection_stamp().0 != revision
-            || (!marked && self.cards.has_deferred_refresh())
+            || (!composing && self.cards.has_deferred_refresh())
         {
             self.refresh_cards()
         } else {
             false
         };
+        composing = self.composer_marked() || self.cards.is_composing();
         if replayed && self.bubble_mode == BubbleMode::Expanded {
             self.reply_open = true;
             self.composer_render_stamp = None;
@@ -4879,13 +5145,24 @@ impl Ui {
             pending: self.prompt_sender.is_pending(),
             live_revision: revision,
         };
-        if !marked && self.composer_render_stamp == Some(stamp) {
+        if !composing && self.composer_render_stamp == Some(stamp) {
+            if !self.composer_scroll.isHidden() {
+                layout_composer(
+                    &self.composer_view,
+                    &self.composer_scroll,
+                    self.composer_metrics,
+                );
+            }
             self.restore_composer_focus(was_focused);
             return;
         }
         self.composer_render_stamp = Some(stamp);
-        let selected = self.cards.selected_target();
-        let next_key = if marked {
+        let selected = self.cards.visible_selected_target();
+        if !composing && selected.is_none() && self.reply_open {
+            self.close_reply();
+            self.composer_render_stamp = Some(stamp);
+        }
+        let next_key = if composing {
             self.composer_key.clone()
         } else {
             selected.as_ref().map(|(key, _)| key.clone())
@@ -4961,7 +5238,7 @@ impl Ui {
                 && matches!(available.as_ref(), Some(Ok(())))
                 && !self.prompt_sender.is_pending(),
         );
-        if marked {
+        if composing {
             self.composer_render_stamp = None;
             return;
         }
@@ -4969,13 +5246,12 @@ impl Ui {
             if let Some(key) = next_key.as_ref() {
                 let readonly = matches!(available.as_ref(), Some(Err(PromptError::ReadOnly)));
                 let height = if readonly {
-                    25.0
+                    COMPOSER_READONLY_HEIGHT
                 } else {
-                    COMPOSER_REPLY_HEIGHT
+                    self.composer_metrics.reply_height
                 };
                 if self.cards.attach_reply(key, &self.reply_container, height) {
-                    self.composer_scroll.setHidden(readonly);
-                    self.composer_send.setHidden(readonly);
+                    self.composer_readonly = readonly;
                     self.layout_reply_children();
                     self.restore_composer_focus(was_focused);
                     return;
@@ -5143,6 +5419,26 @@ impl Ui {
         self.refresh_character_menu();
     }
 
+    fn applied_attached_body_origin(&self) -> Option<(f64, f64)> {
+        attached_body_origin(self.bubble_geometry, self.bubble_geometry_attached)
+    }
+
+    fn prepare_bubble_transition(&mut self, scene: &Scene) {
+        if scene.visible
+            || scene.shutdown
+            || scene.reset_position_revision != self.last_reset_position_revision
+        {
+            self.pending_standalone_body_origin = None;
+        } else if self.pending_standalone_body_origin.is_none()
+            && self.prefs.standalone_bubble_position().is_none()
+            && self.did_present
+            && self.last_scene.visible
+            && self.last_scene.bubble_visible
+        {
+            self.pending_standalone_body_origin = self.applied_attached_body_origin();
+        }
+    }
+
     fn refresh_event(&mut self, scene: Scene, completed: bool) {
         let scale_changed = (scene.scale - self.last_scene.scale).abs() > f64::EPSILON;
         let presentation_changed = !self.did_present
@@ -5162,13 +5458,17 @@ impl Ui {
             || (self.prefs.show_status_indicators() && summary != self.status_summary);
         self.status_summary = summary;
 
+        // Read the applied geometry before any cancellation, reset or resize
+        // can publish an older pending placement or invalidate its provenance.
+        self.prepare_bubble_transition(&scene);
+
         if presentation_changed
             || bubble_changed
             || reset_position_changed
             || (phase_changed && self.active.metadata().is_none())
         {
-            self.cancel_gesture();
-            self.cancel_pointer();
+            self.cancel_gesture(false);
+            self.cancel_pointer_state();
         }
         if !scene.visible || scene.passthrough {
             self.set_hover(false, false);
@@ -5182,12 +5482,12 @@ impl Ui {
             self.prefs.set_bubble_placement(scene.bubble_placement);
         }
         if reset_position_changed {
-            self.reset_position(scene.bubble_placement);
+            self.reset_position();
 
             self.last_reset_position_revision = scene.reset_position_revision;
         }
         if scale_changed {
-            self.resize(scene.scale, scene.bubble_placement);
+            self.resize(scene.scale);
         }
         if status_changed {
             self.bubble_content_dirty = true;
@@ -5383,15 +5683,14 @@ impl Ui {
     }
 
     fn pointer_tick(&mut self) {
+        self.cards.set_composition_active(self.composer_marked());
+        self.cards.sync_search_composition();
         let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) else {
             return;
         };
         if scene.shutdown
-            || scene.visible != self.last_scene.visible
-            || scene.passthrough != self.last_scene.passthrough
-            || scene.alpha_passthrough != self.last_scene.alpha_passthrough
-            || scene.bubble_visible != self.last_scene.bubble_visible
-            || scene.bubble_placement != self.last_scene.bubble_placement
+            || !presentation_matches_scene(&scene, &self.last_scene)
+            || status_fields_changed(&scene, &self.last_scene)
         {
             self.refresh();
             return;
@@ -5404,13 +5703,47 @@ impl Ui {
         }
         self.advance_bubble_fade();
         self.apply_pending_bubble_updates();
+        if self.reply_open
+            && !self.composer_scroll.isHidden()
+            && !self.composer_marked()
+            && !self.cards.is_composing()
+        {
+            layout_composer(
+                &self.composer_view,
+                &self.composer_scroll,
+                self.composer_metrics,
+            );
+        }
         self.update_pointer_policy(&scene);
     }
 
     fn apply_pending_bubble_updates(&mut self) {
+        self.cards.set_composition_active(self.composer_marked());
+        self.cards.sync_search_composition();
         // A deferred drain must not perform even placement-only layout while
         // AppKit is tracking a control or a pet/bubble gesture is active.
-        if self.bubble_content_tracking_locked() || self.composer_marked() {
+        if self.bubble_content_tracking_locked()
+            || self.composer_marked()
+            || self.cards.is_composing()
+        {
+            return;
+        }
+        if self.cards.has_deferred_refresh() {
+            self.refresh();
+            return;
+        }
+        if !self.pending_bubble_content && self.pending_bubble_scene.is_none() {
+            return;
+        }
+        let Ok(state) = self.shared.lock() else {
+            return;
+        };
+        let current = state.scene();
+        drop(state);
+        if current.shutdown
+            || !presentation_matches_scene(&current, &self.last_scene)
+            || status_fields_changed(&current, &self.last_scene)
+        {
             return;
         }
         if self.pending_bubble_content {
@@ -5418,7 +5751,8 @@ impl Ui {
             self.bubble_content_dirty = true;
             self.refresh_bubble_content(&scene);
         }
-        if let Some(scene) = self.pending_bubble_scene.take() {
+        if self.pending_bubble_scene.take().is_some() {
+            let scene = self.last_scene.clone();
             self.apply_bubble_frame_scene(&scene);
         }
     }
@@ -5781,19 +6115,46 @@ impl Ui {
         let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) else {
             return;
         };
-        self.render(&scene, completed, reaction);
+        if scene.shutdown
+            || !presentation_matches_scene(&scene, &self.last_scene)
+            || status_fields_changed(&scene, &self.last_scene)
+        {
+            self.refresh();
+            if scene.shutdown {
+                return;
+            }
+            let Some(current) = self.shared.lock().ok().map(|state| state.scene()) else {
+                return;
+            };
+            if current.shutdown
+                || !presentation_matches_scene(&current, &self.last_scene)
+                || status_fields_changed(&current, &self.last_scene)
+            {
+                return;
+            }
+            self.render(&current, completed, reaction);
+        } else {
+            self.render(&scene, completed, reaction);
+        }
     }
 
-    fn cancel_pointer(&mut self) {
+    fn cancel_pointer_state(&mut self) {
         self.pointer_event_started_at = None;
         self.interaction.cancel();
         self.pointer_press = None;
+    }
+
+    fn cancel_pointer(&mut self) {
+        self.cancel_pointer_state();
         if self.did_present {
             self.render_current(false, None);
         }
     }
 
     fn shutdown(&mut self) {
+        self.pending_standalone_body_origin = None;
+        self.pending_bubble_scene = None;
+        self.pending_bubble_content = false;
         self.stop_timer();
         self.remove_menu_event_monitors();
         self.stop_prepare_timer();
@@ -5912,7 +6273,7 @@ impl Ui {
         {
             Ok(scene) => scene,
             Err(_) => {
-                self.cancel_gesture();
+                self.cancel_gesture(true);
                 return None;
             }
         };
@@ -5921,7 +6282,7 @@ impl Ui {
             || !scene_matches_drag(&scene, &drag)
             || !rect_nearly_equal(self.drag_frame(drag.target), drag.expected_frame)
         {
-            self.cancel_gesture();
+            self.cancel_gesture(false);
             self.refresh();
             return None;
         }
@@ -5986,22 +6347,21 @@ impl Ui {
                 {
                     Ok(Some(scene)) => scene,
                     Ok(None) => {
-                        self.cancel_gesture();
+                        self.cancel_gesture(false);
                         self.refresh();
                         return None;
                     }
                     Err(_) => {
-                        self.cancel_gesture();
+                        self.cancel_gesture(true);
                         return None;
                     }
                 };
                 let frame = resize_frame(self.display_geometry, drag.start_top_left, scene.scale);
                 self.set_content_frame(frame, scene.scale, false);
-                self.update_bubble_frame_for(scene.bubble_placement);
-
                 updated.expected_frame = self.panel.frame();
                 updated.expected_scale = scene.scale;
                 self.last_scene.scale = scene.scale;
+                self.update_bubble_frame_scene(&self.last_scene.clone());
             }
         }
         Some(updated)
@@ -6024,7 +6384,7 @@ impl Ui {
             return;
         };
         if !valid {
-            self.cancel_gesture_for(Some(drag));
+            self.cancel_gesture_for(Some(drag), false);
             self.refresh();
             return;
         }
@@ -6046,6 +6406,18 @@ impl Ui {
     fn handle_screen_change(&mut self) {
         SCREEN_CHANGE_PENDING.with(|pending| pending.set(false));
         self.reanchor_menu_panel();
+        let Some(scene) = self.shared.lock().ok().map(|state| state.scene()) else {
+            return;
+        };
+        if scene.shutdown
+            || !presentation_matches_scene(&scene, &self.last_scene)
+            || status_fields_changed(&scene, &self.last_scene)
+        {
+            self.refresh();
+            if scene.shutdown {
+                return;
+            }
+        }
         let drag = self
             .root
             .ivars()
@@ -6060,32 +6432,28 @@ impl Ui {
             // The moving window entered another display; mouse-up commits it.
             return;
         }
-        self.cancel_gesture();
-        self.cancel_pointer();
+        self.cancel_gesture(false);
+        self.cancel_pointer_state();
         self.set_hover(false, false);
-        // Clamp against the presented scene only; unseen state belongs to refresh.
+        // Refresh above reconciles unseen source changes before clamping.
         self.clamp_panel();
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
-        let scene = self.last_scene.clone();
-        if !scene.visible && scene.bubble_visible {
-            self.update_bubble_frame_scene(&scene);
-        }
         let _ = self.prefs.save();
     }
 
-    fn cancel_gesture(&mut self) {
+    fn cancel_gesture(&mut self, drain_pending: bool) {
         let drag = self
             .root
             .ivars()
             .drag
             .get()
             .or_else(|| self.bubble_root.ivars().drag.get());
-        self.cancel_gesture_for(drag);
+        self.cancel_gesture_for(drag, drain_pending);
     }
-    fn cancel_gesture_for(&mut self, drag: Option<DragState>) {
+    fn cancel_gesture_for(&mut self, drag: Option<DragState>, drain_pending: bool) {
         let accepted_frame = drag.map(|drag| self.drag_frame(drag.target));
-        let scene = self.shared.lock().ok().map(|state| state.scene());
+        let scene = drag.and_then(|_| self.shared.lock().ok().map(|state| state.scene()));
         self.root.ivars().drag.set(None);
         self.bubble_root.ivars().drag.set(None);
         self.root.set_gesture_visuals(None);
@@ -6105,7 +6473,9 @@ impl Ui {
         {
             self.persist_drag_geometry(&scene, drag.target, drag.expected_frame);
         }
-        self.apply_pending_bubble_updates();
+        if drain_pending {
+            self.apply_pending_bubble_updates();
+        }
     }
 
     fn drag_frame(&self, target: DragTarget) -> NSRect {
@@ -6122,6 +6492,7 @@ impl Ui {
                     frame.origin.x + body.body.x,
                     frame.origin.y + body.body.y,
                 )));
+                self.pending_standalone_body_origin = None;
                 let _ = self.prefs.save();
             }
         } else {
@@ -6141,7 +6512,7 @@ impl Ui {
         let _ = self.prefs.save();
     }
 
-    fn resize(&mut self, scale: f64, bubble_placement: BubblePlacement) {
+    fn resize(&mut self, scale: f64) {
         let frame = self.panel.frame();
         let old_canvas = self.display_geometry.canvas_frame(self.last_scene.scale);
         let old_center = NSPoint::new(
@@ -6157,7 +6528,7 @@ impl Ui {
             self.display_geometry.size(scale),
         );
         self.set_content_frame(new_frame, scale, true);
-        self.clamp_panel_for(bubble_placement);
+        self.clamp_panel_origin();
     }
 
     fn set_content_frame(&mut self, frame: NSRect, scale: f64, animate: bool) {
@@ -6172,7 +6543,6 @@ impl Ui {
         }
         self.root.grip().setFrame(grip_hit_rect(size));
         self.bubble_content_dirty = true;
-        self.update_bubble_frame_for(self.last_scene.bubble_placement);
         let dialogue = self.presentation.dialogue;
         self.presentation = Presentation {
             offset_x: 0.0,
@@ -6183,14 +6553,17 @@ impl Ui {
             effect: self.presentation.effect,
         };
     }
-    fn reset_position(&mut self, bubble_placement: BubblePlacement) {
+    fn reset_position(&mut self) {
         let size = self.panel.frame().size;
         let origin = default_origin(size, self.mtm);
         self.panel.setFrameOrigin(origin);
         self.prefs.set_standalone_bubble_position(None);
+        self.pending_standalone_body_origin = None;
         self.bubble_geometry = None;
+        self.bubble_geometry_attached = false;
+        self.pending_bubble_scene = None;
         self.bubble_content_dirty = true;
-        self.clamp_panel_for(bubble_placement);
+        self.clamp_panel_origin();
         let origin = self.panel.frame().origin;
         self.prefs.set_position(Some((origin.x, origin.y)));
     }
@@ -6199,6 +6572,11 @@ impl Ui {
     }
 
     fn clamp_panel_for(&mut self, bubble_placement: BubblePlacement) {
+        self.clamp_panel_origin();
+        self.update_bubble_frame_for(bubble_placement);
+    }
+
+    fn clamp_panel_origin(&mut self) {
         let Some(visible) = panel_visible_frame(&self.panel, self.mtm) else {
             return;
         };
@@ -6214,7 +6592,6 @@ impl Ui {
         if origin.x != frame.origin.x || origin.y != frame.origin.y {
             self.panel.setFrameOrigin(origin);
         }
-        self.update_bubble_frame_for(bubble_placement);
     }
     fn update_bubble_frame(&mut self) {
         self.update_bubble_frame_for(self.last_scene.bubble_placement);
@@ -6227,7 +6604,10 @@ impl Ui {
     }
 
     fn update_bubble_frame_scene(&mut self, scene: &Scene) {
-        if self.bubble_placement_tracking_locked() || self.composer_marked() {
+        if self.bubble_placement_tracking_locked()
+            || self.composer_marked()
+            || self.cards.is_composing()
+        {
             self.pending_bubble_scene = Some(scene.clone());
             self.queue_language_apply();
             return;
@@ -6326,17 +6706,15 @@ impl Ui {
         let geometry = if scene.visible {
             self.attached_bubble_geometry(scene.bubble_placement)
         } else {
-            let origin = self.prefs.standalone_bubble_position().or_else(|| {
-                let attached = if self.did_present && self.last_scene.visible {
-                    self.bubble_geometry
-                } else {
-                    None
-                }
-                .or_else(|| self.attached_bubble_geometry(scene.bubble_placement))?;
-                Some((
-                    attached.window.x + attached.body.x,
-                    attached.window.y + attached.body.y,
-                ))
+            let origin = preferred_standalone_origin(
+                self.prefs.standalone_bubble_position(),
+                self.pending_standalone_body_origin,
+                self.bubble_geometry,
+                self.bubble_geometry_attached,
+            )
+            .or_else(|| {
+                self.attached_bubble_geometry(scene.bubble_placement)
+                    .map(bubble_body_origin)
             });
             origin.and_then(|origin| {
                 let body = self.bubble_layout.body_size;
@@ -6350,16 +6728,8 @@ impl Ui {
             })
         };
         let Some(geometry) = geometry else { return };
-        if !scene.visible {
-            let body_origin = (
-                geometry.window.x + geometry.body.x,
-                geometry.window.y + geometry.body.y,
-            );
-            if self.prefs.standalone_bubble_position() != Some(body_origin) {
-                self.prefs.set_standalone_bubble_position(Some(body_origin));
-                let _ = self.prefs.save();
-            }
-        }
+        // Only a successfully applied, screen-clamped hidden body becomes a
+        // preference. Failed placement leaves the captured origin available.
         let frame = NSRect::new(
             NSPoint::new(geometry.window.x, geometry.window.y),
             NSSize::new(geometry.window.width, geometry.window.height),
@@ -6375,6 +6745,15 @@ impl Ui {
             .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
         self.bubble_root.set_geometry(geometry);
         self.bubble_geometry = Some(geometry);
+        self.bubble_geometry_attached = scene.visible;
+        if !scene.visible {
+            let body_origin = bubble_body_origin(geometry);
+            if self.prefs.standalone_bubble_position() != Some(body_origin) {
+                self.prefs.set_standalone_bubble_position(Some(body_origin));
+                let _ = self.prefs.save();
+            }
+            self.pending_standalone_body_origin = None;
+        }
         if !local_unchanged || self.bubble_layout_dirty {
             self.layout_bubble_children();
         }
@@ -6565,14 +6944,13 @@ impl Ui {
             panel_visible_frame(&self.panel, self.mtm)
         } else {
             let body = self.bubble_layout.body_size;
-            let origin = self
-                .prefs
-                .standalone_bubble_position()
-                .or_else(|| {
-                    self.bubble_geometry
-                        .map(|g| (g.window.x + g.body.x, g.window.y + g.body.y))
-                })
-                .unwrap_or((self.panel.frame().origin.x, self.panel.frame().origin.y));
+            let origin = preferred_standalone_origin(
+                self.prefs.standalone_bubble_position(),
+                self.pending_standalone_body_origin,
+                self.bubble_geometry,
+                self.bubble_geometry_attached,
+            )
+            .unwrap_or((self.panel.frame().origin.x, self.panel.frame().origin.y));
             standalone_visible_frame(
                 self.mtm,
                 NSRect::new(NSPoint::new(origin.0, origin.1), body),
@@ -6722,7 +7100,7 @@ impl Ui {
             .bubble_layout
             .message_content_height
             .min(BUBBLE_MESSAGE_MAX_HEIGHT);
-        let cards_height = self.cards.content_height().min(BUBBLE_CARDS_MAX_HEIGHT);
+        let cards_height = self.desired_cards_height();
         let minimum_cards = self.minimum_cards_height();
         let spacing = expanded_spacing(
             body_height_cap,
@@ -6733,7 +7111,12 @@ impl Ui {
         );
         let expanded_height = (spacing.inset
             + if show_status {
-                STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
+                STATUS_ROW_HEIGHT
+                    + if message_height > 0.0 {
+                        spacing.gap
+                    } else {
+                        0.0
+                    }
             } else {
                 0.0
             }
@@ -6808,6 +7191,12 @@ impl Ui {
     }
 
     fn layout_bubble_children(&mut self) {
+        if self.composer_marked() || self.cards.is_composing() {
+            self.bubble_layout_dirty = true;
+            self.pending_bubble_scene = Some(self.last_scene.clone());
+            self.queue_language_apply();
+            return;
+        }
         let Some(geometry) = self.bubble_geometry else {
             return;
         };
@@ -6823,7 +7212,7 @@ impl Ui {
         let spacing = if self.bubble_mode == BubbleMode::Expanded {
             expanded_spacing(
                 body.height,
-                self.cards.content_height().min(BUBBLE_CARDS_MAX_HEIGHT),
+                self.desired_cards_height(),
                 self.minimum_cards_height(),
                 show_status,
                 self.bubble_layout.message_content_height > 0.0,
@@ -7106,12 +7495,13 @@ impl Ui {
                     content_top,
                     show_status,
                     self.bubble_layout.message_content_height > 0.0,
+                    spacing,
                 );
                 let desired_message = self
                     .bubble_layout
                     .message_content_height
                     .min(BUBBLE_MESSAGE_MAX_HEIGHT);
-                let desired_cards = self.cards.content_height().min(BUBBLE_CARDS_MAX_HEIGHT);
+                let desired_cards = self.desired_cards_height();
                 let heights = expanded_heights(
                     body.height,
                     desired_cards,
@@ -7207,7 +7597,10 @@ impl Ui {
     }
 
     fn collapse_bubble(&mut self) {
-        if self.bubble_mode == BubbleMode::Compact || self.composer_marked() {
+        if self.bubble_mode == BubbleMode::Compact
+            || self.composer_marked()
+            || self.cards.is_composing()
+        {
             return;
         }
         self.close_reply();
@@ -7221,7 +7614,7 @@ impl Ui {
     }
 
     fn reset_bubble_mode(&mut self) {
-        if self.composer_marked() {
+        if self.composer_marked() || self.cards.is_composing() {
             return;
         }
         self.close_reply();
@@ -7769,8 +8162,9 @@ impl Ui {
     }
 
     fn quit(&mut self) {
-        self.cancel_gesture();
-        self.cancel_pointer();
+        self.pending_standalone_body_origin = None;
+        self.cancel_gesture(false);
+        self.cancel_pointer_state();
         self.shutdown();
         if let Ok(mut state) = self.shared.lock() {
             state.request_shutdown();
@@ -7946,6 +8340,28 @@ fn bubble_rect(frame: NSRect) -> BubbleRect {
     }
 }
 
+fn bubble_body_origin(geometry: BubbleGeometry) -> (f64, f64) {
+    (
+        geometry.window.x + geometry.body.x,
+        geometry.window.y + geometry.body.y,
+    )
+}
+
+fn attached_body_origin(geometry: Option<BubbleGeometry>, attached: bool) -> Option<(f64, f64)> {
+    geometry.filter(|_| attached).map(bubble_body_origin)
+}
+
+fn preferred_standalone_origin(
+    saved: Option<(f64, f64)>,
+    pending: Option<(f64, f64)>,
+    geometry: Option<BubbleGeometry>,
+    attached: bool,
+) -> Option<(f64, f64)> {
+    saved
+        .or(pending)
+        .or_else(|| attached_body_origin(geometry, attached))
+}
+
 fn clamp_window_origin(frame: NSRect, visible: NSRect) -> NSPoint {
     NSPoint::new(
         frame.origin.x.clamp(
@@ -8073,7 +8489,11 @@ struct ReplyChildGeometry {
     interactive: bool,
 }
 
-fn reply_child_geometry(size: NSSize, readonly: bool) -> ReplyChildGeometry {
+fn reply_child_geometry(
+    size: NSSize,
+    readonly: bool,
+    metrics: ComposerMetrics,
+) -> ReplyChildGeometry {
     let width = size.width.max(0.0);
     let height = size.height.max(0.0);
     let inset = 2.0_f64.min(width / 2.0);
@@ -8086,11 +8506,11 @@ fn reply_child_geometry(size: NSSize, readonly: bool) -> ReplyChildGeometry {
             COMPOSER_STATUS_HEIGHT.min((height - status_y).max(0.0)),
         ),
     );
-    let input_y = 23.0_f64.min(height);
+    let input_y = INPUT_ORIGIN_Y.min(height);
     let input_height = if readonly {
         0.0
     } else {
-        COMPOSER_INPUT_HEIGHT.min((height - input_y).max(0.0))
+        metrics.input_height.min((height - input_y).max(0.0))
     };
     let send_width = if readonly {
         0.0
@@ -8115,12 +8535,17 @@ fn reply_child_geometry(size: NSSize, readonly: bool) -> ReplyChildGeometry {
         NSPoint::new(inset + input_width + gap, input_y),
         NSSize::new(send_width, input_height),
     );
+    // A positive outer rectangle alone cannot expose the caret: the row needs
+    // the measured clip height and at least a line-sized horizontal viewport.
     ReplyChildGeometry {
         status,
         input,
         send,
         readonly,
-        interactive: !readonly && input_width > 0.0 && send_width > 0.0 && input_height > 0.0,
+        interactive: !readonly
+            && input_width >= metrics.content_height
+            && send_width > 0.0
+            && input_height >= metrics.input_height,
     }
 }
 
@@ -8564,9 +8989,49 @@ fn disconnected_text(scene: &Scene, locale: UiLocale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::composer_layout::BOTTOM_INSET;
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1.0e-9
+    }
+
+    #[test]
+    fn applied_attachment_provenance_distinguishes_clipped_from_standalone_tailless_body() {
+        let visible = BubbleRect {
+            x: -500.0,
+            y: 100.0,
+            width: 240.0,
+            height: 180.0,
+        };
+        let attached = place_bubble(visible, (150.0, 90.0), visible, BubblePlacement::Above);
+        assert!(attached.side.is_none() && attached.tail.is_none());
+        let body_origin = bubble_body_origin(attached);
+        assert_eq!(
+            attached_body_origin(Some(attached), true),
+            Some(body_origin)
+        );
+        let standalone = place_standalone_bubble(body_origin, (150.0, 90.0), visible);
+        assert!(standalone.side.is_none() && standalone.tail.is_none());
+        assert_eq!(attached_body_origin(Some(standalone), false), None);
+        assert_eq!(attached_body_origin(None, true), None);
+        let saved = (-310.0, 156.0);
+        let pending = (-400.0, 180.0);
+        assert_eq!(
+            preferred_standalone_origin(Some(saved), Some(pending), Some(attached), true),
+            Some(saved)
+        );
+        assert_eq!(
+            preferred_standalone_origin(None, Some(pending), Some(attached), true),
+            Some(pending)
+        );
+        assert_eq!(
+            preferred_standalone_origin(None, None, Some(attached), true),
+            Some(body_origin)
+        );
+        assert_eq!(
+            preferred_standalone_origin(None, None, Some(standalone), false),
+            None
+        );
     }
 
     #[test]
@@ -8937,39 +9402,60 @@ mod tests {
     }
     #[test]
     fn reply_children_stay_in_bounds_across_width_and_height_changes() {
-        for width in [0.0, 1.0, 4.0, 8.0, 12.0, 32.0, 120.0, 270.0, 600.0] {
-            for height in [0.0, 1.0, 20.0, 25.0, COMPOSER_REPLY_HEIGHT] {
-                for readonly in [false, true] {
-                    let size = NSSize::new(width, height);
-                    let layout = reply_child_geometry(size, readonly);
-                    for rect in [layout.status, layout.input, layout.send] {
-                        assert!(rect.origin.x >= 0.0 && rect.origin.y >= 0.0);
-                        assert!(rect.size.width >= 0.0 && rect.size.height >= 0.0);
-                        assert!(rect.origin.x + rect.size.width <= width);
-                        assert!(rect.origin.y + rect.size.height <= height);
-                    }
-                    assert!(
-                        layout.input.origin.x + layout.input.size.width <= layout.send.origin.x
-                    );
-                    assert!(
-                        layout.status.origin.y + layout.status.size.height <= layout.input.origin.y
-                            || layout.input.size.height == 0.0
-                    );
-                    if layout.interactive {
-                        assert!(!readonly && layout.input.size.width > 0.0);
-                        assert!(layout.send.size.width > 0.0 && layout.send.size.height > 0.0);
-                    }
-                    if readonly || width == 0.0 || height == 0.0 {
-                        assert!(!layout.interactive);
-                    }
-                    if readonly {
-                        assert_eq!(layout.input.size, NSSize::new(0.0, 0.0));
-                        assert_eq!(layout.send.size, NSSize::new(0.0, 0.0));
+        for (content_height, input_height) in [(20.0, 30.0), (27.0, 50.0)] {
+            let metrics = ComposerMetrics {
+                content_height,
+                input_height,
+                reply_height: INPUT_ORIGIN_Y + input_height + BOTTOM_INSET,
+            };
+            for width in [0.0, 1.0, 4.0, 8.0, 12.0, 32.0, 120.0, 270.0, 600.0] {
+                for height in [
+                    0.0,
+                    1.0,
+                    20.0,
+                    COMPOSER_READONLY_HEIGHT,
+                    metrics.reply_height,
+                ] {
+                    for readonly in [false, true] {
+                        let size = NSSize::new(width, height);
+                        let layout = reply_child_geometry(size, readonly, metrics);
+                        for rect in [layout.status, layout.input, layout.send] {
+                            assert!(rect.origin.x >= 0.0 && rect.origin.y >= 0.0);
+                            assert!(rect.size.width >= 0.0 && rect.size.height >= 0.0);
+                            assert!(rect.origin.x + rect.size.width <= width);
+                            assert!(rect.origin.y + rect.size.height <= height);
+                        }
+                        assert!(
+                            layout.input.origin.x + layout.input.size.width <= layout.send.origin.x
+                        );
+                        assert!(
+                            layout.status.origin.y + layout.status.size.height
+                                <= layout.input.origin.y
+                                || layout.input.size.height == 0.0
+                        );
+                        if layout.interactive {
+                            assert!(!readonly && layout.input.size.width >= metrics.content_height);
+                            assert!(layout.input.size.height >= metrics.input_height);
+                            assert!(layout.send.size.width > 0.0 && layout.send.size.height > 0.0);
+                        }
+                        if readonly
+                            || width < metrics.content_height
+                            || height < metrics.reply_height
+                        {
+                            assert!(!layout.interactive);
+                        }
+                        if readonly {
+                            assert_eq!(layout.input.size, NSSize::new(0.0, 0.0));
+                            assert_eq!(layout.send.size, NSSize::new(0.0, 0.0));
+                        }
                     }
                 }
             }
+            assert!(
+                reply_child_geometry(NSSize::new(270.0, metrics.reply_height), false, metrics)
+                    .interactive
+            );
         }
-        assert!(reply_child_geometry(NSSize::new(270.0, COMPOSER_REPLY_HEIGHT), false).interactive);
     }
 
     #[test]
@@ -9027,27 +9513,76 @@ mod tests {
     }
 
     #[test]
-    fn selected_reply_keeps_full_card_visible_on_short_screen() {
-        let cards = minimum_selectable_height() + COMPOSER_REPLY_HEIGHT;
-        let cap = 260.0 - BUBBLE_WINDOW_INSET * 2.0;
-        for show_status in [false, true] {
-            for has_message in [false, true] {
-                let spacing = expanded_spacing(cap, cards, cards, show_status, has_message);
-                let minimum =
-                    expanded_height_budget(cards, cards, show_status, has_message, spacing);
-                let slots = expanded_heights(
-                    minimum.min(cap),
-                    cards,
-                    if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 },
-                    cards,
-                    show_status,
-                    spacing,
-                );
-                assert_eq!(slots.cards, cards);
-                assert_eq!(
-                    slots.message,
-                    if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 }
-                );
+    fn selected_reply_respects_screen_clamp_and_prioritizes_cards() {
+        for (content_height, input_height) in [(20.0, 30.0), (24.0, 43.0), (27.0, 50.0)] {
+            let metrics = ComposerMetrics {
+                content_height,
+                input_height,
+                reply_height: INPUT_ORIGIN_Y + input_height + BOTTOM_INSET,
+            };
+            let reply =
+                reply_child_geometry(NSSize::new(270.0, metrics.reply_height), false, metrics);
+            assert!(reply.interactive);
+            assert_eq!(reply.input.size.height, input_height);
+            let cards = minimum_selectable_height() + metrics.reply_height;
+            for visible_height in [240.0, 260.0, 300.0] {
+                let cap = visible_height - BUBBLE_WINDOW_INSET * 2.0;
+                for show_status in [false, true] {
+                    for has_message in [false, true] {
+                        let spacing = expanded_spacing(cap, cards, cards, show_status, has_message);
+                        let minimum =
+                            expanded_height_budget(cards, cards, show_status, has_message, spacing);
+                        let body_height = minimum.min(cap);
+                        let desired_message = if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 };
+                        let slots = expanded_heights(
+                            body_height,
+                            cards,
+                            desired_message,
+                            cards,
+                            show_status,
+                            spacing,
+                        );
+
+                        // Mirror the expanded frames: collapse below cards, message below
+                        // status (when shown), with the same optional status gap as the budget.
+                        let cards_bottom = spacing.inset + BUBBLE_CONTROL_HEIGHT + spacing.gap;
+                        let content_top = body_height - spacing.inset;
+                        let status_bottom =
+                            content_top - if show_status { STATUS_ROW_HEIGHT } else { 0.0 };
+                        let message_top = expanded_message_top(
+                            status_bottom,
+                            content_top,
+                            show_status,
+                            has_message,
+                            spacing,
+                        );
+                        assert!(slots.cards >= 0.0 && slots.cards <= cards);
+                        assert!(slots.message >= 0.0 && slots.message <= desired_message);
+                        assert!(cards_bottom + slots.cards <= message_top - slots.message + 1e-9);
+                        assert!(message_top <= content_top);
+                        if show_status && has_message {
+                            assert!(close(status_bottom - message_top, spacing.gap));
+                        }
+
+                        let overhead =
+                            expanded_height_budget(0.0, 0.0, show_status, has_message, spacing)
+                                - desired_message;
+                        if cards + overhead <= body_height {
+                            assert!(close(slots.cards, cards));
+                        } else {
+                            assert!(close(slots.message, 0.0));
+                        }
+                        if minimum <= cap {
+                            assert!(close(slots.cards, cards));
+                            assert!(close(slots.message, desired_message));
+                        } else {
+                            assert!(
+                                slots.cards < cards || slots.message < desired_message,
+                                "an infeasible budget cannot fit both chrome and content"
+                            );
+                        }
+                    }
+                }
             }
         }
     }

@@ -16,6 +16,7 @@ mod character_selection;
 mod character_service;
 mod character_store;
 mod character_types;
+mod composer_layout;
 mod control;
 mod daemon;
 mod dialogue;
