@@ -11,6 +11,25 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 Only Rubelia is bundled. [Browse optional character previews](https://github.com/hanbong5938/herdr-characters#character-previews).
 
+## Website (GitHub Pages)
+
+The bilingual Korean-default/English promotional website lives in [`site/`](site/) and describes the native macOS app; it does not run the app in a browser. **The website is not live yet.** Locally, use Node.js to check local links, anchors, locale metadata and assets (external links are not network-checked), or preview the real project subpath:
+
+Headings use a compact responsive scale with tighter surrounding spacing; body text, terminal commands, and control sizes are kept independent of the heading scale.
+
+```sh
+bun test tools/pages.test.ts
+node tools/pages.mjs check
+node tools/pages.mjs serve --port 4173
+# Open http://127.0.0.1:4173/herdr-desktop-pet/ (English: /herdr-desktop-pet/en/)
+node tools/pages.mjs stage /tmp/herdr-pages
+```
+
+The site CLI uses Node.js 22; Bun 1.4.2 is only the HTTP regression test runner, which launches the actual Node server. CI runs this regression before staging. The local preview serves only regular public files: if the final `404.html` fallback is missing, a symlink, or not a regular file, it returns a plain-text `500` with `nosniff` instead of streaming it; `HEAD` returns no body.
+
+`stage` checks first and copies only the public `site/` files to a new or empty directory outside the repository; it does not deploy. The Pages workflow checks pull requests and attaches a review artifact without deploying. To publish, a repository administrator must select **GitHub Actions** as the Pages build/deployment source in repository settings, then merge the site/workflow to `main` (or manually run the workflow on `main`). Only eligible main-branch runs deploy. Release binaries, the Wiki, and repository Pages settings are not changed by these local commands.
+
+
 ## Features
 
 - Native desktop character with a menu-bar control panel.
