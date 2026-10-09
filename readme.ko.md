@@ -4,7 +4,7 @@
 
 [English](readme.md) · **한국어** · [버전 문서](docs/releases/README.ko.md) · [릴리스](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **v0.3.3은 이 체크아웃의 안정판 소스·기본/사전 빌드 대상입니다.** v0.3.2 기능과 v0.2.1 Arin 수정에 더해 공식 설치 카드 중복, 4 MiB 예산 내 원격 1024 × 1024 초상화, 작업 중 → 유휴 시 캐릭터 관리 제어, 성공 완료된 캐릭터 팩 작업 요약 잔류를 수정합니다. [v0.3.3 한영 노트](docs/releases/v0.3.3.md) · [한영 이전 안내](docs/releases/0.3.md#한국어--v03-계열). 사전 빌드 설치 전 비초안 v0.3.3 Release의 완전한 압축 파일·체크섬과 갱신된 설치기/포뮬러를 [Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)에서 확인하세요. 소스 버전만으로 게시를 주장하지 않습니다.
+> **이 체크아웃은 v0.3.3과 기능이 같은 별도 `0.3.3-beta.1` 소스입니다.** `HerdrDesktopPetBeta.app`·`herdr-desktop-pet-beta`는 [베타 릴리스·안전한 이전 안내](docs/validation/v0.3.3-beta.1.md)를 따르세요. 아래 상속된 안정판 안내는 안정판 전용이며 베타에 안정판 설치기·`--prebuilt`를 사용하지 않습니다. 이 소스는 `bun run build:native && HERDR_PET_APP_NAME=HerdrDesktopPetBeta.app bun run package:native`로 빌드합니다. 기존 태그·릴리스·자산은 유지하며 실제 완전한 비초안 prerelease로 게시 여부를 판단합니다.
 
 
 <img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">

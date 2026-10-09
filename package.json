@@ -1,6 +1,6 @@
 {
   "name": "herdr-desktop-pet",
-  "version": "0.3.3",
+  "version": "0.3.3-beta.1",
   "private": true,
   "type": "module",
   "description": "Native desktop character companion for Herdr",

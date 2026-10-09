@@ -4,7 +4,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 **English** · [한국어](readme.ko.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **v0.3.3 is this checkout's stable source and default/prebuilt target.** It retains v0.3.2's features and the v0.2.1 Arin fix, and fixes duplicate official installed cards, remote 1024 × 1024 portraits within 4 MiB budgets, character management actions after busy → idle, and lingering completed-success character-pack operation summaries. [v0.3.3 notes](docs/releases/v0.3.3.md) · [bilingual upgrade guidance](docs/releases/0.3.md). A prebuilt install requires a non-draft v0.3.3 Release with complete archive/checksums and an updated installer/formula; check the [Release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases). Source versions alone do not establish publication.
+> **This is the separate `0.3.3-beta.1` source, matching v0.3.3 functionality.** Read the [beta release and safe-upgrade guide](docs/validation/v0.3.3-beta.1.md) for `HerdrDesktopPetBeta.app` and `herdr-desktop-pet-beta`. The inherited stable instructions below remain stable-only: do not use the stable installer or `--prebuilt` for beta. Build this checkout with `bun run build:native && HERDR_PET_APP_NAME=HerdrDesktopPetBeta.app bun run package:native`. Existing releases/tags/assets are unchanged; publication requires the actual complete non-draft prerelease.
 
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
