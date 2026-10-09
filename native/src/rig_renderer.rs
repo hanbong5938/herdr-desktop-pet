@@ -109,6 +109,63 @@ struct CAnchor {
     y1: f64,
 }
 
+const RIG_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CRigABIInfoV1 {
+    version: u32,
+    asset_size: u32,
+    model_size: u32,
+    token_size: u32,
+    intent_size: u32,
+    hit_size: u32,
+    anchor_size: u32,
+    speech_anchor_snapshot_size: u32,
+}
+
+fn expected_rig_abi() -> CRigABIInfoV1 {
+    CRigABIInfoV1 {
+        version: RIG_ABI_VERSION,
+        asset_size: std::mem::size_of::<CAssetInput>() as u32,
+        model_size: std::mem::size_of::<CModelInput>() as u32,
+        token_size: std::mem::size_of::<CTokenInput>() as u32,
+        intent_size: std::mem::size_of::<RigIntent>() as u32,
+        hit_size: std::mem::size_of::<CHit>() as u32,
+        anchor_size: std::mem::size_of::<CAnchor>() as u32,
+        speech_anchor_snapshot_size: std::mem::size_of::<CSpeechAnchorSnapshot>() as u32,
+    }
+}
+
+fn check_rig_abi(info: CRigABIInfoV1) -> Result<(), String> {
+    let expected = expected_rig_abi();
+    if info.version != expected.version
+        || info.asset_size != expected.asset_size
+        || info.model_size != expected.model_size
+        || info.token_size != expected.token_size
+        || info.intent_size != expected.intent_size
+        || info.hit_size != expected.hit_size
+        || info.anchor_size != expected.anchor_size
+        || info.speech_anchor_snapshot_size != expected.speech_anchor_snapshot_size
+    {
+        return Err(format!(
+            "native rig ABI incompatible: expected version {} and sizes [{}, {}, {}, {}, {}, {}, {}], found version {} and sizes [{}, {}, {}, {}, {}, {}, {}]",
+            expected.version, expected.asset_size, expected.model_size, expected.token_size,
+            expected.intent_size, expected.hit_size, expected.anchor_size,
+            expected.speech_anchor_snapshot_size, info.version, info.asset_size, info.model_size,
+            info.token_size, info.intent_size, info.hit_size, info.anchor_size,
+            info.speech_anchor_snapshot_size
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_rig_abi() -> Result<(), String> {
+    let mut info = CRigABIInfoV1::default();
+    unsafe { herdr_rig_abi_info_v1(&mut info) };
+    check_rig_abi(info)
+}
+
 #[repr(C)]
 #[derive(Default)]
 struct CSpeechAnchorSnapshot {
@@ -146,6 +203,7 @@ pub(crate) struct RigSpeechAnchorSnapshot {
 
 #[link(name = "herdr_rig")]
 extern "C" {
+    fn herdr_rig_abi_info_v1(out_info: *mut CRigABIInfoV1);
     fn herdr_rig_error_free(error: *mut c_char);
     fn herdr_rig_create(
         asset: *const CAssetInput,
@@ -394,6 +452,7 @@ impl RigSnapshot {
         cleanup: Option<mpsc::Sender<PathBuf>>,
     ) -> Result<Self, String> {
         let independent_models = asset.supports_independent_models();
+        ensure_rig_abi()?;
         let initial_motion = match (&asset.models, &asset.bindings) {
             (Some(models), Some(bindings)) => {
                 let index = usize::from(
@@ -486,6 +545,7 @@ impl RigPreparation {
         token: RendererToken,
         mtm: MainThreadMarker,
     ) -> Result<Self, String> {
+        ensure_rig_abi()?;
         let sealed = sealed.accept_token(&token)?;
         let RigSnapshot {
             snapshot,
@@ -945,6 +1005,27 @@ mod tests {
     use super::*;
     use crate::character_types::CharacterRef;
     use std::sync::Arc;
+    #[test]
+    fn rejects_incompatible_native_abi() {
+        let valid = expected_rig_abi();
+        assert!(check_rig_abi(valid).is_ok());
+        let mut wrong_version = valid;
+        wrong_version.version += 1;
+        assert!(check_rig_abi(wrong_version).is_err());
+        for mutate in [
+            |info: &mut CRigABIInfoV1| info.asset_size += 1,
+            |info: &mut CRigABIInfoV1| info.model_size += 1,
+            |info: &mut CRigABIInfoV1| info.token_size += 1,
+            |info: &mut CRigABIInfoV1| info.intent_size += 1,
+            |info: &mut CRigABIInfoV1| info.hit_size += 1,
+            |info: &mut CRigABIInfoV1| info.anchor_size += 1,
+            |info: &mut CRigABIInfoV1| info.speech_anchor_snapshot_size += 1,
+        ] {
+            let mut incompatible = valid;
+            mutate(&mut incompatible);
+            assert!(check_rig_abi(incompatible).is_err());
+        }
+    }
 
     #[test]
     fn worker_sealed_snapshot_is_consumed_without_rematerialization_and_cleaned_off_main() {

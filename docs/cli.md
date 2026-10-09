@@ -1,6 +1,6 @@
 # Herdr Desktop Pet CLI contract
 
-This is the **v0.3.3 stable-source/default-prebuilt-target CLI contract**. Source manifests and documentation alone do not prove that a public archive, installer or formula is available. Earlier public v0.2.0/v0.2.1 and historical beta binaries do not gain these commands by changing documentation. Build this checkout with `--source`, or confirm the exact non-draft v0.3.3 Release, complete assets and updated installer/formula before using a prebuilt; check the CLI version **and running daemon executable**. Examples assume `herdr-desktop-pet` resolves to that build and an active desktop daemon unless noted; JSON examples show fields and types, not IDs to paste. No command imports a menu image; there is no GUI draft editing or testing API and no physical-input certification.
+This is the **v0.3.4 stable-source/default-prebuilt-target CLI contract**. Source manifests and documentation alone do not prove that a public archive, installer or formula is available. Earlier public v0.2.0/v0.2.1 and historical beta binaries do not gain these commands by changing documentation. Build this checkout with `--source`, or confirm the exact non-draft v0.3.4 Release, complete assets and updated installer/formula before using a prebuilt; check the CLI version **and running daemon executable**. Examples assume `herdr-desktop-pet` resolves to that build and an active desktop daemon unless noted; JSON examples show fields and types, not IDs to paste. No command imports a menu image; there is no GUI draft editing or testing API and no physical-input certification.
 
 ## English
 
@@ -124,7 +124,7 @@ With `--no-wait`, an initial pack reply already in a failed terminal state exits
 
 ### 연결, 식별자, 작업 상태
 
-이 문서는 이전에 배포된 `0.2.0`/`0.2.1` 및 과거 베타 바이너리의 기능 보증이 아니라 **v0.3.3 안정판 소스·기본/사전 빌드 대상의 CLI 계약**입니다. 소스 매니페스트·문서만으로 공개 압축 파일·설치기·포뮬러의 실제 제공 여부가 입증되지는 않습니다. `--source`로 이 체크아웃을 빌드하거나, 사전 빌드를 쓰기 전에 비초안 v0.3.3 Release의 완전한 자산과 갱신된 설치기/포뮬러를 확인하세요. CLI 버전뿐 아니라 **실행 중인 데몬의 실행 파일**도 확인해야 합니다. 아래 명령은 해당 빌드의 `herdr-desktop-pet`을 사용하며, 별도 설명이 없으면 실행 중인 데스크톱 데몬이 필요합니다. JSON 예시는 붙여 넣을 ID가 아니라 필드와 타입을 보여 줍니다. 어떤 명령도 메뉴 이미지를 가져오지 않으며, GUI 초안 편집·테스트 API나 물리 입력 인증도 제공하지 않습니다.
+이 문서는 이전에 배포된 `0.2.0`/`0.2.1` 및 과거 베타 바이너리의 기능 보증이 아니라 **v0.3.4 안정판 소스·기본/사전 빌드 대상의 CLI 계약**입니다. 소스 매니페스트·문서만으로 공개 압축 파일·설치기·포뮬러의 실제 제공 여부가 입증되지는 않습니다. `--source`로 이 체크아웃을 빌드하거나, 사전 빌드를 쓰기 전에 비초안 v0.3.4 Release의 완전한 자산과 갱신된 설치기/포뮬러를 확인하세요. CLI 버전뿐 아니라 **실행 중인 데몬의 실행 파일**도 확인해야 합니다. 아래 명령은 해당 빌드의 `herdr-desktop-pet`을 사용하며, 별도 설명이 없으면 실행 중인 데스크톱 데몬이 필요합니다. JSON 예시는 붙여 넣을 ID가 아니라 필드와 타입을 보여 줍니다. 어떤 명령도 메뉴 이미지를 가져오지 않으며, GUI 초안 편집·테스트 API나 물리 입력 인증도 제공하지 않습니다.
 
 `presentation`, `preferences`, `sessions`, `dialogue`, `worktree`는 동일 UID만 접근하는 `<state-dir>/control.sock` 전용 Unix 소켓을 사용합니다. 데몬과 같은 `--config-dir PATH`, `--state-dir PATH`를 사용하십시오. **`--socket PATH`는 이 제어 소켓이 아니라 Herdr 백엔드를 지정합니다.** HTTP, CLI `--file` 입력의 데몬 측 읽기, 자동 데몬 시작, 셸 대체 경로, 오프라인 변경은 없습니다. `ensure`, `start`, `stop`, `restart`, `settings get`, `settings set auto_start on|off`, `settings set exit_with_herdr on|off`의 **생명주기 설정**과 `preferences set`은 다릅니다. `status`는 데몬/생명주기 상태를 보고합니다. 기존 show/hide/bubble/scale 즉시 제어와 절대값 `presentation set`도 구분하십시오.
 

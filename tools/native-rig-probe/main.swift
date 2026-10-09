@@ -14,6 +14,7 @@ struct NativeProbeOptions {
     let output: URL
     let duration: Double
     let checks: Bool
+    let eyeStencilChecks: Bool
 
     static func parse() throws -> NativeProbeOptions {
         var values: [String: String] = [:]
@@ -23,12 +24,27 @@ struct NativeProbeOptions {
         while index < arguments.count {
             let name = arguments[index]
             if name == "--no-checks" { checks = false; index += 1; continue }
+            if name == "--eye-stencil-checks" {
+                guard values[name] == nil else { throw RigNativeError.invalid("duplicate option \(name)") }
+                values[name] = "1"; index += 1; continue
+            }
             guard ["--helper", "--decoder-bundle", "--pilot", "--output", "--duration"].contains(name),
                   index + 1 < arguments.count, values[name] == nil else {
                 throw RigNativeError.invalid("unknown, duplicate or incomplete option \(name)")
             }
             values[name] = arguments[index + 1]
             index += 2
+        }
+        if values["--eye-stencil-checks"] != nil {
+            guard values.keys.allSatisfy({ $0 == "--eye-stencil-checks" || $0 == "--output" }),
+                let output = values["--output"], !output.isEmpty, output.hasPrefix("/")
+            else {
+                throw RigNativeError.invalid("eye stencil checks require --output ABS only")
+            }
+            let url = URL(fileURLWithPath: output).standardizedFileURL
+            return NativeProbeOptions(
+                helper: url, decoderBundle: url, pilot: url, output: url,
+                duration: 1, checks: false, eyeStencilChecks: true)
         }
         func requiredURL(_ key: String) throws -> URL {
             guard let value = values[key], !value.isEmpty else { throw RigNativeError.invalid("missing \(key)") }
@@ -37,7 +53,8 @@ struct NativeProbeOptions {
         let duration = Double(values["--duration"] ?? "8") ?? .nan
         guard duration.isFinite, duration > 0, duration <= 3600 else { throw RigNativeError.invalid("duration") }
         return NativeProbeOptions(helper: try requiredURL("--helper"), decoderBundle: try requiredURL("--decoder-bundle"),
-                                  pilot: try requiredURL("--pilot"), output: try requiredURL("--output"), duration: duration, checks: checks)
+            pilot: try requiredURL("--pilot"), output: try requiredURL("--output"),
+            duration: duration, checks: checks, eyeStencilChecks: false)
     }
 }
 
@@ -677,14 +694,143 @@ final class NativeRigProbe: NSObject, NSApplicationDelegate, MTKViewDelegate {
     }
 }
 
+// Isolated consumer fixture: actual renderer and decoded-scene model types,
+// without a decoder, helper, window or application event loop.
+private func eyeCheckScene(_ configuration: String) -> RigDecodedScene {
+    let eyeL = RigEyeAnchor(x0: 8, y0: 8, x1: 20, y1: 20, icx: 14, icy: 14, closeY: 14, blink: nil)
+    let eyeR = RigEyeAnchor(x0: 34, y0: 8, x1: 46, y1: 20, icx: 36, icy: 14, closeY: 14, blink: nil)
+    let anchors = RigAnchors(
+        face: RigFaceBounds(x0: 0, y0: 0, x1: 64, y1: 48, cx: 32, cy: 24),
+        eyeL: eyeL, eyeR: eyeR,
+        mouth: RigMouthAnchor(x0: 24, y0: 30, x1: 40, y1: 38, cx: 32, cy: 34, morph: nil),
+        neckPivot: RigPoint(cx: 32, cy: 30), bodyPivot: RigPoint(cx: 32, cy: 40),
+        neckTop: 30, neckBottom: 40, hairRootY: 0, faceScale: 1)
+    var rgba = Data()
+    func layer(
+        _ name: String, _ side: String?, _ x: Double, _ width: Double,
+        _ z: Double, _ color: [UInt8], _ fade: String? = nil
+    ) -> RigLayer {
+        let offset = rgba.count
+        for _ in 0..<(8 * 8) { rgba.append(contentsOf: color) }
+        return RigLayer(
+            name: name, x: x, y: 8, w: width, h: 12,
+            z: z, depth: 0, group: "fixture", phys: nil, fade: fade,
+            mouthExpression: nil, deformationSource: nil, meshSource: nil,
+            hairAttachment: nil, headFollow: nil, side: side, strands: nil,
+            synthetic: nil, img: RigImage(width: 8, height: 8, offset: offset, length: 8 * 8 * 4))
+    }
+    let white: [UInt8] = [0, 255, 0, 128]
+    let iris: [UInt8] = [255, 0, 0, 255]
+    var layers: [RigLayer] = []
+    switch configuration {
+    case "sided":
+        layers.append(layer("eyewhite_l", "L", 8, 12, 0, white, "eyeOpen"))
+        layers.append(layer("irides_l", "L", 9, 2, 1, [0, 0, 255, 255], "eyeOpen"))
+        layers.append(layer("irides_r", "R", 12, 30, 2, iris, "eyeOpen"))
+        // R white comes after its iris: aperture preparation must not follow paint order.
+        layers.append(layer("eyewhite_r", "R", 34, 12, 3, white, "eyeOpen"))
+    case "unsided":
+        layers.append(layer("eyewhite", nil, 8, 12, 0, white))
+        layers.append(layer("irides_r", "R", 12, 30, 1, iris))
+    default:
+        layers.append(layer("irides_r", "R", 12, 30, 0, iris))
+    }
+    let rig = RigDefinition(
+        canvas: RigCanvas(w: 64, h: 48), layers: layers,
+        anchors: anchors, interactionAreas: ["head": RigBounds(x0: 0, y0: 0, x1: 64, y1: 48)],
+        warnings: [], synth: RigSynthesis(eye: false, mouth: false))
+    let document = RigDecodedDocument(
+        format: "herdr.rig.decoded", version: 1, base: rig, pose: nil, physics: nil,
+        diagnostics: RigDecodeDiagnostics(
+            baseMissingRequired: [], poseMissingRequired: [],
+            basePSDLayerCount: layers.count, posePSDLayerCount: 0, warnings: []))
+    return RigDecodedScene(document: document, rgba: rgba)
+}
+
+private func eyeCheckPixel(_ frame: RigFrame, x: Int, y: Int) -> [Int] {
+    frame.rgba.withUnsafeBytes { raw in
+        let pixels = raw.bindMemory(to: UInt8.self)
+        let offset = (y * frame.width + x) * 4
+        return (0..<4).map { Int(pixels[offset + $0]) }
+    }
+}
+
+private func runEyeStencilChecks(output: URL) throws {
+    #if !RIG_PROBE_FAULTS
+        throw RigNativeError.invalid("eye stencil checks require a RIG_PROBE_FAULTS probe build")
+    #else
+        guard let device = MTLCreateSystemDefaultDevice() else { throw RigNativeError.unavailable("Metal device") }
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        var observations: [[String: Any]] = []
+        for configuration in ["sided", "unsided", "legacy"] {
+            let scene = eyeCheckScene(configuration)
+            let renderer = try RigMetalRenderer(device: device, scene: scene)
+            var parameters = RigParameters()
+            parameters.physAmp = 0
+            parameters.fhAmp = 0
+            let openings: [(String, Double)] =
+                configuration == "sided"
+                ? [("open", 1), ("closed", 0), ("reopened", 1)]
+                : [("open", 1)]
+            for (index, entry) in openings.enumerated() {
+                parameters.eyeOpenL = entry.1
+                parameters.eyeX = entry.0 == "reopened" ? 0.2 : 0
+                let frame = try renderer.render(
+                    parameters: parameters, time: Double(index) * 16,
+                    neutral: true, poseMix: 0)
+                let left = eyeCheckPixel(frame, x: 18, y: 10)
+                let right = eyeCheckPixel(frame, x: 38, y: 10)
+                let hit = try renderer.sampleHit(modelX: 18.5, modelY: 10.5, minimumAlpha: 0.1)
+                let reference = renderer.rasterHitEstimate(modelX: 18.5, modelY: 10.5, maximumAge: 1)?.sample
+                let expectedLayer: String? =
+                    configuration == "sided"
+                    ? (entry.1 == 0 ? nil : "eyewhite_l") : "irides_r"
+                var gpuMatches: Bool
+                if configuration == "sided" {
+                    gpuMatches =
+                        entry.1 == 0
+                        ? left[3] < 12 && left[0] < 12
+                        : left[0] < 24 && left[1] > 80 && left[3] > 80
+                    gpuMatches = gpuMatches && right[0] > 80
+                } else {
+                    gpuMatches = left[0] > 220 && left[3] > 220
+                }
+                let semanticMatches =
+                    hit.semantic?.layer == expectedLayer
+                    && reference?.semantic?.layer == expectedLayer
+                    && abs(Double(hit.alpha) - Double(reference?.alpha ?? -1)) < 0.08
+                let name = "\(configuration)-\(entry.0)"
+                try writeFrame(frame, to: output.appendingPathComponent("\(name).png"))
+                observations.append([
+                    "case": name, "leftRGBA": left, "rightRGBA": right,
+                    "semantic": hit.semantic?.layer as Any? ?? NSNull(),
+                    "reference": reference?.semantic?.layer as Any? ?? NSNull(),
+                    "gpuMatches": gpuMatches, "semanticMatches": semanticMatches,
+                ])
+                guard gpuMatches && semanticMatches else {
+                    let data = try JSONSerialization.data(withJSONObject: observations, options: [.prettyPrinted, .sortedKeys])
+                    try data.write(to: output.appendingPathComponent("eye-stencil-results.json"))
+                    throw RigNativeError.invalid("eye check \(name) pixel/semantic mismatch")
+                }
+            }
+        }
+        let data = try JSONSerialization.data(withJSONObject: observations, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: output.appendingPathComponent("eye-stencil-results.json"))
+    #endif
+}
+
 var retainedDelegate: NativeRigProbe?
 do {
     let options = try NativeProbeOptions.parse()
-    let application = NSApplication.shared
-    let delegate = try NativeRigProbe(options: options)
-    retainedDelegate = delegate
-    application.delegate = delegate
-    application.run()
+    if options.eyeStencilChecks {
+        try runEyeStencilChecks(output: options.output)
+    } else {
+        let application = NSApplication.shared
+        let delegate = try NativeRigProbe(options: options)
+        retainedDelegate = delegate
+        application.delegate = delegate
+        application.run()
+    }
 } catch {
     FileHandle.standardError.write(Data("native-rig-probe: \(error)\n".utf8))
     Darwin.exit(1)

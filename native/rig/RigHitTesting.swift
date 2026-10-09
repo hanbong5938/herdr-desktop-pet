@@ -29,8 +29,21 @@ struct RigCanvasMapping {
 
 let rigEyeAlphaCutoff: Float = 0.25
 
-func rigUsesEyeWhiteStencil(side: String?, sides: Set<String>) -> Bool {
-    sides.contains(side ?? "both") || sides.contains("both")
+// Missing side is the legacy unsided aperture, never the opposite eye.
+private func rigEyeBit(_ side: String?) -> UInt8 {
+    switch side {
+    case "L": return 1
+    case "R": return 2
+    default: return 4
+    }
+}
+
+private func rigIrisMask(_ side: String?) -> UInt8 {
+    switch side {
+    case "L": return 1 | 4
+    case "R": return 2 | 4
+    default: return 4
+    }
 }
 
 struct RigSemanticHit {
@@ -52,26 +65,38 @@ struct RigHitSample {
 // The caller separately gates this result with the final rendered alpha and the
 // matching frame/viewport/token. This function does not approximate GPU alpha.
 func rigSemanticHit(rig: RigDefinition, meshes: [RigMesh], rgba: Data,
-                    eyeWhiteSides: Set<String>, modelX: Double, modelY: Double, minimumAlpha: Double) -> RigSemanticHit? {
+    modelX: Double, modelY: Double, minimumAlpha: Double
+) -> RigSemanticHit? {
     guard modelX.isFinite, modelY.isFinite, minimumAlpha.isFinite else { return nil }
     var result: RigSemanticHit?
     rgba.withUnsafeBytes { raw in
         let pixels = raw.bindMemory(to: UInt8.self)
-        var stencil = false
+        var aperture: UInt8 = 0
+        var available: UInt8 = 0
+        for mesh in meshes where mesh.layer.name.hasPrefix("eyewhite") {
+            available |= rigEyeBit(mesh.layer.side)
+            let fragment = mesh.positions.withUnsafeBufferPointer {
+                rigFragment(
+                    layer: mesh.layer, positions: $0, base: mesh.base, uvs: mesh.uvs,
+                    indices: mesh.indices, pixels: pixels, x: modelX, y: modelY)
+            }
+            if let fragment, fragment.alpha >= Double(rigEyeAlphaCutoff) {
+                aperture |= rigEyeBit(mesh.layer.side)
+            }
+        }
         for mesh in meshes {
             let white = mesh.layer.name.hasPrefix("eyewhite")
             if mesh.alpha < 0.004 && !white { continue }
-            if mesh.layer.name.hasPrefix("irides"),
-               rigUsesEyeWhiteStencil(side: mesh.layer.side, sides: eyeWhiteSides), !stencil { continue }
+            if mesh.layer.name.hasPrefix("irides") {
+                let mask = rigIrisMask(mesh.layer.side)
+                if available & mask != 0 && aperture & mask == 0 { continue }
+            }
             let fragment = mesh.positions.withUnsafeBufferPointer {
                 rigFragment(layer: mesh.layer, positions: $0, base: mesh.base, uvs: mesh.uvs,
                             indices: mesh.indices, pixels: pixels, x: modelX, y: modelY)
             }
             guard let fragment else { continue }
-            if white {
-                if fragment.alpha < Double(rigEyeAlphaCutoff) { continue }
-                stencil = true
-            }
+            if white && fragment.alpha < Double(rigEyeAlphaCutoff) { continue }
             let coverage = fragment.alpha * Double(mesh.alpha)
             if coverage > minimumAlpha {
                 result = rigRegionHit(rig: rig, layer: mesh.layer, fragment: fragment, coverage: coverage)
@@ -152,7 +177,7 @@ final class RigRasterMesh {
     let source: RigMesh
     let positions: UnsafeBufferPointer<SIMD2<Float>>
     let eyeWhite: Bool
-    var usesStencil = false
+        let irisMask: UInt8
     var alpha: Float = 0
     private var x0 = Double.infinity, y0 = Double.infinity
     private var x1 = -Double.infinity, y1 = -Double.infinity
@@ -161,6 +186,7 @@ final class RigRasterMesh {
         self.source = source
         self.positions = positions
         self.eyeWhite = source.layer.name.hasPrefix("eyewhite")
+            self.irisMask = source.layer.name.hasPrefix("irides") ? rigIrisMask(source.layer.side) : 0
     }
 
     func refreshBounds() {
@@ -185,29 +211,33 @@ private func rigUNorm8(_ value: Double) -> Double {
 final class RigRasterModel {
     let rig: RigDefinition
     let meshes: [RigRasterMesh]
+        private let availableEyeBits: UInt8
 
     init(rig: RigDefinition, meshes: [RigRasterMesh]) {
         self.rig = rig
         self.meshes = meshes
-        let sides = Set(meshes.filter(\.eyeWhite).map { $0.source.layer.side ?? "both" })
-        for mesh in meshes where mesh.source.layer.name.hasPrefix("irides") {
-            mesh.usesStencil = rigUsesEyeWhiteStencil(side: mesh.source.layer.side, sides: sides)
+            self.availableEyeBits = meshes.reduce(UInt8(0)) {
+                $0 | ($1.eyeWhite ? rigEyeBit($1.source.layer.side) : 0)
         }
     }
 
     fileprivate func sample(pixels: UnsafeBufferPointer<UInt8>, x: Double, y: Double,
                             minimumAlpha: Double) -> RigHitSample {
-        var stencil = false
+            var aperture: UInt8 = 0
+            for mesh in meshes where mesh.eyeWhite {
+                if let fragment = mesh.fragment(pixels: pixels, x: x, y: y),
+                    fragment.alpha >= Double(rigEyeAlphaCutoff)
+                {
+                    aperture |= rigEyeBit(mesh.source.layer.side)
+                }
+            }
         var alpha = 0.0
         var semantic: RigSemanticHit?
         for mesh in meshes {
             if mesh.alpha < 0.004 && !mesh.eyeWhite { continue }
-            if mesh.usesStencil && !stencil { continue }
+                if mesh.irisMask & availableEyeBits != 0 && mesh.irisMask & aperture == 0 { continue }
             guard let fragment = mesh.fragment(pixels: pixels, x: x, y: y) else { continue }
-            if mesh.eyeWhite {
-                if fragment.alpha < Double(rigEyeAlphaCutoff) { continue }
-                stencil = true
-            }
+                if mesh.eyeWhite && fragment.alpha < Double(rigEyeAlphaCutoff) { continue }
             let coverage = fragment.alpha * Double(mesh.alpha)
             alpha = rigUNorm8(coverage + alpha * (1 - coverage))
             if coverage > minimumAlpha,
