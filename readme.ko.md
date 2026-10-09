@@ -11,6 +11,25 @@
 
 기본 제공 캐릭터는 루벨리아뿐입니다. [선택형 캐릭터 미리보기 보기](https://github.com/hanbong5938/herdr-characters/blob/main/readme.ko.md#캐릭터-미리보기).
 
+## 웹사이트 (GitHub Pages)
+
+한국어 기본·영어 홍보 웹사이트 소스는 [`site/`](site/)에 있습니다. 브라우저에서 네이티브 macOS 앱을 실행하는 웹 앱은 아닙니다. GitHub Pages 배포 주소: [한국어](https://hanbong5938.github.io/herdr-desktop-pet/) · [영어](https://hanbong5938.github.io/herdr-desktop-pet/en/). Node.js로 공개 파일의 내부 링크·앵커·언어별 메타데이터·이미지를 검사하거나 실제 프로젝트 하위 경로에서 미리 보세요. 외부 링크는 네트워크로 검사하지 않습니다.
+
+제목은 화면 폭에 맞춰 간결한 크기와 좁은 주변 여백으로 표시합니다. 본문·터미널 명령어·버튼 크기는 제목 크기와 별도로 유지합니다.
+
+```sh
+bun test tools/pages.test.ts
+node tools/pages.mjs check
+node tools/pages.mjs serve --port 4173
+# http://127.0.0.1:4173/herdr-desktop-pet/ 접속 (영어: /herdr-desktop-pet/en/)
+node tools/pages.mjs stage /tmp/herdr-pages
+```
+
+사이트 CLI는 Node.js 22를 사용하며, Bun 1.4.2는 실제 Node 서버를 실행하는 HTTP 회귀 테스트의 러너로만 사용합니다. CI는 staging 전에 이 회귀 테스트를 실행합니다. 로컬 미리보기는 공개 디렉터리의 일반 파일만 제공합니다. 최종 `404.html` 대체 파일이 없거나 심볼릭 링크·일반 파일이 아닌 경우 파일을 전송하지 않고 `nosniff`가 있는 일반 텍스트 `500`을 반환하며, `HEAD` 응답에는 본문이 없습니다.
+
+`stage`는 먼저 검사한 뒤 저장소 밖의 새 디렉터리 또는 빈 디렉터리에 공개할 `site/` 파일만 복사하며 배포하지 않습니다. Pages 워크플로는 풀 리퀘스트를 검사하고 검토용 아티팩트만 첨부합니다. 이 저장소의 Pages 배포 소스는 **GitHub Actions**입니다. 웹사이트 변경을 `main`에 병합하거나 `main`에서 워크플로를 수동 실행하면 게시하며, 배포는 조건을 만족하는 `main` 실행에서만 이뤄집니다. 이 로컬 명령은 릴리스 바이너리·Wiki·저장소 Pages 설정을 바꾸지 않습니다.
+
+
 ## 주요 기능
 
 - 메뉴 막대에서 제어하는 네이티브 데스크톱 캐릭터
