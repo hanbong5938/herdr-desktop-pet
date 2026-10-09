@@ -2,12 +2,14 @@
 
 **English** · [한국어](README.ko.md)
 
-Reviewed Markdown in this repository is the canonical version documentation. The GitHub Wiki is a generated reading view, not a separately edited source. These pages describe versions; they do not replace the [installation and runtime guide](../../readme.md) or the [Herdr integration guide](../../integrations/herdr/README.md).
+Reviewed Markdown in this repository is the canonical version documentation. The GitHub Wiki is a generated reading view, not a separately edited source. These pages describe versions; use the [root overview and installation](../../readme.md), [current usage guide](../usage.md), [development guide](../development.md), and [Herdr integration guide](../../integrations/herdr/README.md) for their respective procedures.
 
 ## Choose the right source
 
 | What you need | Where to go |
 | --- | --- |
+| Current app controls, characters, observation and troubleshooting | [Usage guide](../usage.md) · [CLI contract](../cli.md#english) |
+| Source builds, character authoring and the promotional website | [Development guide](../development.md) |
 | v0.3.3 stable source, focused fixes and safe upgrade | [0.3 release line and bilingual migration](0.3.md) · [v0.3.3 bilingual release note](v0.3.3.md) |
 | v0.2.1 public stable compatibility patch, Arin archive import | [0.2 release line](0.2.md) · [v0.2.1 bilingual notes](v0.2.1.md) · [v0.1.11 → v0.2.0 migration (English/한국어)](../migrations/v0.1.11-to-v0.2.0.md) |
 | Historical published 0.1 binaries, last at v0.1.11 | [0.1 release line](0.1.md) · [v0.1.11 Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.1.11) |
