@@ -2,12 +2,14 @@
 
 [English](README.md) · **한국어**
 
-이 저장소에서 검토한 Markdown이 버전 문서의 원본입니다. GitHub Wiki는 원본에서 생성한 읽기용 화면이며 따로 편집하는 원본이 아닙니다. 설치·실행 방법은 [한국어 루트 안내](../../readme.ko.md), Herdr 호스트 연동은 [연동 안내](../../integrations/herdr/README.md)를 기준으로 합니다.
+이 저장소에서 검토한 Markdown이 버전 문서의 원본입니다. GitHub Wiki는 원본에서 생성한 읽기용 화면이며 따로 편집하는 원본이 아닙니다. 개요·설치는 [한국어 루트 안내](../../readme.ko.md), 현행 조작·운영은 [사용 안내](../usage.ko.md), 소스·웹사이트 개발은 [개발 안내](../development.ko.md), Herdr 호스트 연동은 [연동 안내(영어)](../../integrations/herdr/README.md)를 기준으로 합니다.
 
 ## 목적에 맞는 문서 선택
 
 | 필요한 정보 | 문서 |
 | --- | --- |
+| 현행 앱 조작·캐릭터·관찰·문제 해결 | [사용 안내](../usage.ko.md) · [CLI 계약](../cli.md#한국어) |
+| 소스 빌드·캐릭터 제작·홍보 웹사이트 개발 | [개발 안내](../development.ko.md) |
 | v0.3.3 안정판 소스·집중 수정·안전한 업그레이드 | [0.3 계열·한영 이전 안내](0.3.md) · [v0.3.3 한영 정본 노트](v0.3.3.md) |
 | 공개 v0.2.1 안정판 호환성 패치·Arin 압축 팩 | [0.2 릴리스 계열](0.2.md) · [v0.2.1 한영 노트](v0.2.1.md) · [v0.1.11 → v0.2.0 한영 이전 안내](../migrations/v0.1.11-to-v0.2.0.md) |
 | 이전 0.1 계열 공개 바이너리(마지막 v0.1.11) | [0.1 릴리스 계열](0.1.md) · [v0.1.11 Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.1.11) |
