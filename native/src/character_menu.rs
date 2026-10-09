@@ -72,6 +72,9 @@ fn summary_status<'a>(
     }
     if operation_visible {
         if let Some(status) = selection.operation_status() {
+            if status == OperationStatus::Completed {
+                return None;
+            }
             return Some(SummaryStatus::Operation(status));
         }
     }
@@ -990,13 +993,28 @@ mod tests {
     }
 
     #[test]
+    fn completed_operation_hides_summary_and_restores_compact_height() {
+        let listing = listing();
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing);
+        selection.reserve_other("attempt".into());
+        selection.record_operation(&operation("applying", None));
+        assert_summary(
+            &listing,
+            &selection,
+            Some(SummaryStatus::Operation(OperationStatus::Applying)),
+        );
+        selection.record_operation(&operation("completed", None));
+        assert_summary(&listing, &selection, None);
+    }
+
+    #[test]
     fn visible_operation_states_are_retained_without_a_candidate() {
         let listing = listing();
         let states = [
             ("accepted", OperationStatus::Accepted),
             ("preparing", OperationStatus::Preparing),
             ("applying", OperationStatus::Applying),
-            ("completed", OperationStatus::Completed),
             ("failed", OperationStatus::Failed),
             ("canceled", OperationStatus::Canceled),
             (
