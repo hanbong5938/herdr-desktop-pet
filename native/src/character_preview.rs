@@ -23,7 +23,7 @@ const MAX_CACHE: usize = 32;
 const MAX_IN_FLIGHT: usize = 2;
 const MAX_REMOTE_ENCODED: usize = 4 * 1024 * 1024;
 const MAX_LOCAL_ENCODED: usize = 8 * 1024 * 1024;
-const MAX_REMOTE_PIXELS: u64 = 1_000_000;
+const MAX_REMOTE_PIXELS: u64 = 1024 * 1024;
 const MAX_LOCAL_PIXELS: u64 = 1024 * 1024;
 const MAX_LOCAL_RGBA_BYTES: usize = 4 * 1024 * 1024;
 const MAX_THUMBNAIL_BYTES: usize = 256 * 1024;
@@ -633,8 +633,8 @@ fn native_image(
 }
 
 /// Decode the entire input, including trailer, on the worker before AppKit
-/// ever sees it. Remote images retain stricter limits than locally generated
-/// 1024x1024 v5 rig canvases (at most 4 MiB decoded RGBA).
+/// ever sees it. Official portraits and locally generated v5 rig canvases
+/// support 1024x1024 pixels (at most 4 MiB decoded RGBA).
 fn normalize_thumbnail(
     bytes: &[u8],
     pixels: u16,
@@ -853,9 +853,12 @@ mod tests {
         assert!(
             normalize_thumbnail(&bytes, 32, &AtomicBool::new(false), ImageOrigin::Local).is_err()
         );
+        assert!(
+            normalize_thumbnail(&bytes, 32, &AtomicBool::new(false), ImageOrigin::Remote).is_err()
+        );
     }
     #[test]
-    fn generated_full_v5_canvas_and_encoded_size_are_supported_only_locally() {
+    fn full_v5_canvas_supports_remote_portraits_with_stricter_encoded_budget() {
         let mut rgba = vec![0; MAX_LOCAL_RGBA_BYTES];
         let mut random = 0x91cc_37a6_f158_d42fu64;
         for chunk in rgba.chunks_exact_mut(8) {
@@ -894,9 +897,12 @@ mod tests {
             ImageOrigin::Remote,
         )
         .is_err());
-        // An encoded-small image at the same canvas size must also be
-        // rejected remotely by decoded pixel budget, not just byte length.
-        rgba.fill(0);
+        // Published official portraits use 1024x1024 canvases; accept them
+        // when they fit the remote encoded and decoded byte budgets.
+        let color = [31, 80, 174, 199];
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&color);
+        }
         let mut compact_canvas = Vec::new();
         {
             let mut encoder = png::Encoder::new(&mut compact_canvas, 1024, 1024);
@@ -913,13 +919,19 @@ mod tests {
             ImageOrigin::Local,
         )
         .is_ok());
-        assert!(normalize_thumbnail(
+        let remote_thumbnail = normalize_thumbnail(
             &compact_canvas,
             32,
             &AtomicBool::new(false),
             ImageOrigin::Remote,
         )
-        .is_err());
+        .unwrap();
+        let mut reader = png::Decoder::new(Cursor::new(remote_thumbnail))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![255; reader.output_buffer_size()];
+        reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(pixels, color.repeat(32 * 32));
     }
 
     #[test]

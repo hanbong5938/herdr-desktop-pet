@@ -541,7 +541,6 @@ pub(crate) enum Message {
     CharacterBrowserCancelDownload,
     CharacterBrowserOfficialTag,
     CharacterBrowserSelect,
-    CharacterBrowserViewLocal,
     CharacterBrowserSelected,
     CharacterBrowserUnsupportedFormat,
     OfficialCatalogUnavailable,
@@ -897,11 +896,10 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::CharacterBrowserOfficialTag => "공식",
             Message::CharacterBrowserSelect => "선택",
             Message::CharacterBrowserSelected => "선택됨",
-            Message::CharacterBrowserViewLocal => "로컬 팩 보기",
             Message::CharacterBrowserUnsupportedFormat => "지원되지 않는 형식",
             Message::OfficialCatalogUnavailable => "공식 카탈로그를 사용할 수 없습니다",
             Message::OfficialUnsupportedFormat => "지원되지 않는 공식 캐릭터 형식입니다",
-            Message::OfficialLocalIdExists => "같은 ID의 로컬 팩이 설치되어 있습니다. 설치됨에서 선택하세요",
+            Message::OfficialLocalIdExists => "같은 ID의 팩이 이미 설치되어 있습니다. 캐릭터 카드에서 선택하세요",
         },
         UiLocale::En => match message {
             Message::ResetPosition => "Reset Position",
@@ -1234,11 +1232,10 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::CharacterBrowserOfficialTag => "Official",
             Message::CharacterBrowserSelect => "Select",
             Message::CharacterBrowserSelected => "Selected",
-            Message::CharacterBrowserViewLocal => "View local pack",
             Message::CharacterBrowserUnsupportedFormat => "Unsupported Format",
             Message::OfficialCatalogUnavailable => "Official catalog is unavailable",
             Message::OfficialUnsupportedFormat => "Unsupported official character format",
-            Message::OfficialLocalIdExists => "A local pack with this ID exists. Select it from Installed",
+            Message::OfficialLocalIdExists => "A pack with this ID is already installed. Select it on its character card",
         },
     }
 }
