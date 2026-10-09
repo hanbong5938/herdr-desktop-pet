@@ -4,7 +4,7 @@
 
 [English](readme.md) · **한국어** · [버전 문서](docs/releases/README.ko.md) · [릴리스](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **v0.3.2는 안정판 소스·기본/사전 빌드 대상입니다.** 이 체크아웃은 `0.3.2`를 선택하고 세션 검색·정렬·실행 중 우선, 네이티브 CLI 자동화, 충돌 인식 대사 초안, 8방향 말풍선 크기, 공식 브라우저·검증된 다운로드 및 적용, 설치 출처별 protocol-2 업데이트와 worker 전용 JIT 개선을 통합합니다. [v0.3.2 한영 노트](docs/releases/v0.3.2.md) · [한영 이전 안내](docs/releases/0.3.md#한국어--v03-계열). v0.2.1 Arin 호환성 패치(앱 v0.2.1 이상 필요)는 유지하며 이전 릴리스·베타 자산은 변경하지 않습니다. v0.3.2 공개 설치는 정확한 비초안 Release·완전 업로드 압축 파일/체크섬과 갱신된 설치기/포뮬러로 확인하세요. 매니페스트만 보고 게시 완료를 가정하지 말고 [Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)을 확인하세요. `--source`는 이 체크아웃만 빌드합니다. 이전 데몬 종료 또는 설정·상태 **모두** 격리 후 `status`의 실행 경로를 확인하세요. 과거 격리 소스 검사는 새 통합·공개 릴리스 증거가 아닙니다.
+> **v0.3.3은 이 체크아웃의 안정판 소스·기본/사전 빌드 대상입니다.** v0.3.2 기능과 v0.2.1 Arin 수정에 더해 공식 설치 카드 중복, 4 MiB 예산 내 원격 1024 × 1024 초상화, 작업 중 → 유휴 시 캐릭터 관리 제어, 성공 완료된 캐릭터 팩 작업 요약 잔류를 수정합니다. [v0.3.3 한영 노트](docs/releases/v0.3.3.md) · [한영 이전 안내](docs/releases/0.3.md#한국어--v03-계열). 사전 빌드 설치 전 비초안 v0.3.3 Release의 완전한 압축 파일·체크섬과 갱신된 설치기/포뮬러를 [Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)에서 확인하세요. 소스 버전만으로 게시를 주장하지 않습니다.
 
 
 <img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">
@@ -63,7 +63,7 @@
 | --- | --- |
 | 플랫폼 | Apple Silicon Mac, macOS 13 이상 |
 | 이번 실행 관리 기능의 Herdr | **공식 Herdr 0.9.3 소스에 [제공된 client-attach 패치](integrations/herdr/client-attached.patch)를 적용해 빌드한 호스트** (또는 추후 실제로 이 훅 지원을 명시한 호스트 릴리스) |
-| 앱 | v0.3.2 안정판 소스·기본/사전 빌드 대상(공개 Release 자산·갱신된 설치기/포뮬러 확인); 소스 빌드에는 Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools 필요. v0.2.1은 이전 공개 안정판 패치 |
+| 앱 | v0.3.3 안정판 소스·기본/사전 빌드 대상(공개 Release 자산·갱신된 설치기/포뮬러 확인); 소스 빌드에는 Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools 필요. v0.3.2는 이전 안정판 |
 
 **클라이언트 attach 자동 실행에는 제공된 패치가 필수입니다.** 순정 Herdr 0.9.0과 0.9.3에는 `client.attached`가 없습니다. 매니페스트의 최소 버전만으로 훅 지원이 보장되지 않습니다. 공식 0.9.3 소스에 패치를 적용하고 해당 호스트의 빌드 안내에 따라 빌드·실행한 뒤, 플러그인 연결 경고와 `client.attached` 구독 수락 여부를 확인하세요. 알 수 없는 훅 경고는 성공으로 간주하지 마세요. Intel Mac·Windows·Linux용 네이티브 배포는 지원하지 않습니다.
 
@@ -76,13 +76,13 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr는 저장소를 플러그인 디렉터리에 클론하고 매니페스트의 `[[build]]` 단계 `bash scripts/install.sh`를 실행합니다. 매니페스트는 `0.3.2`을 고정하며 사전 빌드 성공 경로에는 실제 공개 v0.3.2 자산이 필요합니다. HTTPS `curl`로 익명 다운로드한 후 SHA-256·아카이브 경로/항목 유형·arm64·서명·기본 캐릭터를 검증해 플러그인 `dist/`에 설치합니다. 자산이 없거나 검증에 실패하면 기본 설치는 안내 후 이 소스를 빌드하며 도구가 필요합니다. 명시적 `--prebuilt`는 소스 빌드로 전환하지 않습니다. fallback 빌드는 공개 사전 빌드의 증거가 아닙니다. 앱은 ad-hoc 서명·미공증이고 `curl` 설치에는 브라우저 격리 속성이 붙지 않습니다. client-attach 자동 실행에는 패치 호스트가 필요합니다.
+Herdr는 저장소를 플러그인 디렉터리에 클론하고 매니페스트의 `[[build]]` 단계 `bash scripts/install.sh`를 실행합니다. 매니페스트는 `0.3.3`을 고정하며 사전 빌드 성공 경로에는 실제 공개 v0.3.3 자산이 필요합니다. HTTPS `curl`로 익명 다운로드한 후 SHA-256·아카이브 경로/항목 유형·arm64·서명·기본 캐릭터를 검증해 플러그인 `dist/`에 설치합니다. 자산이 없거나 검증에 실패하면 기본 설치는 안내 후 이 소스를 빌드하며 도구가 필요합니다. 명시적 `--prebuilt`는 소스 빌드로 전환하지 않습니다. fallback 빌드는 공개 사전 빌드의 증거가 아닙니다. 앱은 ad-hoc 서명·미공증입니다.
 
 저장소에 `herdr-plugin` 토픽을 지정해 [Herdr 마켓](https://herdr.dev/plugins/) 자동 수집 대상으로 등록했습니다. 인덱스는 30분마다 갱신되며 Herdr의 심사를 거친 목록은 아닙니다.
 
 ## Homebrew로 설치
 
-[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 v0.3.2 안정판 앱·CLI는 **해당 포뮬러와 완전한 공개 압축 파일·체크섬 자산을 확인한 경우** 설치하세요. 이 소스 매니페스트 대신 [실제 Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)과 포뮬러 버전을 확인하세요. v0.2.1은 이전 공개 안정판 패치입니다.
+[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 v0.3.3 안정판 앱·CLI는 **해당 포뮬러와 완전한 공개 v0.3.3 압축 파일·체크섬 자산을 확인한 경우에만** 설치하세요. 이 소스 매니페스트 대신 [실제 Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)과 포뮬러 버전을 확인하세요.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -101,7 +101,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-설치된 CLI `--version`이 `0.3.2`인지, 기존 데몬 종료·재시작 후 `status`가 `app_version: 0.3.2`과 예상한 실행 파일을 보고하는지 확인하세요. 소스 매니페스트만 보고 포뮬러가 갱신됐다고 가정하지 마세요. Homebrew에서 포뮬러 로딩을 거부할 때만 `brew trust --formula hanbong5938/tap/herdr-desktop-pet`으로 해당 포뮬러만 신뢰하세요. 앱은 Homebrew prefix 안에 설치되고 CLI는 `PATH`에 놓이며 `/Applications`나 Herdr 플러그인·패치 호스트는 설치하지 않습니다. 앱은 ad-hoc 서명·미공증이고 포뮬러 설치에는 격리 속성이 붙지 않습니다. `brew uninstall herdr-desktop-pet`은 캐릭터 팩·설정·실행 관리 상태를 보존합니다. [0.3 한영 이전 안내](docs/releases/0.3.md#한국어--v03-계열)를 참고하세요.
+설치된 CLI `--version`이 `0.3.3`인지, 기존 데몬 종료·재시작 후 `status`가 `app_version: 0.3.3`과 예상한 실행 파일을 보고하는지 확인하세요. 소스 매니페스트만 보고 포뮬러가 갱신됐다고 가정하지 마세요. Homebrew에서 포뮬러 로딩을 거부할 때만 `brew trust --formula hanbong5938/tap/herdr-desktop-pet`으로 해당 포뮬러만 신뢰하세요. 앱은 Homebrew prefix 안에 설치되고 CLI는 `PATH`에 놓이며 `/Applications`나 Herdr 플러그인·패치 호스트는 설치하지 않습니다. 앱은 ad-hoc 서명·미공증이고 포뮬러 설치에는 격리 속성이 붙지 않습니다. [0.3 한영 이전 안내](docs/releases/0.3.md#한국어--v03-계열)를 참고하세요.
 
 이전 버전은 앱을 `/Applications`에 복사하는 Homebrew cask로 배포했습니다. 기존 cask 설치는 제거한 뒤 포뮬러를 설치해 옮기세요(데이터는 유지됩니다).
 
@@ -110,11 +110,15 @@ brew uninstall --cask herdr-desktop-pet
 brew install hanbong5938/tap/herdr-desktop-pet
 ```
 
+## 대응 베타 대상 (안정판과 분리)
+
+안정판 v0.3.3과 동일한 기능 수정(모든 필터의 공식 설치 카드 하나, 4 MiB 예산 내 원격 1024 × 1024 초상화, 작업 중 → 유휴 시 업데이트·제거·복원 제어 갱신과 Inspect 유지, 성공 완료된 **캐릭터 팩 작업** 요약 숨김)을 포함하는 `beta/0.3.3-beta.1`을 별도로 계획합니다. 베타는 `0.3.3-beta.1` 버전·`HerdrDesktopPetBeta.app`·`herdr-desktop-pet-beta` CLI를 사용합니다. 베타 태그·공개 자산·베타 포뮬러 갱신은 사전 빌드 사용 전 별도로 확인해야 하며 이 문서는 게시를 주장하지 않습니다. 안정판 기본 설치기·`herdr-desktop-pet` CLI는 베타가 아닌 v0.3.3 대상입니다. 실제 설정과 상태를 모두 백업하고 동시 실행 시 **두 경로를 모두** 격리하세요. 공유 프로필 전환 전에는 기존 데몬을 종료하세요.
+
 ## 과거 베타 채널 (안정판 설치 아님)
 
-Apple Silicon·macOS 13 이상용 변경 불가한 [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3)과 별도의 순환 베타 Homebrew 포뮬러는 안정판 v0.2.0·기본 설치 프로그램과 다른 **과거 시험 채널**입니다. beta1에는 답장 글자 잘림이 있고 beta2는 글자 잘림·잘못된 링크 스캐너를 수정했지만 답장 Command-A/C/X/V 연결은 없습니다. beta3에는 클립보드 수정도 포함되며 안정판 v0.2.0은 beta3의 네이티브 수정을 포함합니다. beta3에서 안정판으로 옮길 때는 베타를 종료하고 공유 프로필을 백업한 뒤 **베타 포뮬러가 아닌 안정판 포뮬러**를 설치/업그레이드하세요. [이전 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어)를 참고하세요. AppKit 프로그램 입력 시험은 물리적 키보드·IME·이미지 선택·확인 창 키·포인터·VoiceOver 인증이 아닙니다.
+변경 불가한 [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3)은 이번 대응 베타나 기본 안정판 설치기가 아닌 **과거 시험 릴리스**입니다. beta1에는 답장 글자 잘림이 있고 beta2는 글자 잘림·잘못된 링크 스캐너를 수정했지만 답장 Command-A/C/X/V 연결은 없습니다. beta3에는 클립보드 수정도 포함되며 안정판 v0.2.0은 beta3의 네이티브 수정을 포함합니다. 과거 `beta/0.3.0-beta.2`도 변경하지 않습니다. beta3에서 안정판으로 옮길 때는 베타를 종료하고 공유 프로필을 백업한 뒤 **별도 순환 베타 포뮬러가 아닌 안정판 포뮬러**를 설치/업그레이드하세요. [이전 안내](docs/migrations/v0.1.11-to-v0.2.0.md#한국어)를 참고하세요. AppKit 프로그램 입력 시험은 물리적 키보드·IME 인증이 아닙니다.
 
-과거 베타 포뮬러는 `HerdrDesktopPetBeta.app`을 `/Applications`가 아닌 Homebrew 접두 경로에 설치하며 `herdr-desktop-pet-beta`는 안정판 CLI와 별도입니다. 공유 프로필에서 beta3을 실행 중이라면 안정판 설치·시작 전에 먼저 베타를 종료하세요.
+별도 베타 포뮬러는 `HerdrDesktopPetBeta.app`을 `/Applications`가 아닌 Homebrew 접두 경로에 설치하며 `herdr-desktop-pet-beta`는 안정판 CLI와 별도입니다. 공유 프로필에서 과거 beta3을 실행 중이라면 안정판 설치·시작 전에 먼저 베타를 종료하세요.
 
 ```sh
 herdr-desktop-pet-beta stop
@@ -128,7 +132,7 @@ herdr-desktop-pet status
 
 ## 이 체크아웃 설치: 소스 빌드
 
-개발 체크아웃에서는 `plugin link`가 매니페스트 `[[build]]`를 실행하지 않으므로 직접 빌드해야 합니다. v0.3.2 소스에는 기존 v0.2.0 네이티브 기능과 v0.2.1 Arin 수정, 이번 신기능이 함께 있으며 `--source`는 다른 릴리스가 아닌 실제 체크아웃을 빌드합니다. 클라이언트 attach 자동 실행은 [패치된 호스트의 격리된 XDG 프로필 안내](integrations/herdr/README.md)에 따라 실행하고 `PATH`의 순정 `herdr` 대신 안내의 `PATCHED_HERDR` 바이너리를 명시적으로 사용하세요.
+개발 체크아웃에서는 `plugin link`가 매니페스트 `[[build]]`를 실행하지 않으므로 직접 빌드해야 합니다. v0.3.3 소스에는 v0.3.2 기능과 기존 v0.2.0 네이티브 기능·v0.2.1 Arin 수정이 포함되며 `--source`는 실제 체크아웃을 빌드합니다. 클라이언트 attach 자동 실행은 [패치된 호스트의 격리된 XDG 프로필 안내](integrations/herdr/README.md)에 따라 `PATH`의 순정 `herdr` 대신 `PATCHED_HERDR` 바이너리를 사용하세요.
 
 ```sh
 bash scripts/install.sh --source
@@ -138,7 +142,7 @@ bash scripts/install.sh --source
 
 소스 설치 프로그램은 고정된 JavaScript 의존성을 설치하고 Rust 실행 파일을 빌드하며 네이티브 rig 런타임·캐릭터 제작 리소스를 패키징한 뒤 앱을 검증합니다. 이미 실행 중인 서버에서 플러그인을 연결·활성화하는 것만으로는 캐릭터가 바로 실행되지 않습니다. `start`를 한 번 실행하거나 `auto_start`가 켜졌다면 이후 정상적인 shell/terminal 클라이언트 attach를 기다리세요. 서버 시작 시에도 자동 `ensure`가 실행됩니다. 연결 중 알 수 없는 `client.attached` 훅 경고가 뜨면 호스트에 필수 패치가 없는 것입니다. 플러그인 액션은 실행 중인 활성화된 Herdr 호스트가 필요하며 아래 네이티브 설정 명령은 호스트 없이도 동작합니다.
 
-이 소스에서 만든 `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet`으로 자동화할 수 있고 별도로 설치한 v0.3.2 CLI도 공개 자산·포뮬러 확인 뒤 사용 가능합니다. 기존 데몬을 종료하거나 `start`·후속 명령·`stop`에 일치하는 설정·상태 격리 경로를 사용하세요. 소스 CLI의 `0.3.2`만으로 공개 자산·옛 데몬 교체를 증명하지 못하므로 `status`의 실제 실행 파일을 확인하세요.
+이 소스에서 만든 `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet`으로 자동화할 수 있고 별도로 설치한 v0.3.3 CLI도 공개 자산·포뮬러 확인 뒤 사용 가능합니다. 기존 데몬을 종료하거나 `start`·후속 명령·`stop`에 일치하는 설정·상태 격리 경로를 사용하세요. 소스 CLI의 `0.3.3`만으로 공개 자산·옛 데몬 교체를 증명하지 못하므로 `status`의 실제 실행 파일을 확인하세요.
 
 ### 앱 내 업데이트 (v0.3.2)
 
@@ -155,7 +159,7 @@ bash scripts/install.sh --source
 
 독립 서명 도우미와 선택한 설정·상태·사용자 에셋은 실제 변경 대상 설치 경로 밖에 있어야 합니다. 같은 물리 설치를 공유하는 다른 실행 프로필은 교체를 막습니다. 도우미는 선택한 프로필·백엔드·에셋을 유지하고 새 인스턴스의 실제 준비를 확인하며 설치·적용 결과를 구분합니다. **적용됨**은 “공개 최신판”을 뜻하지 않습니다. 불명·진행 중·읽을 수 없는 예약 또는 구형 프로토콜 예약은 근거를 보존하고 위험한 새 작업을 막으며 manager 자동 재실행·journal 자동 삭제를 하지 않습니다. 원본이 그대로 준비된 **NoSpawn** 중단만 입증되면 복구는 재시작하지 않고 원본을 해동합니다. 이후 새 확인에 성공하면 이전 journal을 지우지 않고 새 계획을 제안할 수 있습니다.
 
-이전 공개 v0.2.0/v0.2.1과 옛 베타 바이너리는 확인만으로 protocol 2를 얻지 못합니다. 처음 사용하려면 이 v0.3.2 소스를 `--source`로 설치하거나 실제 공개 v0.3.2 릴리스 자산을 확인해 설치하세요. 구형 protocol-1 계획·예약은 자동 승인·재기록·이전하지 않습니다. 소스 매니페스트는 게시나 채널 전환이 아닙니다. [업데이트 상태·복구 CLI](docs/cli.md#앱-업데이트-상태와-복구)를 확인하세요.
+이전 공개 v0.2.0/v0.2.1과 옛 베타 바이너리는 확인만으로 protocol 2를 얻지 못합니다. 처음 사용하려면 이 v0.3.3 소스를 `--source`로 설치하거나 실제 공개 v0.3.3 릴리스 자산을 확인해 설치하세요. 구형 protocol-1 계획·예약은 자동 승인·재기록·이전하지 않습니다. 소스 매니페스트는 게시나 채널 전환이 아닙니다. [업데이트 상태·복구 CLI](docs/cli.md#앱-업데이트-상태와-복구)를 확인하세요.
 
 ### 과거 로컬 프리뷰 출처
 

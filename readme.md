@@ -4,7 +4,7 @@ A native macOS desktop companion for [Herdr](https://herdr.dev). Rubelia lives o
 
 **English** · [한국어](readme.ko.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
-> **v0.3.2 is the stable source and default/prebuilt target.** This checkout selects `0.3.2` and integrates session Search/Sort/Running first, native CLI automation, conflict-aware dialogue drafts, eight-way bubble resizing, the official character browser/verified Download & Apply, installation-aware protocol-2 updates and worker-only JIT decoding improvement. [v0.3.2 notes](docs/releases/v0.3.2.md) · [bilingual upgrade guidance](docs/releases/0.3.md). The v0.2.1 Arin compatibility fix (app v0.2.1+ required) remains included; prior releases and beta assets are unchanged. A public v0.3.2 install requires the exact non-draft Release and complete uploaded archive/checksums plus an updated installer/formula; confirm them in the [Release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases) rather than inferring publication from these manifests. `--source` builds only this checkout. Stop an older daemon or isolate config **and** state; inspect `status` for the running executable. Historical isolated source checks are not integrated/public release verification.
+> **v0.3.3 is this checkout's stable source and default/prebuilt target.** It retains v0.3.2's features and the v0.2.1 Arin fix, and fixes duplicate official installed cards, remote 1024 × 1024 portraits within 4 MiB budgets, character management actions after busy → idle, and lingering completed-success character-pack operation summaries. [v0.3.3 notes](docs/releases/v0.3.3.md) · [bilingual upgrade guidance](docs/releases/0.3.md). A prebuilt install requires a non-draft v0.3.3 Release with complete archive/checksums and an updated installer/formula; check the [Release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases). Source versions alone do not establish publication.
 
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
@@ -64,7 +64,7 @@ Messages go only through the selected local Herdr source's `agent.prompt` API, n
 | --- | --- |
 | Platform | Apple Silicon Mac, macOS 13 or later |
 | Herdr for this lifecycle feature | **Official Herdr 0.9.3 source with the [supplied client-attach patch](integrations/herdr/client-attached.patch) applied and built** (or a future actual host release advertising this hook) |
-| App | v0.3.2 is the stable source/default-prebuilt target (verify complete public Release assets and updated installer/formula); source builds require Rust/Cargo, Bun, Node.js/npm and Xcode Command Line Tools. v0.2.1 is the prior public stable patch |
+| App | v0.3.3 is the stable source/default-prebuilt target (verify complete public Release assets and updated installer/formula); source builds require Rust/Cargo, Bun, Node.js/npm and Xcode Command Line Tools. v0.3.2 is the previous stable version |
 
 **The patch is REQUIRED for client-attach auto-start.** Stock Herdr 0.9.0 and 0.9.3 do not provide `client.attached`; a manifest version floor is not proof of hook support. Apply the supplied patch to official 0.9.3 source and build/run that host following its build instructions; inspect plugin link warnings and verify the `client.attached` subscription is accepted. Do not treat an unknown-hook warning as success. Intel Macs, Windows, and Linux are not supported by the native distribution.
 
@@ -77,13 +77,13 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The manifest pins `0.3.2`; the successful prebuilt path requires the actual published v0.3.2 assets. It fetches anonymously over HTTPS with `curl`, verifies SHA-256, archive paths and entry types, arm64 architecture, code signature and default character, then installs under the plugin directory's `dist/`. If unavailable or invalid, optionless installation prints a notice and falls back to building this checkout from source with the toolchain above; explicit `--prebuilt` does **not** fall back. A fallback build is not proof of public prebuilt availability. The app is ad-hoc signed, not notarized; a `curl` plugin installation does not attach browser quarantine. Client-attach auto-start still needs the patched Herdr host.
+Herdr clones the repository into its plugin directory and runs the manifest's `[[build]]` step, `bash scripts/install.sh`. The manifest pins `0.3.3`; the successful prebuilt path requires actual published v0.3.3 assets. It fetches anonymously over HTTPS with `curl`, verifies SHA-256, archive paths and entry types, arm64 architecture, code signature and default character, then installs under the plugin directory's `dist/`. If unavailable or invalid, optionless installation prints a notice and falls back to building this checkout from source with the toolchain above; explicit `--prebuilt` does **not** fall back. A fallback build is not proof of public prebuilt availability. The app is ad-hoc signed, not notarized.
 
 The repository is tagged `herdr-plugin` for automatic discovery in the [Herdr marketplace](https://herdr.dev/plugins/). The index refreshes every 30 minutes; this is an unreviewed community listing.
 
 ## Install with Homebrew
 
-Install the v0.3.2 stable app and CLI through the [personal tap](https://github.com/hanbong5938/homebrew-tap) **when its formula and the complete public v0.3.2 archive/checksums are available**. Check the [actual Release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases) and formula version rather than this source manifest; v0.2.1 remains the prior published stable patch:
+Install the v0.3.3 stable app and CLI through the [personal tap](https://github.com/hanbong5938/homebrew-tap) **only when its formula and the complete public v0.3.3 archive/checksums are available**. Check the [actual Release catalog](https://github.com/hanbong5938/herdr-desktop-pet/releases) and formula version rather than this source manifest:
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -102,7 +102,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-Confirm the installed CLI `--version` reports `0.3.2`, and after stopping/restarting the daemon `status` reports `app_version: 0.3.2` and the expected running executable. Do not assume the formula changed from source manifests alone. If Homebrew refuses to load the formula, scope trust to this formula: `brew trust --formula hanbong5938/tap/herdr-desktop-pet`. The formula installs `HerdrDesktopPet.app` under Homebrew's prefix, not `/Applications`, and puts the CLI on `PATH`. It installs only the app, not the Herdr plugin or patched host; plugin installation is needed for lifecycle hooks and the host patch for client-attach auto-start. The app is ad-hoc signed, not notarized; formula installation does not quarantine it. `brew uninstall herdr-desktop-pet` keeps character packs, preferences and lifecycle state. See the [0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta).
+Confirm the installed CLI `--version` reports `0.3.3`, and after stopping/restarting the daemon `status` reports `app_version: 0.3.3` and the expected running executable. Do not assume the formula changed from source manifests alone. If Homebrew refuses to load the formula, scope trust to this formula: `brew trust --formula hanbong5938/tap/herdr-desktop-pet`. The formula installs `HerdrDesktopPet.app` under Homebrew's prefix, not `/Applications`, and puts the CLI on `PATH`. It installs only the app, not the Herdr plugin or patched host; plugin installation is needed for lifecycle hooks and the host patch for client-attach auto-start. The app is ad-hoc signed, not notarized.
 
 Earlier versions shipped a Homebrew cask that copied the app to `/Applications`. To migrate a previous cask install, remove it and install the formula (your data is kept):
 
@@ -111,11 +111,15 @@ brew uninstall --cask herdr-desktop-pet
 brew install hanbong5938/tap/herdr-desktop-pet
 ```
 
+## Paired beta target (separate from stable)
+
+An aligned `beta/0.3.3-beta.1` is planned with the same functional fixes as stable v0.3.3: one official installed card across filters, remote 1024 × 1024 portraits within 4 MiB budgets, Update/Remove/Restore control refresh after busy → idle (Inspect remains available), and hidden completed-success **character-pack operation** summaries. It has a distinct `0.3.3-beta.1` version, `HerdrDesktopPetBeta.app` and `herdr-desktop-pet-beta` CLI. The beta tag, public assets and beta formula update must be verified separately before using a beta prebuilt; this source note does **not** assert publication. The stable default installer and `herdr-desktop-pet` CLI target v0.3.3, not beta. Back up both real config and state directories and isolate **both** paths when running stable and beta concurrently; if sharing a profile, stop one daemon before switching to the other.
+
 ## Historical beta channel (not the stable install)
 
-For Apple Silicon on macOS 13+, immutable [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3) and the separate rolling beta Homebrew formula remain a **historical test channel**, not the stable v0.2.0 formula or default installer. Beta1 contained reply clipping; beta2 fixed clipping and malformed-link scanning but lacked reply Command-A/C/X/V dispatch; beta3 added those shortcuts. Stable v0.2.0 includes the beta3 native fixes. For beta3 → stable, stop beta, back up the shared profile, and install/upgrade **the stable formula**, not the beta formula; follow the [migration guide](docs/migrations/v0.1.11-to-v0.2.0.md). Programmatic AppKit checks do not certify physical keyboard/IME, picker, alert-key, pointer, or VoiceOver behavior.
+The immutable [`beta/0.2.0-beta.3`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.2.0-beta.3) is a **historical test release**, not the current paired beta or stable default installer. Beta1 contained reply clipping; beta2 fixed clipping and malformed-link scanning but lacked reply Command-A/C/X/V dispatch; beta3 added those shortcuts. Stable v0.2.0 includes the beta3 native fixes. Older `beta/0.3.0-beta.2` also remains historical and unchanged. For beta3 → stable, stop beta, back up the shared profile, and install/upgrade **the stable formula**, not the separate rolling beta formula; follow the [migration guide](docs/migrations/v0.1.11-to-v0.2.0.md). Programmatic AppKit checks do not certify physical keyboard/IME behavior.
 
-The historical beta formula installs `HerdrDesktopPetBeta.app` inside Homebrew's prefix, not `/Applications`; `herdr-desktop-pet-beta` is separate from stable `herdr-desktop-pet`. If you are currently running beta3 on the shared profile, stop it before installing or starting stable:
+The separate beta formula installs `HerdrDesktopPetBeta.app` inside Homebrew's prefix, not `/Applications`; `herdr-desktop-pet-beta` is separate from stable `herdr-desktop-pet`. If you are currently running historical beta3 on the shared profile, stop it before installing or starting stable:
 
 ```sh
 herdr-desktop-pet-beta stop
@@ -129,7 +133,7 @@ If the stable formula is already installed, stop that daemon too and use `brew u
 
 ## Install this checkout from source
 
-For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. v0.3.2 includes the earlier v0.2.0 native groups and v0.2.1 Arin fix plus the new capabilities; `--source` builds the actual checkout, not a different release. For client-attach auto-start, use the patched Herdr host in an isolated profile (follow the [deployment guide](integrations/herdr/README.md) and specify that binary rather than unpatched `herdr` on `PATH`):
+For development checkouts, `plugin link` does not run the manifest's `[[build]]`, so build the checkout yourself. v0.3.3 retains the v0.3.2 capabilities, earlier v0.2.0 native groups and v0.2.1 Arin fix; `--source` builds the actual checkout, not a different release. For client-attach auto-start, use the patched Herdr host in an isolated profile (follow the [deployment guide](integrations/herdr/README.md) and specify that binary rather than unpatched `herdr` on `PATH`):
 
 ```sh
 bash scripts/install.sh --source
@@ -139,7 +143,7 @@ bash scripts/install.sh --source
 
 The installer installs pinned JavaScript dependencies, builds the Rust executable, packages the native rig runtime and creator resources, and validates the app. Linking/enabling on an already-running server does not itself launch the pet: invoke `start` once, or wait for a subsequent successful shell/terminal client attach when `auto_start` is on. Server startup also runs automatic `ensure`. Inspect link warnings: an unknown `client.attached` hook means the host lacks the required patch. Herdr plugin actions require a running, enabled host; direct native settings commands below work without one.
 
-Use the executable `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet` for source-checkout automation; a separately installed v0.3.2 app/CLI can also provide these commands when its public archive/formula have been confirmed. Stop the existing pet first, or use consistent isolated config **and** state paths for `start`, commands and `stop`. A source CLI's `0.3.2` version alone does not establish a public asset or replace an older running daemon; inspect `status` for the executable.
+Use the executable `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet` for source-checkout automation; a separately installed v0.3.3 app/CLI can also provide these commands when its public archive/formula have been confirmed. Stop the existing pet first, or use consistent isolated config **and** state paths for `start`, commands and `stop`. A source CLI's `0.3.3` version alone does not establish a public asset or replace an older running daemon; inspect `status` for the executable.
 
 ### In-app updates (v0.3.2)
 
@@ -156,7 +160,7 @@ Preparation also guards dedicated dialogue undo/redo and browser search/filter/l
 
 The standalone signed helper must be outside the mutable physical installation, as must the selected configuration, state and custom assets. Another live profile sharing that physical installation blocks replacement. The helper preserves the selected profile/backend/assets, checks the new instance's actual readiness, and reports installed and applied separately; **Applied** does not imply “latest public release.” Unknown, active, unreadable or old-protocol reservations retain their evidence and block an unsafe new operation, never trigger automatic manager replay or silent journal deletion. For a provable **NoSpawn** interruption with the original still ready, recovery leaves that original running and thaws it; a subsequent successful fresh Check may offer a new plan without erasing the old journal.
 
-The public v0.2.0/v0.2.1 and historical beta binaries cannot acquire protocol 2 from a check. First adoption requires installing this v0.3.2 source with `--source` or a verified published v0.3.2 release. Old protocol-1 plans and reservations are not silently accepted, rewritten or migrated. A source manifest does not publish a release or switch channels. See [updater status/recovery commands](docs/cli.md#app-update-status-and-recovery).
+The public v0.2.0/v0.2.1 and historical beta binaries cannot acquire protocol 2 from a check. First adoption requires installing this v0.3.3 source with `--source` or a verified published v0.3.3 release. Old protocol-1 plans and reservations are not silently accepted, rewritten or migrated. A source manifest does not publish a release or switch channels. See [updater status/recovery commands](docs/cli.md#app-update-status-and-recovery).
 
 ### Historical local-preview provenance
 
