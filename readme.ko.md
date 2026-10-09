@@ -112,7 +112,7 @@ brew install hanbong5938/tap/herdr-desktop-pet
 
 ## 대응 베타 대상 (안정판과 분리)
 
-안정판 v0.3.3과 동일한 기능 수정(모든 필터의 공식 설치 카드 하나, 4 MiB 예산 내 원격 1024 × 1024 초상화, 작업 중 → 유휴 시 업데이트·제거·복원 제어 갱신과 Inspect 유지, 성공 완료된 **캐릭터 팩 작업** 요약 숨김)을 포함하는 `beta/0.3.3-beta.1`을 별도로 계획합니다. 베타는 `0.3.3-beta.1` 버전·`HerdrDesktopPetBeta.app`·`herdr-desktop-pet-beta` CLI를 사용합니다. 베타 태그·공개 자산·베타 포뮬러 갱신은 사전 빌드 사용 전 별도로 확인해야 하며 이 문서는 게시를 주장하지 않습니다. 안정판 기본 설치기·`herdr-desktop-pet` CLI는 베타가 아닌 v0.3.3 대상입니다. 실제 설정과 상태를 모두 백업하고 동시 실행 시 **두 경로를 모두** 격리하세요. 공유 프로필 전환 전에는 기존 데몬을 종료하세요.
+안정판 v0.3.3과 기능이 같은 [`beta/0.3.3-beta.1`](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/beta%2F0.3.3-beta.1)을 별도 non-latest prerelease로 게시했습니다. 버전·번들·Homebrew CLI는 `0.3.3-beta.1`·`HerdrDesktopPetBeta.app`·`herdr-desktop-pet-beta`이며 순환 베타 포뮬러도 이 압축 파일을 가리킵니다. 기존 데몬을 종료한 뒤 `brew update && brew upgrade herdr-desktop-pet-beta`를 사용하세요(미설치라면 베타 포뮬러 설치). 베타 자체 압축 파일·체크섬을 확인하고 안정판 설치기를 베타에 사용하지 마세요. 기본 안정판 설치기·`herdr-desktop-pet`은 v0.3.3을 유지합니다. 실제 설정·상태를 모두 백업하고 동시 실행에는 **두 경로 모두** 격리하며 공유 프로필 전환 전에는 기존 데몬을 종료하세요.
 
 ## 과거 베타 채널 (안정판 설치 아님)
 
