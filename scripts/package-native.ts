@@ -1,6 +1,8 @@
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const cargoTarget = process.env.HERDR_PET_CARGO_TARGET?.trim() ?? "";
@@ -12,11 +14,14 @@ const helperBinary = join(releaseDirectory, "herdr-update-coordinator");
 const assetsSource = join(root, "assets", "rubelia-default");
 const thumbnailSource = join(root, "assets", "rubelia-thumbnail.png");
 const rigBuild = join(root, "native", "target", "rig-native", "release");
+const rigBuildRecord = join(rigBuild, "rig-native.json");
 const appName = process.env.HERDR_PET_APP_NAME?.trim() || "HerdrDesktopPet.app";
 const appRoot = join(root, "dist", appName);
+const deployedRecord = join(root, "dist", `${appName}.rig-native.json`);
 const appContents = join(appRoot, "Contents");
 const appBinary = join(appContents, "MacOS", "herdr-desktop-pet");
 const appResources = join(appContents, "Resources");
+const appBuildRecord = join(appResources, "rig-native-build.json");
 const appHelper = join(appContents, "MacOS", "herdr-update-coordinator");
 const appAssets = join(appResources, "default");
 const appFrameworks = join(appContents, "Frameworks");
@@ -51,6 +56,28 @@ async function requireDirectory(path: string, label: string): Promise<void> {
   }
 }
 
+
+async function sha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
+async function filesUnder(directory: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await filesUnder(path));
+    else if (entry.isFile()) files.push(path);
+    else throw new Error(`unexpected bundle resource: ${path}`);
+  }
+  return files.sort();
+}
+
+async function identities(paths: string[], base: string): Promise<Record<string, string>> {
+  const entries = await Promise.all(paths.map(async (path) => [relative(base, path), await sha256(path)]));
+  return Object.fromEntries(entries.sort(([a], [b]) => a!.localeCompare(b!)));
+}
 
 function escapeXml(value: string): string {
   return value
@@ -183,8 +210,40 @@ async function main(): Promise<void> {
   await requireFile(workerEntitlements, "decode worker JIT entitlements");
   await requireFile(join(rigBuild, "Resources", "rig", "decoder.js"), "trusted decoder bundle");
   await requireFile(join(rigBuild, "Resources", "rig", "NOTICE.txt"), "renderer license closure");
+  await requireFile(join(rigBuild, "Resources", "rig", "RigLimits.swift"), "generated Swift rig limits");
+  await requireFile(join(rigBuild, "Resources", "rig", "RigLimits.rs"), "generated Rust rig limits");
+  await requireFile(join(root, "native", "rig", "limits.json"), "rig limits source");
+  await requireFile(rigBuildRecord, "native rig build record");
   await requireFile(join(root, "tools", "character-pack.py"), "creator tool");
   await requireFile(join(root, ".agents", "skills", "character-creator", "SKILL.md"), "creator skill");
+  const buildRecord = JSON.parse(await readFile(rigBuildRecord, "utf8")) as {
+    version?: number;
+    build?: { source_sha256?: Record<string, string>; output_sha256?: Record<string, string> };
+  };
+  const expectedOutputs = buildRecord.build?.output_sha256;
+  if (buildRecord.version !== 1 || !expectedOutputs || !buildRecord.build?.source_sha256) {
+    fail("native rig build record lacks version 1 source/output identities; rebuild the native rig");
+  }
+  const sourcePaths = Object.keys(buildRecord.build.source_sha256).sort();
+  if (!sourcePaths.length || sourcePaths.some((path) => path.startsWith("/") || path.split("/").includes(".."))) {
+    fail("native rig build record has invalid source paths");
+  }
+  for (const path of sourcePaths) {
+    if (buildRecord.build.source_sha256[path] !== await sha256(join(root, path))) {
+      fail(`native rig build source differs from its build record: ${path}`);
+    }
+  }
+  const rigBuildResourcePaths = (await filesUnder(join(rigBuild, "Resources", "rig")))
+    .map((path) => relative(rigBuild, path));
+  const buildPaths = ["libherdr_rig.dylib", "rig-decode-worker", ...rigBuildResourcePaths];
+  if (Object.keys(expectedOutputs).sort().join("\n") !== buildPaths.sort().join("\n")) {
+    fail("native rig build resource closure differs from its build record");
+  }
+  for (const path of buildPaths) {
+    if (expectedOutputs[path] !== await sha256(join(rigBuild, path))) {
+      fail(`native rig build output differs from its build record: ${path}`);
+    }
+  }
   await validateNativePack(nativeBinary, assetsSource);
 
   let packageJson: { version?: unknown };
@@ -226,6 +285,7 @@ async function main(): Promise<void> {
   }
 
   await rm(appRoot, { recursive: true, force: true });
+  await rm(deployedRecord, { force: true });
   await mkdir(join(appContents, "MacOS"), { recursive: true });
   await mkdir(appResources, { recursive: true });
   await mkdir(appFrameworks, { recursive: true });
@@ -237,11 +297,12 @@ async function main(): Promise<void> {
   await cp(licenseSource, licenseDestination);
   await cp(assetsSource, appAssets, { recursive: true });
   await cp(thumbnailSource, join(appResources, "default-thumbnail.png"));
+  await cp(rigBuildRecord, appBuildRecord);
   await cp(join(rigBuild, "libherdr_rig.dylib"), appRigLibrary);
   await cp(join(rigBuild, "rig-decode-worker"), appRigWorker);
   await chmod(appRigWorker, 0o755);
   await mkdir(join(appResources, "rig"), { recursive: true });
-  for (const resource of ["decoder.js", "NOTICE.txt", "vendor"]) {
+  for (const resource of ["decoder.js", "RigLimits.swift", "RigLimits.rs", "NOTICE.txt", "vendor"]) {
     await cp(join(rigBuild, "Resources", "rig", resource), join(appResources, "rig", resource), { recursive: true });
   }
   await cp(join(root, "native", "rig", "limits.json"), join(appResources, "rig", "limits.json"));
@@ -297,6 +358,24 @@ async function main(): Promise<void> {
   await requireProtocolTwo(appBinary, "packaged native binary");
   await validateStandaloneHelper(appHelper);
   await validateNativePack(appBinary, appAssets);
+  // External post-signing record avoids a signed-bundle self-hash cycle.
+  const packagedRecord = {
+    version: 1,
+    paths_relative_to: "Contents",
+    dylib: "Frameworks/libherdr_rig.dylib",
+    worker: "MacOS/rig-decode-worker",
+    coordinator: "MacOS/herdr-update-coordinator",
+    generated_limits: ["Resources/rig/RigLimits.swift", "Resources/rig/RigLimits.rs"],
+    decoder: "Resources/rig/decoder.js",
+    limits: "Resources/rig/limits.json",
+    install_name: "@rpath/libherdr_rig.dylib",
+    packaged_rpath: "@executable_path/../Frameworks",
+    probe_faults: false,
+    notices: ["Resources/rig/NOTICE.txt", "Resources/rig/vendor"],
+    build_record: "Resources/rig-native-build.json",
+    deployed_sha256: await identities(await filesUnder(appContents), appContents),
+  };
+  await writeFile(deployedRecord, JSON.stringify(packagedRecord, null, 2) + "\n", "utf8");
   if (identity === "-") {
     console.log(`Packaged ${appRoot} with an ad-hoc local signature; no official signing or notarization was performed.`);
   } else {

@@ -40,11 +40,18 @@ final class RigMetalRenderer {
         let isEyeWhite: Bool
         let isIris: Bool
 
+        let eyeBit: UInt32
+        var irisReadMask: UInt32 = 0
         init(device: MTLDevice, source: RigMesh, rgba: Data) throws {
             self.source = source
             self.indexCount = source.indices.count
             self.isEyeWhite = source.layer.name.hasPrefix("eyewhite")
             self.isIris = source.layer.name.hasPrefix("irides")
+            switch source.layer.side {
+            case "L": self.eyeBit = 1
+            case "R": self.eyeBit = 2
+            default: self.eyeBit = 4
+            }
 
             guard source.positions.count == source.uvs.count else {
                 throw RigNativeError.invalid("mesh \(source.layer.name) position/UV count mismatch")
@@ -159,7 +166,6 @@ final class RigMetalRenderer {
         let rig: RigDefinition
         let deformer: RigDeformer
         let meshes: [MeshResources]
-        let eyeWhiteSides: Set<String>
         #if RIG_PROBE_FAULTS
         let hitModels: [RigRasterModel]
         #endif
@@ -178,16 +184,23 @@ final class RigMetalRenderer {
                 remainingVertices -= mesh.positions.count
             }
 
-            var eyeWhiteSides = Set<String>()
+            var eyeWhiteBits: UInt32 = 0
             for mesh in deformer.meshes where mesh.layer.name.hasPrefix("eyewhite") {
-                eyeWhiteSides.insert(mesh.layer.side ?? "both")
+                switch mesh.layer.side {
+                case "L": eyeWhiteBits |= 1
+                case "R": eyeWhiteBits |= 2
+                default: eyeWhiteBits |= 4
+                }
             }
-            self.eyeWhiteSides = eyeWhiteSides
 
             var resources: [MeshResources] = []
             resources.reserveCapacity(deformer.meshes.count)
             for mesh in deformer.meshes {
                 resources.append(try MeshResources(device: device, source: mesh, rgba: rgba))
+            }
+            for resource in resources where resource.isIris {
+                let allowed: UInt32 = resource.eyeBit == 4 ? 4 : resource.eyeBit | 4
+                if allowed & eyeWhiteBits != 0 { resource.irisReadMask = allowed }
             }
             // RigDeformer exposes stable render order.  The secondary index
             // keeps authored order deterministic for equal render slots.
@@ -253,8 +266,9 @@ final class RigMetalRenderer {
     private let canvasHeight: Int
     private let groupTargets: [GroupTarget]
     private let noStencilState: MTLDepthStencilState
-    private let eyeWhiteStencilState: MTLDepthStencilState
-    private let irisStencilState: MTLDepthStencilState
+    private let eyeWhiteStencilStates: [MTLDepthStencilState]
+    private let irisStencilStates: [MTLDepthStencilState]
+    private var maskPipeline: MTLRenderPipelineState?
     private var layerPipeline: MTLRenderPipelineState?
     private var compositePipelines: [UInt: MTLRenderPipelineState] = [:]
     #if RIG_PROBE_FAULTS
@@ -364,9 +378,17 @@ final class RigMetalRenderer {
             targets.append(try GroupTarget(device: device, width: scene.document.base.canvas.w, height: scene.document.base.canvas.h, label: "Rig pose target"))
         }
         self.groupTargets = targets
-        self.noStencilState = try Self.makeDepthStencilState(device: device, compare: .always, writeMask: 0, passOperation: .keep, label: "Rig no stencil")
-        self.eyeWhiteStencilState = try Self.makeDepthStencilState(device: device, compare: .always, writeMask: 0xff, passOperation: .replace, label: "Rig eye-white stencil")
-        self.irisStencilState = try Self.makeDepthStencilState(device: device, compare: .equal, writeMask: 0, passOperation: .keep, label: "Rig iris stencil")
+        self.noStencilState = try Self.makeDepthStencilState(device: device, compare: .always, readMask: 0xff, writeMask: 0, passOperation: .keep, label: "Rig no stencil")
+        self.eyeWhiteStencilStates = try [1, 2, 4].map {
+            try Self.makeDepthStencilState(
+                device: device, compare: .always, readMask: 0xff, writeMask: $0,
+                passOperation: .replace, label: "Rig eye-white stencil \($0)")
+        }
+        self.irisStencilStates = try [4, 5, 6].map {
+            try Self.makeDepthStencilState(
+                device: device, compare: .notEqual, readMask: $0, writeMask: 0,
+                passOperation: .keep, label: "Rig iris stencil \($0)")
+        }
     }
 
     func prepareMotion(_ evaluator: RigMotionEvaluator) throws {
@@ -411,7 +433,7 @@ final class RigMetalRenderer {
             "stencilTargetCount": groupTargets.count,
             "renderbufferCount": groupTargets.count,
             "framebufferCount": 0,
-            "pipelineCount": (layerPipeline == nil ? 0 : 1) + compositePipelines.count,
+            "pipelineCount": (layerPipeline == nil ? 0 : 1) + (maskPipeline == nil ? 0 : 1) + compositePipelines.count,
             "samplerCount": 1,
             "sampleReadbackBufferCount": sampleReadback == nil ? 0 : 1,
             "latestTextureCount": latestTexture == nil ? 0 : 1,
@@ -497,8 +519,8 @@ final class RigMetalRenderer {
         func consider(_ model: ModelResources, weight: Double) {
             guard weight > minimumAlpha,
                   let hit = rigSemanticHit(rig: model.rig, meshes: model.deformer.meshes, rgba: sourcePixels,
-                                           eyeWhiteSides: model.eyeWhiteSides, modelX: x, modelY: y,
-                                           minimumAlpha: minimumAlpha / weight) else { return }
+                    modelX: x, modelY: y, minimumAlpha: minimumAlpha / weight)
+            else { return }
             let coverage = hit.coverage * weight
             if let previous = result, coverage < previous.coverage { return }
             result = RigSemanticHit(region: hit.region, layer: hit.layer, sourceX: hit.sourceX,
@@ -972,26 +994,41 @@ final class RigMetalRenderer {
             encoder.setVertexBytes($0, length: MemoryLayout<VertexUniforms>.stride, index: 2)
         }
 
+        // Every authored white prepares its aperture before any ordered color draw;
+        // source alpha defines the mask even while the white fades out.
         for mesh in model.meshes {
-            let source = mesh.source
-            let alpha = source.alpha
+            let alpha = mesh.source.alpha
             guard alpha.isFinite else {
-                throw RigNativeError.invalid("mesh \(source.layer.name) alpha is not finite")
+                throw RigNativeError.invalid("mesh \(mesh.source.layer.name) alpha is not finite")
             }
             #if RIG_PROBE_FAULTS
             mesh.hitMeshes[slot].alpha = alpha
             #endif
+            if alpha >= 0.004 || mesh.isEyeWhite { uploadPositions(mesh: mesh, slot: slot) }
+        }
+        encoder.setRenderPipelineState(try maskRenderPipeline())
+        for mesh in model.meshes where mesh.isEyeWhite {
+            encoder.setDepthStencilState(eyeWhiteStencilStates[mesh.eyeBit == 1 ? 0 : mesh.eyeBit == 2 ? 1 : 2])
+            encoder.setStencilReferenceValue(mesh.eyeBit)
+            encoder.setVertexBuffer(mesh.positionBuffers[slot], offset: 0, index: 0)
+            encoder.setVertexBuffer(mesh.uvBuffer, offset: 0, index: 1)
+            var uniforms = FragmentUniforms(alpha: 1, cut: rigEyeAlphaCutoff)
+            withUnsafePointer(to: &uniforms) {
+                encoder.setFragmentBytes($0, length: MemoryLayout<FragmentUniforms>.stride, index: 0)
+            }
+            encoder.setFragmentTexture(mesh.texture, index: 0)
+            encoder.drawIndexedPrimitives(type: .triangle, indexCount: mesh.indexCount, indexType: .uint16, indexBuffer: mesh.indexBuffer, indexBufferOffset: 0)
+        }
+        encoder.setRenderPipelineState(try layerRenderPipeline())
+        for mesh in model.meshes {
+            let alpha = mesh.source.alpha
             if alpha < 0.004 && !mesh.isEyeWhite { continue }
-            uploadPositions(mesh: mesh, slot: slot)
-
-            if mesh.isEyeWhite {
-                encoder.setDepthStencilState(eyeWhiteStencilState)
-            } else if mesh.isIris && rigUsesEyeWhiteStencil(side: source.layer.side, sides: model.eyeWhiteSides) {
-                encoder.setDepthStencilState(irisStencilState)
+            if mesh.irisReadMask != 0 {
+                encoder.setDepthStencilState(irisStencilStates[Int(mesh.irisReadMask) - 4])
+                encoder.setStencilReferenceValue(0)
             } else {
                 encoder.setDepthStencilState(noStencilState)
             }
-            encoder.setStencilReferenceValue(1)
             encoder.setVertexBuffer(mesh.positionBuffers[slot], offset: 0, index: 0)
             encoder.setVertexBuffer(mesh.uvBuffer, offset: 0, index: 1)
             var uniforms = FragmentUniforms(alpha: alpha, cut: mesh.isEyeWhite ? rigEyeAlphaCutoff : 0)
@@ -1108,11 +1145,20 @@ final class RigMetalRenderer {
         descriptor.stencilAttachmentPixelFormat = .stencil8
         do {
             let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+            descriptor.label = "Rig eye aperture pipeline"
+            descriptor.colorAttachments[0].writeMask = []
+            maskPipeline = try device.makeRenderPipelineState(descriptor: descriptor)
             layerPipeline = pipeline
             return pipeline
         } catch {
             throw RigNativeError.unavailable("Metal layer pipeline creation failed: \(error.localizedDescription)")
         }
+    }
+
+    private func maskRenderPipeline() throws -> MTLRenderPipelineState {
+        if let maskPipeline { return maskPipeline }
+        _ = try layerRenderPipeline()
+        return maskPipeline!
     }
 
     private func compositePipeline(for pixelFormat: MTLPixelFormat) throws -> MTLRenderPipelineState {
@@ -1152,7 +1198,9 @@ final class RigMetalRenderer {
         }
     }
 
-    private static func makeDepthStencilState(device: MTLDevice, compare: MTLCompareFunction, writeMask: UInt32, passOperation: MTLStencilOperation, label: String) throws -> MTLDepthStencilState {
+    private static func makeDepthStencilState(device: MTLDevice, compare: MTLCompareFunction, readMask: UInt32, writeMask: UInt32, passOperation: MTLStencilOperation, label: String) throws
+        -> MTLDepthStencilState
+    {
         let descriptor = MTLDepthStencilDescriptor()
         descriptor.label = label
         descriptor.depthCompareFunction = .always
@@ -1162,7 +1210,7 @@ final class RigMetalRenderer {
         stencil.stencilFailureOperation = .keep
         stencil.depthFailureOperation = .keep
         stencil.depthStencilPassOperation = passOperation
-        stencil.readMask = 0xff
+        stencil.readMask = readMask
         stencil.writeMask = writeMask
         descriptor.frontFaceStencil = stencil
         descriptor.backFaceStencil = stencil

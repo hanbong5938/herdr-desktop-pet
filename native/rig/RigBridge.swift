@@ -23,6 +23,20 @@ private func bridgeHost(_ raw: HerdrRigHandle?) -> RigNativeHost? {
     return Unmanaged<RigNativeHost>.fromOpaque(raw).takeUnretainedValue()
 }
 
+@_cdecl("herdr_rig_abi_info_v1")
+public func herdrRigABIInfoV1(_ output: UnsafeMutablePointer<HerdrRigABIInfoV1>?) {
+    output?.pointee = HerdrRigABIInfoV1(
+        version: UInt32(HERDR_RIG_ABI_VERSION),
+        asset_size: UInt32(MemoryLayout<HerdrRigAssetInput>.size),
+        model_size: UInt32(MemoryLayout<HerdrRigModelInput>.size),
+        token_size: UInt32(MemoryLayout<HerdrRigTokenInput>.size),
+        intent_size: UInt32(MemoryLayout<HerdrRigIntent>.size),
+        hit_size: UInt32(MemoryLayout<HerdrRigHit>.size),
+        anchor_size: UInt32(MemoryLayout<HerdrRigAnchor>.size),
+        speech_anchor_snapshot_size: UInt32(MemoryLayout<HerdrRigSpeechAnchorSnapshot>.size)
+    )
+}
+
 @_cdecl("herdr_rig_error_free")
 public func herdrRigErrorFree(_ error: UnsafeMutablePointer<CChar>?) {
     guard let error else { return }

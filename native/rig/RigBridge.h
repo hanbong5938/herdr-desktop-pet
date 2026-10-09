@@ -9,6 +9,18 @@ extern "C" {
 #endif
 
 typedef void *HerdrRigHandle;
+/* Native executable ABI identity, independent of character-pack versions. */
+#define HERDR_RIG_ABI_VERSION 1U
+typedef struct {
+    uint32_t version;
+    uint32_t asset_size;
+    uint32_t model_size;
+    uint32_t token_size;
+    uint32_t intent_size;
+    uint32_t hit_size;
+    uint32_t anchor_size;
+    uint32_t speech_anchor_snapshot_size;
+} HerdrRigABIInfoV1;
 
 typedef struct {
     const char *id;
@@ -93,6 +105,9 @@ typedef struct {
     double backing_scale;
     HerdrRigAnchor anchor;
 } HerdrRigSpeechAnchorSnapshot;
+
+/* Safe to call before passing any typed rig input or creating a host. */
+void herdr_rig_abi_info_v1(HerdrRigABIInfoV1 *out_info);
 
 /* Every error returned through an out_error is allocated by strdup and must be
  * released with herdr_rig_error_free.  A successful call always writes NULL. */

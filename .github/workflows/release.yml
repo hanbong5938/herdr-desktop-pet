@@ -157,9 +157,12 @@ jobs:
           set -euo pipefail
           asset="$HERDR_PET_ASSET_NAME"
           COPYFILE_DISABLE=1 tar --no-xattrs -czf "$asset" -C dist HerdrDesktopPet.app
+          sidecar="HerdrDesktopPet-v${HERDR_PET_VERSION}-rig-native.json"
+          test -s dist/HerdrDesktopPet.app.rig-native.json
+          cp dist/HerdrDesktopPet.app.rig-native.json "$sidecar"
           shasum -a 256 "$asset" > "$asset.sha256"
           shasum -a 256 "$asset" > SHA256SUMS
-          for output in "$asset" "$asset.sha256" SHA256SUMS; do
+          for output in "$asset" "$asset.sha256" SHA256SUMS "$sidecar"; do
             test -s "$output"
           done
 
@@ -177,6 +180,7 @@ jobs:
             ${{ env.HERDR_PET_ASSET_NAME }}
             ${{ env.HERDR_PET_ASSET_NAME }}.sha256
             SHA256SUMS
+            HerdrDesktopPet-v${{ env.HERDR_PET_VERSION }}-rig-native.json
 
   wiki_sync:
     needs: release
