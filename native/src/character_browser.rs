@@ -546,17 +546,6 @@ define_class!(
             let Some(shared_rc) = ivars.as_ref() else { return };
             shared_rc.borrow_mut().change_filter(BrowserFilter::Official);
         }
-        #[unsafe(method(showInstalledLocal:))]
-        fn show_installed_local(&self, sender: Option<&AnyObject>) {
-            let Some(MenuCommand::Select { id, .. }) = character_menu::command_from_sender(sender)
-            else {
-                return;
-            };
-            let ivars = self.ivars().borrow();
-            let Some(shared_rc) = ivars.as_ref() else { return };
-            shared_rc.borrow_mut().reveal_local(id);
-        }
-
     }
 );
 
@@ -817,7 +806,10 @@ enum BrowserFilter {
 enum BrowserItemKind {
     Builtin,
     Local(PackRecord),
-    Official(OfficialEntry),
+    Official {
+        entry: OfficialEntry,
+        installed: Option<PackRecord>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -826,7 +818,160 @@ struct BrowserItem {
     name: String,
     kind: BrowserItemKind,
     preview_key: PreviewKey,
-    local_id_exists: bool,
+}
+
+impl BrowserItem {
+    fn installed_pack(&self) -> Option<&PackRecord> {
+        match &self.kind {
+            BrowserItemKind::Local(pack) => Some(pack),
+            BrowserItemKind::Official { installed, .. } => installed.as_ref(),
+            BrowserItemKind::Builtin => None,
+        }
+    }
+
+    fn selected_revision(&self) -> Option<u64> {
+        match &self.kind {
+            BrowserItemKind::Builtin => Some(0),
+            _ => self.installed_pack().map(|pack| pack.head),
+        }
+    }
+}
+
+fn build_index(
+    listing: &PackListing,
+    official_entries: &[OfficialEntry],
+    catalog_revision: u64,
+    locale: UiLocale,
+    query: &str,
+    filter: BrowserFilter,
+) -> Vec<BrowserItem> {
+    let query = query.to_lowercase();
+    let mut items = Vec::new();
+    if filter != BrowserFilter::Official {
+        let name = i18n::text(locale, Message::RubeliaBuiltIn);
+        if query.is_empty() || name.to_lowercase().contains(&query) || "default".contains(&query) {
+            items.push(BrowserItem {
+                id: "default".to_owned(),
+                name: name.to_owned(),
+                kind: BrowserItemKind::Builtin,
+                preview_key: PreviewKey {
+                    source: PreviewSource::Local {
+                        reference: CharacterRef::builtin(),
+                        generation: listing.generation,
+                    },
+                    pixels: 128,
+                },
+            });
+        }
+        for pack in &listing.packs {
+            if official_entries
+                .iter()
+                .any(|entry| entry.identity.id == pack.id)
+                || !(query.is_empty()
+                    || pack.name.to_lowercase().contains(&query)
+                    || pack.id.to_lowercase().contains(&query))
+            {
+                continue;
+            }
+            items.push(BrowserItem {
+                id: pack.id.clone(),
+                name: pack.name.clone(),
+                kind: BrowserItemKind::Local(pack.clone()),
+                preview_key: PreviewKey {
+                    source: PreviewSource::Local {
+                        reference: CharacterRef {
+                            id: pack.id.clone(),
+                            revision: pack.head,
+                        },
+                        generation: listing.generation,
+                    },
+                    pixels: 128,
+                },
+            });
+        }
+    }
+    if filter != BrowserFilter::Installed || !listing.packs.is_empty() {
+        for entry in official_entries {
+            let installed = listing
+                .packs
+                .iter()
+                .find(|pack| pack.id == entry.identity.id);
+            if filter == BrowserFilter::Installed && installed.is_none() {
+                continue;
+            }
+            let desc = match locale {
+                UiLocale::Ko => &entry.description.ko,
+                UiLocale::En => &entry.description.en,
+            };
+            let variant = match locale {
+                UiLocale::Ko => &entry.variant_name.ko,
+                UiLocale::En => &entry.variant_name.en,
+            };
+            if !(query.is_empty()
+                || entry.name.to_lowercase().contains(&query)
+                || entry.identity.id.to_lowercase().contains(&query)
+                || installed.is_some_and(|pack| pack.name.to_lowercase().contains(&query))
+                || variant.to_lowercase().contains(&query)
+                || desc.to_lowercase().contains(&query)
+                || entry
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&query)))
+            {
+                continue;
+            }
+            let source = if let Some(pack) = installed {
+                PreviewSource::Local {
+                    reference: CharacterRef {
+                        id: pack.id.clone(),
+                        revision: pack.head,
+                    },
+                    generation: listing.generation,
+                }
+            } else {
+                PreviewSource::Official {
+                    identity: entry.identity.clone(),
+                    catalog_revision,
+                    url: entry.preview_idle_url.clone(),
+                }
+            };
+            items.push(BrowserItem {
+                id: entry.identity.id.clone(),
+                name: entry.name.clone(),
+                kind: BrowserItemKind::Official {
+                    entry: entry.clone(),
+                    installed: installed.cloned(),
+                },
+                preview_key: PreviewKey {
+                    source,
+                    pixels: 128,
+                },
+            });
+        }
+    }
+    items
+}
+
+fn selection_message(
+    item: &BrowserItem,
+    listing: &PackListing,
+    selection: &CharacterSelection,
+) -> Option<Message> {
+    let revision = item.selected_revision()?;
+    if selection.candidate().is_some_and(|candidate| {
+        candidate.reference.id == item.id && candidate.reference.revision == revision
+    }) {
+        Some(Message::CharacterBrowserSelected)
+    } else if !listing.override_active
+        && listing
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id == item.id && active.revision == revision)
+    {
+        Some(Message::Active)
+    } else {
+        Some(Message::CharacterBrowserSelect)
+    }
 }
 
 #[derive(Clone)]
@@ -850,7 +995,6 @@ struct BrowserSharedState {
     locale: UiLocale,
     cards: Vec<CharacterCardHolder>,
     items: Vec<BrowserItem>,
-    pending_local_reveal: Option<String>,
     update_frozen: bool,
     frozen_search_value: Option<String>,
     dirty: bool,
@@ -872,7 +1016,6 @@ impl BrowserSharedState {
     fn change_query(&mut self, query: String) {
         if !self.update_frozen && self.query != query {
             self.query = query;
-            self.pending_local_reveal = None;
             self.dirty = true;
         }
     }
@@ -883,17 +1026,7 @@ impl BrowserSharedState {
             self.dirty = true;
         }
     }
-
-    fn reveal_local(&mut self, id: String) {
-        if !self.update_frozen {
-            self.filter = BrowserFilter::Installed;
-            self.pending_local_reveal = Some(id.clone());
-            self.query = id;
-            self.dirty = true;
-        }
-    }
 }
-
 struct FrozenBrowserMenu {
     menu: Retained<NSMenu>,
     autoenables_items: bool,
@@ -989,7 +1122,7 @@ impl CharacterBrowser {
         let action_target = BrowserActionTarget::new(mtm);
         let shared = Rc::new(RefCell::new(BrowserSharedState {
             query: String::new(),
-            pending_local_reveal: None,
+
             filter: BrowserFilter::All,
             locale,
             cards: Vec::new(),
@@ -1429,8 +1562,7 @@ impl CharacterBrowser {
         false
     }
 
-    /// Use AppKit's live search value: the filtered index can lag field-editor
-    /// edits. A pending local reveal is an unreduced browser selection intent.
+    /// Use AppKit's live search value: the filtered index can lag field-editor edits.
     pub(crate) fn has_pending_update_intent(&self) -> bool {
         let native_text = {
             let ivars = self.root.ivars().borrow();
@@ -1444,7 +1576,7 @@ impl CharacterBrowser {
             });
             refs.search_field.stringValue().length() > 0 || editor_text
         };
-        native_text || self.has_marked_text() || self.shared.borrow().pending_local_reveal.is_some()
+        native_text || self.has_marked_text()
     }
 
     pub(crate) fn visible_preview_requests(&self) -> Vec<PreviewKey> {
@@ -1464,21 +1596,11 @@ impl CharacterBrowser {
     }
 
     pub(crate) fn refresh(&mut self, input: BrowserInput<'_>) {
-        // Neither consume reveal intent nor reenable/rebind controls during Prepare.
+        // Neither reenable nor rebind controls during Prepare.
         if self.shared.borrow().update_frozen {
             return;
         }
         let marked = self.has_marked_text();
-        if !marked {
-            let query = self.shared.borrow().pending_local_reveal.clone();
-            if let Some(query) = query {
-                let ivars = self.root.ivars().borrow();
-                if let Some(refs) = ivars.as_ref() {
-                    refs.search_field
-                        .setStringValue(&NSString::from_str(&query));
-                }
-            }
-        }
         let (rebuild, state_changed) = {
             let mut shared = self.shared.borrow_mut();
             let versions = (input.listing.generation, input.catalog_revision);
@@ -1508,25 +1630,6 @@ impl CharacterBrowser {
         };
         if rebuild {
             self.rebuild_index(&input);
-            let reveal_id = self.shared.borrow_mut().pending_local_reveal.take();
-            if let Some(id) = reveal_id {
-                let index = self.shared.borrow().items.iter().position(|item| {
-                    item.id == id && matches!(&item.kind, BrowserItemKind::Local(_))
-                });
-                if let Some(index) = index {
-                    let ivars = self.root.ivars().borrow();
-                    if let Some(refs) = ivars.as_ref() {
-                        let columns = if refs.scroll.contentSize().width >= 620.0 {
-                            2
-                        } else {
-                            1
-                        };
-                        let clip = refs.scroll.contentView();
-                        clip.scrollToPoint(NSPoint::new(0.0, (index / columns) as f64 * 132.0));
-                        refs.scroll.reflectScrolledClipView(&clip);
-                    }
-                }
-            }
         }
         let preview_changed = self.render_visible(&input, state_changed);
         if state_changed || preview_changed {
@@ -1536,97 +1639,15 @@ impl CharacterBrowser {
 
     fn rebuild_index(&mut self, input: &BrowserInput<'_>) {
         let shared = self.shared.borrow();
-        let locale = shared.locale;
-        let query = shared.query.to_lowercase();
-        let filter = shared.filter;
+        let items = build_index(
+            input.listing,
+            input.official_entries,
+            input.catalog_revision,
+            shared.locale,
+            &shared.query,
+            shared.filter,
+        );
         drop(shared);
-        let mut items = Vec::new();
-        if filter != BrowserFilter::Official {
-            let name = i18n::text(locale, Message::RubeliaBuiltIn);
-            if query.is_empty()
-                || name.to_lowercase().contains(&query)
-                || "default".contains(&query)
-            {
-                items.push(BrowserItem {
-                    id: "default".to_owned(),
-                    name: name.to_owned(),
-                    kind: BrowserItemKind::Builtin,
-                    preview_key: PreviewKey {
-                        source: PreviewSource::Local {
-                            reference: CharacterRef::builtin(),
-                            generation: input.listing.generation,
-                        },
-                        pixels: 128,
-                    },
-                    local_id_exists: false,
-                });
-            }
-            for pack in &input.listing.packs {
-                if query.is_empty()
-                    || pack.name.to_lowercase().contains(&query)
-                    || pack.id.to_lowercase().contains(&query)
-                {
-                    items.push(BrowserItem {
-                        id: pack.id.clone(),
-                        name: pack.name.clone(),
-                        kind: BrowserItemKind::Local(pack.clone()),
-                        preview_key: PreviewKey {
-                            source: PreviewSource::Local {
-                                reference: CharacterRef {
-                                    id: pack.id.clone(),
-                                    revision: pack.head,
-                                },
-                                generation: input.listing.generation,
-                            },
-                            pixels: 128,
-                        },
-                        local_id_exists: false,
-                    });
-                }
-            }
-        }
-        if filter != BrowserFilter::Installed {
-            for entry in input.official_entries {
-                let desc = match locale {
-                    UiLocale::Ko => &entry.description.ko,
-                    UiLocale::En => &entry.description.en,
-                };
-                let variant = match locale {
-                    UiLocale::Ko => &entry.variant_name.ko,
-                    UiLocale::En => &entry.variant_name.en,
-                };
-                if !(query.is_empty()
-                    || entry.name.to_lowercase().contains(&query)
-                    || entry.identity.id.to_lowercase().contains(&query)
-                    || variant.to_lowercase().contains(&query)
-                    || desc.to_lowercase().contains(&query)
-                    || entry
-                        .tags
-                        .iter()
-                        .any(|tag| tag.to_lowercase().contains(&query)))
-                {
-                    continue;
-                }
-                items.push(BrowserItem {
-                    id: entry.identity.id.clone(),
-                    name: entry.name.clone(),
-                    kind: BrowserItemKind::Official(entry.clone()),
-                    preview_key: PreviewKey {
-                        source: PreviewSource::Official {
-                            identity: entry.identity.clone(),
-                            catalog_revision: input.catalog_revision,
-                            url: entry.preview_idle_url.clone(),
-                        },
-                        pixels: 128,
-                    },
-                    local_id_exists: input
-                        .listing
-                        .packs
-                        .iter()
-                        .any(|p| p.id == entry.identity.id),
-                });
-            }
-        }
         let mut shared = self.shared.borrow_mut();
         shared.items = items;
         // Install the index and its version stamps as one rendered snapshot.
@@ -1764,7 +1785,7 @@ impl CharacterBrowser {
                     input.busy || rendered_generation != input.listing.generation,
                 );
             } else if actions_changed {
-                if let BrowserItemKind::Local(pack) = &item.kind {
+                if let Some(pack) = item.installed_pack() {
                     card.popup_button.setMenu(Some(&character_menu::pack_menu(
                         pack,
                         rendered_generation,
@@ -1823,7 +1844,7 @@ impl CharacterBrowser {
         let badge = match &item.kind {
             BrowserItemKind::Builtin => Message::BuiltInTag,
             BrowserItemKind::Local(_) => Message::ManagedTag,
-            BrowserItemKind::Official(_) => Message::CharacterBrowserOfficialTag,
+            BrowserItemKind::Official { .. } => Message::CharacterBrowserOfficialTag,
         };
         let title = format!("{} · {}", item.name, i18n::text(locale, badge));
         card.name_label.setStringValue(&NSString::from_str(&title));
@@ -1837,16 +1858,16 @@ impl CharacterBrowser {
                 format!("{} · {}", pack.id, i18n::revision_label(locale, pack.head)),
                 i18n::text(locale, Message::ManagedTag).to_owned(),
             ),
-            BrowserItemKind::Official(entry) => {
+            BrowserItemKind::Official { entry, installed } => {
                 let description = match locale {
                     UiLocale::Ko => &entry.description.ko,
                     UiLocale::En => &entry.description.en,
                 };
                 let tags = entry.tags.join(", ");
-                let details = if item.local_id_exists {
+                let details = if installed.is_some() {
                     format!(
                         "{} · {description} · {tags} · {}",
-                        i18n::text(locale, Message::OfficialLocalIdExists),
+                        i18n::text(locale, Message::CharacterBrowserFilterInstalled),
                         i18n::format_bytes(entry.download_bytes)
                     )
                 } else {
@@ -1855,11 +1876,16 @@ impl CharacterBrowser {
                         i18n::format_bytes(entry.download_bytes)
                     )
                 };
+                let metadata = format!(
+                    "{} · {} · {} · {}",
+                    entry.identity.id, entry.identity.version, entry.render_mode, entry.author
+                );
                 (
-                    format!(
-                        "{} · {} · {} · {}",
-                        entry.identity.id, entry.identity.version, entry.render_mode, entry.author
-                    ),
+                    if let Some(pack) = installed {
+                        format!("{metadata} · {}", i18n::revision_label(locale, pack.head))
+                    } else {
+                        metadata
+                    },
                     details,
                 )
             }
@@ -1871,7 +1897,7 @@ impl CharacterBrowser {
             .setStringValue(&NSString::from_str(&description));
         set_tooltip(&card.desc_label, &description);
         ax(&card.desc_label, &description);
-        if let BrowserItemKind::Local(pack) = &item.kind {
+        if let Some(pack) = item.installed_pack() {
             card.popup_button.setHidden(false);
             card.popup_button.setMenu(Some(&character_menu::pack_menu(
                 pack,
@@ -1908,29 +1934,18 @@ impl CharacterBrowser {
     ) {
         card.progress_label.setHidden(true);
         let (title, enabled, selector, payload) = match &item.kind {
-            BrowserItemKind::Builtin | BrowserItemKind::Local(_) => {
-                let revision = match &item.kind {
-                    BrowserItemKind::Local(pack) => pack.head,
-                    _ => 0,
-                };
-                let is_candidate = input.selection.candidate().is_some_and(|candidate| {
-                    candidate.reference.id == item.id && candidate.reference.revision == revision
-                });
-                let is_active =
-                    !input.listing.override_active
-                        && input.listing.active.as_ref().is_some_and(|active| {
-                            active.id == item.id && active.revision == revision
-                        });
-                let message = if is_candidate {
-                    Message::CharacterBrowserSelected
-                } else if is_active {
-                    Message::Active
-                } else {
-                    Message::CharacterBrowserSelect
-                };
+            BrowserItemKind::Builtin
+            | BrowserItemKind::Local(_)
+            | BrowserItemKind::Official {
+                installed: Some(_), ..
+            } => {
+                let message = selection_message(item, input.listing, input.selection)
+                    .expect("selectable card has a revision");
                 (
                     i18n::text(locale, message).to_owned(),
-                    !input.busy && !is_candidate && rendered_generation == input.listing.generation,
+                    !input.busy
+                        && message != Message::CharacterBrowserSelected
+                        && rendered_generation == input.listing.generation,
                     sel!(packSelect:),
                     character_menu::command_payload(&MenuCommand::Select {
                         id: item.id.clone(),
@@ -1938,16 +1953,10 @@ impl CharacterBrowser {
                     }),
                 )
             }
-            BrowserItemKind::Official(_) if item.local_id_exists => (
-                i18n::text(locale, Message::CharacterBrowserViewLocal).to_owned(),
-                true,
-                sel!(showInstalledLocal:),
-                character_menu::command_payload(&MenuCommand::Select {
-                    id: item.id.clone(),
-                    generation: rendered_generation,
-                }),
-            ),
-            BrowserItemKind::Official(entry) => {
+            BrowserItemKind::Official {
+                entry,
+                installed: None,
+            } => {
                 let op_id = input.selection.official_operation_id();
                 let downloading = op_id.is_some()
                     && input.selection.is_busy()
@@ -2031,12 +2040,7 @@ impl CharacterBrowser {
         }
         card.action_button.setEnabled(enabled);
         unsafe {
-            let target: &AnyObject =
-                if item.local_id_exists && matches!(&item.kind, BrowserItemKind::Official(_)) {
-                    &*self._action_target
-                } else {
-                    &*self.menu_target
-                };
+            let target: &AnyObject = &*self.menu_target;
             let _: () = msg_send![&*card.action_button, setTarget: Some(target)];
             card.action_button.setAction(Some(selector));
         }
@@ -2287,8 +2291,15 @@ fn popup_button(
 
 #[cfg(test)]
 mod tests {
-    use super::{observe_input_versions, BrowserFilter, BrowserSharedState};
-    use crate::i18n::UiLocale;
+    use super::{
+        build_index, observe_input_versions, selection_message, BrowserFilter, BrowserItemKind,
+        BrowserSharedState,
+    };
+    use crate::character_preview::PreviewSource;
+    use crate::character_selection::CharacterSelection;
+    use crate::character_types::{CharacterRef, OfficialPackIdentity, PackListing, PackRecord};
+    use crate::i18n::{Message, UiLocale};
+    use crate::official_catalog::{LocalizedText, OfficialEntry};
 
     #[test]
     fn marked_index_version_only_changes_refresh_actions_once() {
@@ -2303,15 +2314,175 @@ mod tests {
         assert_eq!(rendered, (7, 10));
     }
 
+    fn fixture() -> (PackListing, Vec<OfficialEntry>) {
+        let pack = |id: &str, name: &str, head| PackRecord {
+            id: id.into(),
+            name: name.into(),
+            head,
+            revisions: vec![head],
+        };
+        let listing = PackListing {
+            generation: 8,
+            selected: CharacterRef::builtin(),
+            active: Some(CharacterRef {
+                id: "cat".into(),
+                revision: 3,
+            }),
+            override_active: false,
+            packs: vec![pack("cat", "Local cat", 4), pack("other", "Other", 2)],
+            error: None,
+        };
+        let entry = |id: &str, name: &str| OfficialEntry {
+            identity: OfficialPackIdentity {
+                id: id.into(),
+                version: "1.0".into(),
+                release_tag: "release".into(),
+                sha256: "a".repeat(64),
+            },
+            name: name.into(),
+            variant_name: LocalizedText {
+                ko: "변형".into(),
+                en: "Variant".into(),
+            },
+            description: LocalizedText {
+                ko: "설명".into(),
+                en: "Description".into(),
+            },
+            tags: vec!["fluffy".into()],
+            author: "Artist".into(),
+            format_version: 5,
+            render_mode: "rig".into(),
+            download_bytes: 1000,
+            preview_idle_url: "https://example.org/preview.png".into(),
+            install_supported: true,
+            download_url: "https://example.org/pack".into(),
+        };
+        (
+            listing,
+            vec![entry("cat", "Catalog cat"), entry("dog", "Catalog dog")],
+        )
+    }
+
     #[test]
-    fn frozen_browser_actions_preserve_existing_reveal_and_reject_new_intent() {
+    fn catalog_ids_are_one_card_in_every_filter_and_search_matches_both_names() {
+        let (listing, entries) = fixture();
+        for (filter, expected) in [
+            (BrowserFilter::All, vec!["default", "other", "cat", "dog"]),
+            (BrowserFilter::Installed, vec!["default", "other", "cat"]),
+            (BrowserFilter::Official, vec!["cat", "dog"]),
+        ] {
+            let items = build_index(&listing, &entries, 12, UiLocale::En, "", filter);
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let cat = items.iter().find(|item| item.id == "cat").unwrap();
+            assert!(
+                matches!(&cat.kind, BrowserItemKind::Official { installed: Some(pack), .. } if pack.head == 4)
+            );
+            assert_eq!(cat.installed_pack().unwrap().name, "Local cat");
+        }
+        for (query, expected) in [
+            ("Local cat", vec!["cat"]),
+            ("Catalog cat", vec!["cat"]),
+            ("Description", vec!["cat", "dog"]),
+            ("fluffy", vec!["cat", "dog"]),
+            ("Variant", vec!["cat", "dog"]),
+            ("cat", vec!["cat", "dog"]),
+        ] {
+            let items = build_index(
+                &listing,
+                &entries,
+                12,
+                UiLocale::En,
+                query,
+                BrowserFilter::Official,
+            );
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let items = build_index(
+            &listing,
+            &entries,
+            12,
+            UiLocale::En,
+            "Other",
+            BrowserFilter::All,
+        );
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["other"]
+        );
+    }
+
+    #[test]
+    fn installed_official_uses_local_head_preview_and_selection_status() {
+        let (mut listing, entries) = fixture();
+        let mut selection = CharacterSelection::new();
+        selection.reconcile(&listing);
+        let items = build_index(
+            &listing,
+            &entries,
+            12,
+            UiLocale::En,
+            "",
+            BrowserFilter::Official,
+        );
+        let installed = &items[0];
+        assert_eq!(installed.selected_revision(), Some(4));
+        assert!(
+            matches!(&installed.preview_key.source, PreviewSource::Local { reference, generation } if reference.id == "cat" && reference.revision == 4 && *generation == 8)
+        );
+        assert!(
+            matches!(&items[1].preview_key.source, PreviewSource::Official { catalog_revision, .. } if *catalog_revision == 12)
+        );
+        assert_eq!(
+            selection_message(installed, &listing, &selection),
+            Some(Message::CharacterBrowserSelect)
+        );
+        listing.active = Some(CharacterRef {
+            id: "cat".into(),
+            revision: 4,
+        });
+        assert_eq!(
+            selection_message(installed, &listing, &selection),
+            Some(Message::Active)
+        );
+        listing.override_active = true;
+        assert_eq!(
+            selection_message(installed, &listing, &selection),
+            Some(Message::CharacterBrowserSelect)
+        );
+        selection.reconcile(&listing);
+        selection.stage_head("cat").unwrap();
+        assert_eq!(selection.candidate().unwrap().reference.revision, 4);
+        assert_eq!(
+            selection_message(installed, &listing, &selection),
+            Some(Message::CharacterBrowserSelected)
+        );
+        assert_eq!(items[1].selected_revision(), None);
+        assert_eq!(selection_message(&items[1], &listing, &selection), None);
+    }
+
+    #[test]
+    fn frozen_browser_actions_reject_query_and_filter_changes() {
         let mut shared = BrowserSharedState {
             query: "existing".into(),
             filter: BrowserFilter::Installed,
             locale: UiLocale::En,
             cards: Vec::new(),
             items: Vec::new(),
-            pending_local_reveal: Some("existing".into()),
             update_frozen: true,
             frozen_search_value: Some(String::new()),
             dirty: false,
@@ -2328,20 +2499,15 @@ mod tests {
         };
         shared.change_query("ax search".into());
         shared.change_filter(BrowserFilter::Official);
-        shared.reveal_local("ax card".into());
         assert_eq!(shared.query, "existing");
         assert_eq!(shared.filter, BrowserFilter::Installed);
-        assert_eq!(shared.pending_local_reveal.as_deref(), Some("existing"));
         assert!(!shared.dirty);
 
         shared.update_frozen = false;
         shared.change_query("after thaw".into());
-        assert_eq!(shared.pending_local_reveal, None);
         shared.change_filter(BrowserFilter::Official);
-        shared.reveal_local("local".into());
-        assert_eq!(shared.query, "local");
-        assert_eq!(shared.filter, BrowserFilter::Installed);
-        assert_eq!(shared.pending_local_reveal.as_deref(), Some("local"));
+        assert_eq!(shared.query, "after thaw");
+        assert_eq!(shared.filter, BrowserFilter::Official);
         assert!(shared.dirty);
     }
 }
