@@ -17,7 +17,7 @@ use objc2::Message as _;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSColor, NSControlSize,
+    NSAutoresizingMaskOptions, NSBezierPath, NSBorderType, NSButton, NSColor, NSControlSize,
     NSControlStateValueOn, NSEvent, NSFont, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
     NSScrollElasticity, NSScrollView, NSScrollerStyle, NSSearchField, NSTextAlignment, NSTextField,
     NSTextView, NSView,
@@ -159,6 +159,11 @@ impl CardsIntent {
             self.deferred_refresh = true;
         }
         self.resize_frozen = frozen;
+    }
+
+    fn suppress_pending_reply_open(&mut self) {
+        self.pending_selection_deferred = false;
+        self.deferred_selection_applied = false;
     }
 
     fn accept_deferred_selection(&mut self, valid: bool) -> bool {
@@ -583,6 +588,9 @@ impl SessionCardView {
         {
             return false;
         }
+        // The UI captures the currently interactive body before selection can
+        // replace its row/reply hierarchy, including when the request is deferred.
+        crate::ui::cards_selection_will_change();
         if marked || self.ivars().intent.borrow().resize_frozen {
             return true;
         }
@@ -1074,22 +1082,158 @@ impl SessionCardsInner {
         clip_view.scrollToPoint(constrained_bounds.origin);
         self.scroll.reflectScrolledClipView(&clip_view);
         if self.reveal_selection {
-            if let Some(row) = self
+            if let Some((row, target)) = self.active_reply_target() {
+                row.scrollRectToVisible(target);
+            } else if let Some(row) = self
                 .rows
                 .iter()
                 .find(|row| Some(row.key()) == self.selected.as_ref())
             {
                 let visible_height = clip_view.bounds().size.height;
-                let target = NSRect::new(
+                row.scrollRectToVisible(NSRect::new(
                     NSPoint::new(0.0, 0.0),
                     objc2_foundation::NSSize::new(
                         row.frame().size.width,
                         row.frame().size.height.min(visible_height),
                     ),
-                );
-                row.scrollRectToVisible(target);
+                ));
             }
         }
+    }
+
+    // Work in row coordinates so every clipping ancestor (including the
+    // NSClipView, the cards root and the window content) contributes to the
+    // actual usable region rather than trusting only the scroll's frame.
+    fn visible_row_bounds(&self, row: &SessionCardView) -> Option<NSRect> {
+        if row.isHiddenOrHasHiddenAncestor() || row.window().is_none() {
+            return None;
+        }
+        let mut visible = row.bounds();
+        let mut ancestor = unsafe { row.superview() };
+        while let Some(parent) = ancestor {
+            let bounds = row.convertRect_fromView(parent.bounds(), Some(&parent));
+            let left = visible.origin.x.max(bounds.origin.x);
+            let bottom = visible.origin.y.max(bounds.origin.y);
+            visible = NSRect::new(
+                NSPoint::new(left, bottom),
+                objc2_foundation::NSSize::new(
+                    (visible.origin.x + visible.size.width)
+                        .min(bounds.origin.x + bounds.size.width)
+                        .max(left)
+                        - left,
+                    (visible.origin.y + visible.size.height)
+                        .min(bounds.origin.y + bounds.size.height)
+                        .max(bottom)
+                        - bottom,
+                ),
+            );
+            ancestor = unsafe { parent.superview() };
+        }
+        Some(visible)
+    }
+
+    fn active_reply_target(&self) -> Option<(&SessionCardView, NSRect)> {
+        let reply = self.reply.as_ref()?;
+        let row = self.rows.iter().find(|row| row.key() == &reply.key)?;
+        if reply.view.isHiddenOrHasHiddenAncestor() || row.window().is_none() {
+            return None;
+        }
+        // Capacity is independent of the row's present scroll offset. Even
+        // a row completely outside the clip needs a target to scroll toward.
+        let clip = self.scroll.contentView();
+        let mut usable = clip.bounds();
+        let mut ancestor = unsafe { clip.superview() };
+        while let Some(parent) = ancestor {
+            let bounds = clip.convertRect_fromView(parent.bounds(), Some(&parent));
+            let left = usable.origin.x.max(bounds.origin.x);
+            let bottom = usable.origin.y.max(bounds.origin.y);
+            usable = NSRect::new(
+                NSPoint::new(left, bottom),
+                objc2_foundation::NSSize::new(
+                    (usable.origin.x + usable.size.width)
+                        .min(bounds.origin.x + bounds.size.width)
+                        .max(left)
+                        - left,
+                    (usable.origin.y + usable.size.height)
+                        .min(bounds.origin.y + bounds.size.height)
+                        .max(bottom)
+                        - bottom,
+                ),
+            );
+            ancestor = unsafe { parent.superview() };
+        }
+        let capacity = usable.size;
+        if capacity.width <= 0.0 || capacity.height <= 0.0 {
+            return None;
+        }
+        let full = row.bounds();
+        if full.size.height <= capacity.height {
+            return Some((row, full));
+        }
+        let reply_rect = row.convertRect_fromView(reply.view.bounds(), Some(&reply.view));
+        if reply_rect.size.height <= capacity.height {
+            return Some((row, reply_rect));
+        }
+        // An unusually tall reply cannot expose the header and composer at
+        // once. Scroll the real editable input into view instead of an
+        // arbitrary slice of the oversized row.
+        let input = reply.view.subviews().iter().find_map(|child| {
+            let input = child.downcast_ref::<NSScrollView>()?;
+            (!input.isHidden()).then(|| row.convertRect_fromView(input.bounds(), Some(input)))
+        });
+        Some((row, input.unwrap_or(reply_rect)))
+    }
+
+    // Reveal can target the full row; editability only needs the clipped
+    // input and Send inside the reply container, not the row header or status.
+    fn reply_is_visible(&self) -> bool {
+        let Some(reply) = self.reply.as_ref() else {
+            return false;
+        };
+        let Some(row) = self.rows.iter().find(|row| row.key() == &reply.key) else {
+            return false;
+        };
+        let Some(visible) = self.visible_row_bounds(row) else {
+            return false;
+        };
+        if reply.view.isHiddenOrHasHiddenAncestor() {
+            return false;
+        }
+        let reply_bounds = row.convertRect_fromView(reply.view.bounds(), Some(&reply.view));
+        fn rect_fits_within(rect: NSRect, bounds: NSRect) -> bool {
+            let epsilon = 0.5;
+            rect.origin.x >= bounds.origin.x - epsilon
+                && rect.origin.y >= bounds.origin.y - epsilon
+                && rect.origin.x + rect.size.width <= bounds.origin.x + bounds.size.width + epsilon
+                && rect.origin.y + rect.size.height
+                    <= bounds.origin.y + bounds.size.height + epsilon
+        }
+        let children = reply.view.subviews();
+        let input = children.iter().find(|child| {
+            child.downcast_ref::<NSScrollView>().is_some_and(|scroll| {
+                scroll.documentView().is_some_and(|editor| {
+                    editor.downcast_ref::<NSTextView>().is_some()
+                        && !editor.isHiddenOrHasHiddenAncestor()
+                })
+            })
+        });
+        let send = children
+            .iter()
+            .find(|child| child.downcast_ref::<NSButton>().is_some());
+        [input, send].into_iter().all(|control| {
+            let Some(control) = control else {
+                return false;
+            };
+            if control.isHiddenOrHasHiddenAncestor() {
+                return false;
+            }
+            let control: &NSView = &*control;
+            let rect = row.convertRect_fromView(control.bounds(), Some(control));
+            rect.size.width > 0.0
+                && rect.size.height > 0.0
+                && rect_fits_within(rect, reply_bounds)
+                && rect_fits_within(rect, visible)
+        })
     }
     fn set_palette(&mut self, palette: BubblePalette) {
         self.palette = palette;
@@ -1975,6 +2119,9 @@ impl SessionCards {
         let mut intent = self.intent.borrow_mut();
         std::mem::take(&mut intent.deferred_selection_applied)
     }
+    pub(crate) fn suppress_pending_reply_open(&self) {
+        self.intent.borrow_mut().suppress_pending_reply_open();
+    }
 
     pub(crate) fn set_show_status_indicators(&self, enabled: bool) {
         let mut inner = self.inner.borrow_mut();
@@ -2013,6 +2160,23 @@ impl SessionCards {
                 .is_some_and(|reply| reply.key == *key && std::ptr::eq(&*reply.view, view));
         }
         self.inner.borrow_mut().attach_reply(key, view, height)
+    }
+
+    /// Explicit opening or changed viewport only; routine refresh preserves
+    /// the reader's scroll position.
+    pub(crate) fn reveal_active_reply(&self) {
+        if self.intent.borrow().composing() || self.intent.borrow().resize_frozen {
+            return;
+        }
+        let mut inner = self.inner.borrow_mut();
+        inner.reveal_selection = true;
+        let origin = inner.scroll.contentView().bounds().origin;
+        inner.layout(inner.root.frame().size, origin);
+        inner.reveal_selection = false;
+    }
+
+    pub(crate) fn reply_is_visible(&self) -> bool {
+        self.inner.borrow().reply_is_visible()
     }
 
     pub(crate) fn detach_reply(&self) {
@@ -2383,6 +2547,55 @@ mod tests {
         intent.set_resize_frozen(false);
         assert!(intent.reply_composition_active);
         assert!(intent.composing());
+    }
+
+    #[test]
+    fn cutover_suppresses_old_reply_open_without_discarding_pending_selection() {
+        let old = SessionKey {
+            source_id: 7,
+            generation: 2,
+            terminal_id: "old".into(),
+        };
+        let mut intent = CardsIntent::default();
+        assert!(intent.request_selection(old.clone(), true));
+        assert!(intent.accept_deferred_selection(true));
+        assert!(intent.deferred_selection_applied);
+        assert!(intent.request_selection(old.clone(), true));
+        intent.suppress_pending_reply_open();
+        assert_eq!(intent.pending_selection, Some(old));
+        assert!(intent.reply_composition_active);
+        assert!(intent.deferred_refresh);
+        assert!(!intent.deferred_selection_applied);
+        assert!(!intent.accept_deferred_selection(true));
+        assert!(!intent.deferred_selection_applied);
+    }
+
+    #[test]
+    fn selection_after_cutover_can_open_reply_but_invalid_selection_cannot() {
+        let old = SessionKey {
+            source_id: 7,
+            generation: 2,
+            terminal_id: "old".into(),
+        };
+        let newer = SessionKey {
+            terminal_id: "newer".into(),
+            ..old.clone()
+        };
+        let invalid = SessionKey {
+            terminal_id: "invalid".into(),
+            ..old.clone()
+        };
+        let mut intent = CardsIntent::default();
+        assert!(intent.request_selection(old, true));
+        intent.suppress_pending_reply_open();
+        assert!(intent.request_selection(newer.clone(), true));
+        assert!(intent.accept_deferred_selection(true));
+        assert_eq!(intent.pending_selection, Some(newer));
+        assert!(std::mem::take(&mut intent.deferred_selection_applied));
+        assert!(intent.request_selection(invalid.clone(), true));
+        assert!(!intent.accept_deferred_selection(false));
+        assert_eq!(intent.pending_selection, Some(invalid));
+        assert!(!intent.deferred_selection_applied);
     }
 
     #[test]

@@ -17,10 +17,11 @@ use crate::automation::{
 };
 use crate::behavior::{Behavior, Presentation, PresentationIntent, PresentationViewport, Reaction};
 use crate::bubble::{
-    bubble_resize_direction_at, fit_resizing_bubble_body, place_bubble, place_resizing_bubble,
-    place_standalone_bubble, requested_bubble_resize_size, resize_bubble_body, BubbleGeometry,
-    BubblePlacement, BubbleResizeDirection, BubbleSide, BubbleSize, Rect as BubbleRect,
-    BUBBLE_RADIUS, BUBBLE_WINDOW_INSET,
+    bubble_resize_direction_at, bubble_side_visible, fit_resizing_bubble_body, place_bubble,
+    place_resizing_bubble, place_standalone_bubble, requested_bubble_resize_size,
+    resize_bubble_body, BubbleAttachment, BubbleContinuity, BubbleGeometry, BubblePlacement,
+    BubbleResizeDirection, BubbleSide, BubbleSize, Rect as BubbleRect, BUBBLE_RADIUS,
+    BUBBLE_WINDOW_INSET,
 };
 use crate::character_browser::{self, BrowserInput, CharacterBrowser};
 use crate::character_menu::{self, CharacterMenu, MenuCommand};
@@ -35,7 +36,7 @@ use crate::character_types::{
     RendererToken,
 };
 use crate::composer_layout::{
-    configure_composer, layout_composer, ComposerMetrics, INPUT_ORIGIN_Y,
+    configure_composer, layout_composer, reveal_composer_selection, ComposerMetrics, INPUT_ORIGIN_Y,
 };
 use crate::control;
 use crate::dialogue::{effective_metadata, DialogueSlot, DialogueTarget};
@@ -246,6 +247,52 @@ fn expanded_height_budget(
         }
         + cards_height.min(minimum_cards)
         + if has_message { BUBBLE_LINE_HEIGHT } else { 0.0 }
+}
+
+fn bubble_body_minimum(
+    mode: BubbleMode,
+    reply_open: bool,
+    composer_readonly: bool,
+    composer: ComposerMetrics,
+    cards_width: f64,
+    cards_height: f64,
+    show_status: bool,
+    has_message: bool,
+) -> (f64, f64) {
+    if mode == BubbleMode::Compact {
+        return (
+            BUBBLE_BODY_MIN_WIDTH.max(BUBBLE_HORIZONTAL_INSET * 2.0 + BUBBLE_CONTROL_HEIGHT),
+            BUBBLE_VERTICAL_INSET * 2.0
+                + BUBBLE_CONTROL_HEIGHT
+                + BUBBLE_CONTENT_GAP
+                + BUBBLE_LINE_HEIGHT
+                + if show_status {
+                    STATUS_ROW_HEIGHT + BUBBLE_CONTENT_GAP
+                } else {
+                    0.0
+                },
+        );
+    }
+    let reply_width = if reply_open && !composer_readonly {
+        // Match the measured reply row: two-point insets, send button and gap,
+        // measured editor clip, and its horizontal selection breathing room.
+        composer.content_height + 58.0 + 4.0 + 4.0 + 16.0
+    } else {
+        0.0
+    };
+    let width =
+        BUBBLE_HORIZONTAL_INSET * 2.0 + cards_width.max(BUBBLE_COLLAPSE_WIDTH).max(reply_width);
+    let height = expanded_height_budget(
+        cards_height,
+        cards_height,
+        show_status,
+        has_message,
+        ExpandedSpacing {
+            inset: 1.0,
+            gap: 0.5,
+        },
+    );
+    (width, height)
 }
 
 fn expanded_auto_height(
@@ -531,6 +578,7 @@ struct BubbleResizeDrag {
     delta: (f64, f64),
     screen_frame: NSRect,
     pet_frame: NSRect,
+    attachment: Option<BubbleAttachment>,
     attached: bool,
     side: Option<BubbleSide>,
     prior_sizes: BubbleSizes,
@@ -935,13 +983,7 @@ fn anchor_query_needed(cached: Option<&CachedAnchor>, key: AnchorKey, rig: bool)
     rig || !cached.is_some_and(|cached| cached.key.same_query(key))
 }
 
-fn placed_attached_bubble(
-    relative: Option<BubbleRect>,
-    pet: BubbleRect,
-    body: (f64, f64),
-    visible: BubbleRect,
-    placement: BubblePlacement,
-) -> BubbleGeometry {
+fn bubble_attachment(relative: Option<BubbleRect>, pet: BubbleRect) -> BubbleAttachment {
     let anchor = relative
         .map(|anchor| BubbleRect {
             x: pet.x + anchor.x,
@@ -950,7 +992,172 @@ fn placed_attached_bubble(
             height: anchor.height,
         })
         .unwrap_or(pet);
-    place_bubble(anchor, body, visible, placement)
+    BubbleAttachment {
+        exclusion: pet,
+        anchor,
+    }
+}
+
+#[cfg(test)]
+fn placed_attached_bubble(
+    relative: Option<BubbleRect>,
+    pet: BubbleRect,
+    body: (f64, f64),
+    minimum: (f64, f64),
+    visible: BubbleRect,
+    placement: BubblePlacement,
+    continuity: Option<BubbleContinuity>,
+) -> BubbleGeometry {
+    place_bubble(
+        bubble_attachment(relative, pet),
+        body,
+        minimum,
+        visible,
+        placement,
+        continuity,
+    )
+}
+
+// A marked editor owns the displayed window size. Test the actual body after
+// moving and clamping that window, not the solver's potentially smaller body.
+fn composing_attached_origin(
+    geometry: BubbleGeometry,
+    frame: NSRect,
+    visible: NSRect,
+    attachment: BubbleAttachment,
+    placement: BubblePlacement,
+    continuity: Option<BubbleContinuity>,
+) -> (NSPoint, Option<BubbleSide>) {
+    let screen = bubble_rect(visible);
+    let size = (geometry.body.width, geometry.body.height);
+    let candidate = |target: BubbleGeometry| {
+        let proposed = NSRect::new(
+            NSPoint::new(
+                target.window.x + target.body.x - geometry.body.x,
+                target.window.y + target.body.y - geometry.body.y,
+            ),
+            frame.size,
+        );
+        let origin = clamp_window_origin(proposed, visible);
+        let body = BubbleRect {
+            x: origin.x + geometry.body.x,
+            y: origin.y + geometry.body.y,
+            ..geometry.body
+        };
+        (origin, body)
+    };
+    let safe_side = |target: BubbleGeometry, body: BubbleRect| {
+        target.side.filter(|&side| {
+            target.body.width == body.width
+                && target.body.height == body.height
+                && rect_contains(screen, body)
+                && rect_contains(bubble_side_visible(attachment, screen, side), body)
+        })
+    };
+    let target = place_bubble(attachment, size, size, screen, placement, continuity);
+    let (origin, body) = candidate(target);
+    if let Some(side) = safe_side(target, body) {
+        return (origin, Some(side));
+    }
+    // A wide retained native window may invalidate an otherwise valid solver
+    // side after the final clamp. Try every full-size side before best effort.
+    for (side, preference) in [
+        (BubbleSide::Above, BubblePlacement::Above),
+        (BubbleSide::Below, BubblePlacement::Below),
+        (BubbleSide::Left, BubblePlacement::Left),
+        (BubbleSide::Right, BubblePlacement::Right),
+    ] {
+        let target = place_bubble(attachment, size, size, screen, preference, None);
+        let (alternate, body) = candidate(target);
+        if safe_side(target, body) == Some(side) {
+            return (alternate, Some(side));
+        }
+    }
+    (origin, None)
+}
+
+fn rebased_composing_geometry(
+    mut geometry: BubbleGeometry,
+    origin: NSPoint,
+    side: Option<BubbleSide>,
+) -> BubbleGeometry {
+    geometry.window.x = origin.x;
+    geometry.window.y = origin.y;
+    geometry.side = side;
+    // A retained tail points at the old pet and can intercept input there.
+    // Leave the body untouched; normal placement restores the tail on unmark.
+    geometry.tail = None;
+    geometry
+}
+
+fn rect_contains(outer: BubbleRect, inner: BubbleRect) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width
+        && inner.y + inner.height <= outer.y + outer.height
+}
+
+fn resize_bubble_domain_for(
+    visible: BubbleRect,
+    attachment: Option<(BubbleAttachment, Option<BubbleSide>)>,
+) -> BubbleRect {
+    match attachment {
+        Some((attachment, Some(side))) => bubble_side_visible(attachment, visible, side),
+        _ => visible,
+    }
+}
+
+fn corrected_expanded_height(
+    visible: BubbleRect,
+    attached: Option<(BubbleAttachment, Option<BubbleSide>)>,
+    cards: f64,
+    message: f64,
+    minimum_cards: f64,
+    show_status: bool,
+) -> f64 {
+    let domain = resize_bubble_domain_for(visible, attached);
+    expanded_auto_height(
+        domain.height,
+        (domain.height - BUBBLE_WINDOW_INSET * 2.0).max(1.0),
+        cards,
+        message,
+        minimum_cards,
+        show_status,
+    )
+}
+
+#[derive(Clone, Copy)]
+struct BubbleContinuityStamp {
+    transform: AnchorKey,
+    pet: BubbleRect,
+    visible: BubbleRect,
+    placement: BubblePlacement,
+}
+
+fn qualified_bubble_continuity(
+    stored: Option<(BubbleContinuity, BubbleContinuityStamp)>,
+    stamp: BubbleContinuityStamp,
+) -> Option<BubbleContinuity> {
+    let (continuity, old) = stored?;
+    if stamp.placement != BubblePlacement::Auto
+        || !old.transform.same_transform(stamp.transform)
+        || old.placement != stamp.placement
+    {
+        return None;
+    }
+    if old.visible != stamp.visible {
+        return Some(BubbleContinuity {
+            body: None,
+            ..continuity
+        });
+    }
+    if old.pet != stamp.pet {
+        return Some(BubbleContinuity {
+            body: None,
+            ..continuity
+        });
+    }
+    Some(continuity)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1119,6 +1326,8 @@ struct Ui {
     composer_render_stamp: Option<ComposerRenderStamp>,
     composer_key: Option<SessionKey>,
     reply_open: bool,
+    reply_close_pending: bool,
+    reply_focus_pending: bool,
     composer_pending_key: Option<SessionKey>,
     composer_drafts: VecDeque<(SessionKey, String)>,
     composer_results: VecDeque<(SessionKey, String)>,
@@ -1192,6 +1401,7 @@ struct Ui {
     bubble_geometry: Option<BubbleGeometry>,
     // The last successfully applied geometry can be tailless and still attached.
     bubble_geometry_attached: bool,
+    bubble_continuity: Option<(BubbleContinuity, BubbleContinuityStamp)>,
     bubble_sizes: BubbleSizes,
     pending_standalone_body_origin: Option<(f64, f64)>,
     standalone_reset_pending: bool,
@@ -3696,6 +3906,15 @@ fn confirm_app_update() {
     });
 }
 
+pub(crate) fn cards_selection_will_change() {
+    with_ui_mut(|ui| {
+        ui.capture_interaction_body();
+        // Selection was accepted before any marked-input deferral. Its eventual
+        // replay supersedes a renderer cutover's older request to close reply.
+        ui.reply_close_pending = false;
+    });
+}
+
 pub(crate) fn cards_content_changed() {
     with_ui_mut(|ui| {
         if ui.resize_frozen {
@@ -3749,20 +3968,16 @@ pub(crate) fn cards_selection_changed() {
         {
             return;
         }
+        ui.capture_interaction_body();
+        // The accepted selection already superseded any older pending close.
         ui.reply_open = true;
+        ui.reply_focus_pending = true;
         ui.composer_render_stamp = None;
         ui.sync_composer();
         ui.bubble_content_dirty = true;
         let scene = ui.last_scene.clone();
         ui.refresh_bubble_content(&scene);
-        if ui.reply_open {
-            if ui.composer_input_visible() {
-                ui.bubble_panel.makeKeyAndOrderFront(None);
-                let _ = ui.bubble_panel.makeFirstResponder(Some(&ui.composer_view));
-            } else if ui.bubble_panel.isKeyWindow() && !ui.composer_marked() {
-                let _ = ui.bubble_panel.makeFirstResponder(None);
-            }
-        }
+        ui.focus_open_reply_if_pending();
     });
 }
 
@@ -4839,6 +5054,8 @@ impl Ui {
             composer_render_stamp: None,
             composer_key: None,
             reply_open: false,
+            reply_close_pending: false,
+            reply_focus_pending: false,
             composer_pending_key: None,
             composer_drafts: VecDeque::new(),
             composer_results: VecDeque::new(),
@@ -4929,6 +5146,7 @@ impl Ui {
             bubble_layout: BubbleLayout::default(),
             bubble_geometry: None,
             bubble_geometry_attached: false,
+            bubble_continuity: None,
             bubble_sizes,
             pending_standalone_body_origin: None,
             standalone_reset_pending: false,
@@ -5651,6 +5869,11 @@ impl Ui {
                     prepared.canvas_size(),
                     matches!(&prepared, PreparedCharacter::Png(_)),
                 );
+                // A selection accepted before this cutover remains selected, but
+                // its deferred request to open the old reply no longer applies.
+                self.cards.suppress_pending_reply_open();
+                self.reply_close_pending = true;
+                self.bubble_continuity = None;
                 self.active = prepared;
                 let frame = NSRect::new(
                     self.display_geometry
@@ -6266,10 +6489,45 @@ impl Ui {
     fn composer_input_visible(&self) -> bool {
         self.reply_open
             && !self.cards.view().isHidden()
+            && self.cards.reply_is_visible()
             && !self.composer_scroll.isHidden()
             && self.composer_scroll.frame().size.width > 0.0
             && self.composer_scroll.frame().size.height >= self.composer_metrics.input_height
             && self.composer_scroll.contentSize().height >= self.composer_metrics.content_height
+    }
+
+    fn focus_open_reply_if_pending(&mut self) {
+        if !self.reply_focus_pending {
+            return;
+        }
+        if !self.reply_open {
+            self.reply_focus_pending = false;
+            return;
+        }
+        if self.resize_frozen
+            || self.bubble_content_tracking_locked()
+            || self.composer_marked()
+            || self.cards.is_composing()
+            || self.pending_bubble_scene.is_some()
+            || self.pending_bubble_content
+            || !self.bubble_panel.isVisible()
+        {
+            return;
+        }
+        self.cards.reveal_active_reply();
+        if self.composer_readonly {
+            self.reply_focus_pending = false;
+        } else if self.composer_input_visible() {
+            reveal_composer_selection(&self.composer_view, &self.composer_scroll);
+            self.bubble_panel.makeKeyAndOrderFront(None);
+            let _ = self
+                .bubble_panel
+                .makeFirstResponder(Some(&self.composer_view));
+            self.reply_focus_pending = false;
+        } else {
+            // A clipped input is not a reason to scroll on every refresh.
+            self.reply_focus_pending = false;
+        }
     }
 
     fn restore_composer_focus(&self, was_focused: bool) {
@@ -6282,7 +6540,11 @@ impl Ui {
                     .bubble_panel
                     .makeFirstResponder(Some(&self.composer_view));
             }
-        } else if self.composer_has_focus() {
+        } else if self.composer_has_focus()
+            && !self.composer_marked()
+            && !self.cards.is_composing()
+            && self.pending_bubble_scene.is_none()
+        {
             let _ = self.bubble_panel.makeFirstResponder(None);
         }
     }
@@ -6347,6 +6609,7 @@ impl Ui {
             return;
         }
         self.reply_open = false;
+        self.reply_focus_pending = false;
         if let Some(key) = self.composer_key.clone() {
             let draft = self.composer_text();
             self.remember_composer_draft(key, draft);
@@ -6449,6 +6712,11 @@ impl Ui {
         self.cards.sync_search_composition();
         let mut composing = marked || self.cards.is_composing();
         let was_focused = self.composer_has_focus();
+        if self.bubble_mode == BubbleMode::Expanded
+            && (self.cards.selection_stamp().0 != revision || self.cards.has_deferred_refresh())
+        {
+            self.capture_interaction_body();
+        }
         let replayed = if self.cards.selection_stamp().0 != revision
             || (!composing && self.cards.has_deferred_refresh())
         {
@@ -6457,8 +6725,9 @@ impl Ui {
             false
         };
         composing = self.composer_marked() || self.cards.is_composing();
-        if replayed && self.bubble_mode == BubbleMode::Expanded {
+        if replayed && self.bubble_mode == BubbleMode::Expanded && !self.reply_close_pending {
             self.reply_open = true;
+            self.reply_focus_pending = true;
             self.composer_render_stamp = None;
             self.bubble_content_dirty = true;
         }
@@ -6581,6 +6850,7 @@ impl Ui {
                 }
             }
             self.reply_open = false;
+            self.reply_focus_pending = false;
         }
         self.cards.detach_reply();
     }
@@ -6904,6 +7174,12 @@ impl Ui {
 
     fn refresh(&mut self) {
         self.poll_composer();
+        self.cards.set_composition_active(self.composer_marked());
+        self.cards.sync_search_composition();
+        if self.reply_close_pending && !self.composer_marked() && !self.cards.is_composing() {
+            self.close_reply();
+            self.reply_close_pending = false;
+        }
         self.apply_pending_language();
         self.drain_domain_requests();
         self.poll_worktree();
@@ -6941,9 +7217,13 @@ impl Ui {
         }
         let cards_height = self.cards.content_height();
         let was_focused = self.composer_has_focus();
+        if self.bubble_mode == BubbleMode::Expanded {
+            self.capture_interaction_body();
+        }
         let replayed = self.refresh_cards();
-        if replayed && self.bubble_mode == BubbleMode::Expanded {
+        if replayed && self.bubble_mode == BubbleMode::Expanded && !self.reply_close_pending {
             self.reply_open = true;
+            self.reply_focus_pending = true;
             self.composer_render_stamp = None;
         }
         self.poll_composer();
@@ -6953,6 +7233,7 @@ impl Ui {
             self.bubble_content_dirty = true;
         }
         self.refresh_event(scene, completed);
+        self.focus_open_reply_if_pending();
         if !self.resize_frozen {
             self.restore_composer_focus(was_focused);
         }
@@ -7023,9 +7304,13 @@ impl Ui {
                 || (phase_changed && self.active.metadata().is_none()))
         {
             self.cancel_gesture(false);
+            if self.bubble_mode == BubbleMode::Expanded {
+                self.capture_interaction_body();
+            }
             let replayed = self.refresh_cards();
-            if replayed && self.bubble_mode == BubbleMode::Expanded {
+            if replayed && self.bubble_mode == BubbleMode::Expanded && !self.reply_close_pending {
                 self.reply_open = true;
+                self.reply_focus_pending = true;
             }
             self.sync_composer();
             self.status_summary = self.cards.status_summary();
@@ -7049,7 +7334,7 @@ impl Ui {
         // Presentation saves are staged from the last saved snapshot below;
         // native state is never rolled back when config storage is unavailable.
         if reset_position_changed {
-            self.reset_position();
+            self.reset_position(&scene);
 
             self.last_reset_position_revision = scene.reset_position_revision;
         }
@@ -7074,6 +7359,14 @@ impl Ui {
         if presentation_changed || reset_position_changed || scale_changed {
             if scene.visible {
                 self.panel.orderFrontRegardless();
+                if self.bubble_panel.isVisible()
+                    && self.bubble_geometry_attached
+                    && self
+                        .bubble_geometry
+                        .is_some_and(|geometry| geometry.side.is_none())
+                {
+                    self.bubble_panel.orderFrontRegardless();
+                }
             } else {
                 self.panel.orderOut(None);
             }
@@ -7732,6 +8025,7 @@ impl Ui {
             self.native_show_status_indicators = self.prefs.show_status_indicators();
             self.native_bubble_appearance = self.bubble_appearance;
         }
+        self.focus_open_reply_if_pending();
     }
 
     fn update_pointer_policy(&mut self, scene: &Scene) {
@@ -7937,6 +8231,9 @@ impl Ui {
                 delta: (0.0, 0.0),
                 screen_frame: pinned_screen_frame(self.mtm, drag.start_frame, drag.screen_visible)?,
                 pet_frame: self.panel.frame(),
+                attachment: self
+                    .bubble_geometry_attached
+                    .then(|| self.current_bubble_attachment(self.last_scene.scale)),
                 attached: self.bubble_geometry_attached,
                 side: geometry.side,
                 prior_sizes: self.bubble_sizes,
@@ -8405,8 +8702,8 @@ impl Ui {
                     body,
                     bubble_rect(drag.screen_visible),
                     payload
-                        .attached
-                        .then_some((bubble_rect(payload.pet_frame), payload.side)),
+                        .attachment
+                        .map(|attachment| (attachment, payload.side)),
                 );
                 self.apply_resizing_bubble_geometry(geometry, payload.attached);
                 updated.expected_frame = self.bubble_panel.frame();
@@ -8734,25 +9031,17 @@ impl Ui {
         if let Some((preference, locale)) = self.pending_language.take() {
             self.apply_language_labels(preference, locale);
         }
+        if self.bubble_mode == BubbleMode::Expanded {
+            self.capture_interaction_body();
+        }
         let replayed = self.refresh_cards();
-        if replayed && self.bubble_mode == BubbleMode::Expanded {
+        if replayed && self.bubble_mode == BubbleMode::Expanded && !self.reply_close_pending {
             self.reply_open = true;
+            self.reply_focus_pending = true;
             self.composer_render_stamp = None;
         }
         self.poll_composer();
         self.sync_composer();
-        if replayed && self.reply_open && !self.cards.search_has_focus() {
-            if self.composer_input_visible() {
-                self.bubble_panel.makeKeyAndOrderFront(None);
-                if !self.composer_has_focus() {
-                    let _ = self
-                        .bubble_panel
-                        .makeFirstResponder(Some(&self.composer_view));
-                }
-            } else if self.bubble_panel.isKeyWindow() && !self.composer_marked() {
-                let _ = self.bubble_panel.makeFirstResponder(None);
-            }
-        }
         self.status_summary = self.cards.status_summary();
         self.bubble_content_dirty = true;
         let zero_displacement = payload.direction.size_delta(payload.delta) == (0.0, 0.0);
@@ -8826,8 +9115,8 @@ impl Ui {
             body,
             bubble_rect(drag.screen_visible),
             payload
-                .attached
-                .then_some((bubble_rect(payload.pet_frame), payload.side)),
+                .attachment
+                .map(|attachment| (attachment, payload.side)),
         );
         self.commit_bubble_geometry(final_geometry, payload.attached, false);
         self.poll_composer();
@@ -8942,6 +9231,7 @@ impl Ui {
         }
         self.last_scene = scene.clone();
         self.thaw_bubble_resize();
+        self.focus_open_reply_if_pending();
         if !self.bubble_content_dirty {
             self.settle_preference_operations();
         }
@@ -9098,18 +9388,31 @@ impl Ui {
             effect: self.presentation.effect,
         };
     }
-    fn reset_position(&mut self) {
+    fn reset_position(&mut self, scene: &Scene) {
         let size = self.panel.frame().size;
         let origin = default_origin(size, self.mtm);
         self.panel.setFrameOrigin(origin);
+        self.clamp_panel_origin();
+        let keep_composing_geometry = scene.bubble_visible
+            && self.bubble_panel.isVisible()
+            && self.bubble_geometry.is_some()
+            && (self.composer_marked() || self.cards.is_composing());
+        // Reset must discard the old attachment preference, but the displayed
+        // window/body are still owned by native composition until layout can
+        // commit. A recovery below may establish fresh continuity for the pet.
+        self.bubble_continuity = None;
+        if keep_composing_geometry {
+            self.reposition_composing_bubble_if_unsafe(scene);
+            self.bubble_geometry_attached = scene.visible;
+        } else {
+            self.bubble_geometry = None;
+            self.bubble_geometry_attached = false;
+        }
         self.standalone_reset_pending = true;
         self.standalone_position_unsaved = true;
         self.pending_standalone_body_origin = None;
-        self.bubble_geometry = None;
-        self.bubble_geometry_attached = false;
         self.pending_bubble_scene = None;
         self.bubble_content_dirty = true;
-        self.clamp_panel_origin();
         // Position remains a runtime value until the candidate save succeeds.
     }
     fn clamp_panel(&mut self) {
@@ -9154,12 +9457,111 @@ impl Ui {
             || self.composer_marked()
             || self.cards.is_composing()
         {
+            if self.composer_marked() || self.cards.is_composing() {
+                self.reposition_composing_bubble_if_unsafe(scene);
+            }
             self.pending_bubble_scene = Some(scene.clone());
             self.queue_language_apply();
             return;
         }
         self.pending_bubble_scene = None;
         self.apply_bubble_frame_scene(scene);
+    }
+
+    fn reposition_composing_bubble_if_unsafe(&mut self, scene: &Scene) {
+        let Some(geometry) = self.bubble_geometry else {
+            return;
+        };
+        let frame = self.bubble_panel.frame();
+        let visible = if scene.visible {
+            panel_visible_frame(&self.panel, self.mtm)
+        } else {
+            standalone_visible_frame(self.mtm, frame)
+        };
+        let Some(visible) = visible else { return };
+        let body = BubbleRect {
+            x: frame.origin.x + geometry.body.x,
+            y: frame.origin.y + geometry.body.y,
+            width: geometry.body.width,
+            height: geometry.body.height,
+        };
+        let screen = bubble_rect(visible);
+        let pet = bubble_rect(self.panel.frame());
+        let outside = body.x < screen.x
+            || body.y < screen.y
+            || body.x + body.width > screen.x + screen.width
+            || body.y + body.height > screen.y + screen.height;
+        let intersects_pet = scene.visible
+            && body.x < pet.x + pet.width
+            && body.x + body.width > pet.x
+            && body.y < pet.y + pet.height
+            && body.y + body.height > pet.y;
+        if !outside && !intersects_pet {
+            return;
+        }
+        let (origin, side) = if scene.visible {
+            let attachment = self.current_bubble_attachment(scene.scale);
+            let stamp = BubbleContinuityStamp {
+                transform: self.current_anchor_key(scene.scale),
+                pet,
+                visible: screen,
+                placement: scene.bubble_placement,
+            };
+            composing_attached_origin(
+                geometry,
+                frame,
+                visible,
+                attachment,
+                scene.bubble_placement,
+                qualified_bubble_continuity(self.bubble_continuity, stamp),
+            )
+        } else {
+            let Some(target) = self.bubble_geometry_for_scene(scene, None) else {
+                return;
+            };
+            let proposed = NSRect::new(
+                NSPoint::new(
+                    target.window.x + target.body.x - geometry.body.x,
+                    target.window.y + target.body.y - geometry.body.y,
+                ),
+                frame.size,
+            );
+            (clamp_window_origin(proposed, visible), None)
+        };
+        if origin.x != frame.origin.x || origin.y != frame.origin.y {
+            // IME owns the child hierarchy; only move the existing native window.
+            self.bubble_panel.setFrameOrigin(origin);
+        }
+        // The cached native path is also used for hit testing. Update its
+        // outline without resizing the window or touching any editor child.
+        let rebased = rebased_composing_geometry(geometry, origin, side);
+        self.bubble_root.set_geometry(rebased);
+        self.bubble_geometry = Some(rebased);
+        self.bubble_continuity = side.map(|side| {
+            (
+                BubbleContinuity {
+                    side,
+                    body: Some(BubbleRect {
+                        x: origin.x + geometry.body.x,
+                        y: origin.y + geometry.body.y,
+                        ..geometry.body
+                    }),
+                },
+                BubbleContinuityStamp {
+                    transform: self.current_anchor_key(scene.scale),
+                    pet,
+                    visible: screen,
+                    placement: scene.bubble_placement,
+                },
+            )
+        });
+        if scene.visible && scene.bubble_visible && side.is_none() && self.bubble_panel.isVisible()
+        {
+            // A composing standalone->attached fallback has not committed
+            // attachment provenance yet. Keep its overlapping body in front
+            // of the pet without activating or reopening a hidden window.
+            self.bubble_panel.orderFrontRegardless();
+        }
     }
 
     fn current_anchor_key(&self, scale: f64) -> AnchorKey {
@@ -9210,28 +9612,134 @@ impl Ui {
         invalidated
     }
 
+    fn current_bubble_attachment(&self, scale: f64) -> BubbleAttachment {
+        bubble_attachment(
+            visual_relative_for(self.visual_anchor, self.current_anchor_key(scale)),
+            bubble_rect(self.panel.frame()),
+        )
+    }
+
     fn attached_bubble_geometry(
         &self,
         placement: BubblePlacement,
         scale: f64,
     ) -> Option<BubbleGeometry> {
-        let visible = panel_visible_frame(&self.panel, self.mtm)?;
-        let pet = self.panel.frame();
+        let visible = bubble_rect(panel_visible_frame(&self.panel, self.mtm)?);
+        let pet = bubble_rect(self.panel.frame());
         let body = self.bubble_layout.body_size;
-        let relative = visual_relative_for(self.visual_anchor, self.current_anchor_key(scale));
-        Some(placed_attached_bubble(
-            relative,
-            bubble_rect(pet),
-            (body.width.max(0.0), body.height.max(0.0)),
-            bubble_rect(visible),
+        let stamp = BubbleContinuityStamp {
+            transform: self.current_anchor_key(scale),
+            pet,
+            visible,
             placement,
+        };
+        Some(place_bubble(
+            self.current_bubble_attachment(scale),
+            (body.width.max(0.0), body.height.max(0.0)),
+            self.minimum_bubble_body(),
+            visible,
+            placement,
+            qualified_bubble_continuity(self.bubble_continuity, stamp),
         ))
     }
 
-    fn apply_bubble_frame_scene(&mut self, scene: &Scene) {
-        if let Some(geometry) = self.bubble_geometry_for_scene(scene, None) {
-            self.commit_bubble_geometry(geometry, scene.visible, true);
+    fn minimum_bubble_body(&self) -> (f64, f64) {
+        bubble_body_minimum(
+            self.bubble_mode,
+            self.reply_open,
+            self.composer_readonly,
+            self.composer_metrics,
+            self.cards.minimum_content_width(),
+            self.minimum_cards_height(),
+            self.prefs.show_status_indicators(),
+            !self.bubble_layout.full_message.is_empty(),
+        )
+    }
+
+    fn capture_interaction_body(&mut self) {
+        if !self.bubble_geometry_attached {
+            return;
         }
+        let (Some(geometry), Some(visible)) = (
+            self.bubble_geometry,
+            panel_visible_frame(&self.panel, self.mtm),
+        ) else {
+            return;
+        };
+        let Some((prior, old_stamp)) = self.bubble_continuity else {
+            return;
+        };
+        let current = self.current_anchor_key(self.last_scene.scale);
+        if !old_stamp.transform.same_transform(current) {
+            self.bubble_continuity = None;
+            return;
+        }
+        if old_stamp.pet != bubble_rect(self.panel.frame())
+            || old_stamp.visible != bubble_rect(visible)
+        {
+            return;
+        }
+        let Some(side) = geometry.side else {
+            return;
+        };
+        if prior.side != side {
+            return;
+        }
+        let Some((body, _)) = capture_bubble_resize_geometry(self.bubble_panel.frame(), geometry)
+        else {
+            return;
+        };
+        self.bubble_continuity = Some((
+            BubbleContinuity {
+                side,
+                body: Some(body),
+            },
+            BubbleContinuityStamp {
+                transform: self.current_anchor_key(self.last_scene.scale),
+                pet: bubble_rect(self.panel.frame()),
+                visible: bubble_rect(visible),
+                placement: self.last_scene.bubble_placement,
+            },
+        ));
+    }
+
+    fn apply_bubble_frame_scene(&mut self, scene: &Scene) {
+        let Some(mut geometry) = self.bubble_geometry_for_scene(scene, None) else {
+            return;
+        };
+        if scene.visible {
+            if let (Some(visible), Some(side)) =
+                (panel_visible_frame(&self.panel, self.mtm), geometry.side)
+            {
+                let domain = bubble_side_visible(
+                    self.current_bubble_attachment(scene.scale),
+                    bubble_rect(visible),
+                    side,
+                );
+                let domain_frame = NSRect::new(
+                    NSPoint::new(domain.x, domain.y),
+                    NSSize::new(domain.width, domain.height),
+                );
+                if (geometry.body.width - self.bubble_layout.body_size.width).abs() > 0.001
+                    || (geometry.body.height - self.bubble_layout.body_size.height).abs() > 0.001
+                {
+                    self.measure_bubble_at_standalone_origin(
+                        scene,
+                        None,
+                        Some(domain_frame),
+                        Some(geometry.body.width),
+                    );
+                    let Some(remeasured) =
+                        self.attached_bubble_geometry(scene.bubble_placement, scene.scale)
+                    else {
+                        return;
+                    };
+                    geometry = remeasured;
+                }
+            }
+        }
+        self.commit_bubble_geometry(geometry, scene.visible, true);
+        self.focus_open_reply_if_pending();
     }
 
     fn bubble_geometry_for_scene(
@@ -9296,8 +9804,41 @@ impl Ui {
         self.bubble_root
             .setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
         self.bubble_root.set_geometry(geometry);
+        let viewport_changed = self.bubble_geometry.is_some_and(|old| {
+            old.body.width != geometry.body.width || old.body.height != geometry.body.height
+        });
         self.bubble_geometry = Some(geometry);
         self.bubble_geometry_attached = attached;
+        self.bubble_continuity = if attached {
+            geometry.side.and_then(|side| {
+                panel_visible_frame(&self.panel, self.mtm).map(|visible| {
+                    (
+                        BubbleContinuity {
+                            side,
+                            body: Some(BubbleRect {
+                                x: geometry.window.x + geometry.body.x,
+                                y: geometry.window.y + geometry.body.y,
+                                width: geometry.body.width,
+                                height: geometry.body.height,
+                            }),
+                        },
+                        BubbleContinuityStamp {
+                            transform: self.current_anchor_key(self.last_scene.scale),
+                            pet: bubble_rect(self.panel.frame()),
+                            visible: bubble_rect(visible),
+                            placement: self.last_scene.bubble_placement,
+                        },
+                    )
+                })
+            })
+        } else {
+            None
+        };
+        if attached && geometry.side.is_none() && self.bubble_panel.isVisible() {
+            // Only reorder within the existing floating-window cohort. Keep
+            // the saved level, mouse policy, and app activation unchanged.
+            self.bubble_panel.orderFrontRegardless();
+        }
         if !attached && save_origin {
             let body_origin = bubble_body_origin(geometry);
             if self.prefs.standalone_bubble_position() != Some(body_origin)
@@ -9314,6 +9855,17 @@ impl Ui {
         }
         if !local_unchanged || self.bubble_layout_dirty {
             self.layout_bubble_children();
+        }
+        if viewport_changed
+            && self.reply_open
+            && !self.reply_focus_pending
+            && !self.resize_frozen
+            && !self.composer_marked()
+        {
+            self.cards.reveal_active_reply();
+            if self.composer_has_focus() && self.composer_input_visible() {
+                reveal_composer_selection(&self.composer_view, &self.composer_scroll);
+            }
         }
         // Window movement and child-frame changes can change the cursor owner
         // without changing the bubble's local body path.
@@ -9461,12 +10013,26 @@ impl Ui {
         self.measure_bubble_at_standalone_origin(scene, None, None, None);
     }
 
+    fn resize_bubble_domain(&self, payload: BubbleResizeDrag, visible: NSRect) -> NSRect {
+        let domain = resize_bubble_domain_for(
+            bubble_rect(visible),
+            payload
+                .attachment
+                .map(|attachment| (attachment, payload.side)),
+        );
+        NSRect::new(
+            NSPoint::new(domain.x, domain.y),
+            NSSize::new(domain.width, domain.height),
+        )
+    }
+
     fn fit_zero_displacement_bubble(
         &mut self,
         scene: &Scene,
         payload: BubbleResizeDrag,
         visible: NSRect,
     ) -> (BubbleRect, Option<BubbleSize>) {
+        let visible = self.resize_bubble_domain(payload, visible);
         self.measure_bubble_at_standalone_origin(scene, None, Some(visible), None);
         let measured = BubbleSize {
             width: self.bubble_layout.body_size.width,
@@ -9500,6 +10066,7 @@ impl Ui {
         delta: (f64, f64),
         visible: NSRect,
     ) -> (BubbleRect, BubbleSize) {
+        let visible = self.resize_bubble_domain(payload, visible);
         let provisional = resize_bubble_body(
             payload.start_body,
             payload.direction,
@@ -10322,11 +10889,15 @@ impl Ui {
                                 standalone_visible_frame(self.mtm, self.bubble_panel.frame())
                             };
                             if let Some(visible) = visible {
-                                let cap =
-                                    (visible.size.height - BUBBLE_WINDOW_INSET * 2.0).max(1.0);
-                                let height = expanded_auto_height(
-                                    visible.size.height,
-                                    cap,
+                                let attached = self.bubble_geometry_attached.then(|| {
+                                    (
+                                        self.current_bubble_attachment(self.last_scene.scale),
+                                        self.bubble_geometry.and_then(|geometry| geometry.side),
+                                    )
+                                });
+                                let height = corrected_expanded_height(
+                                    bubble_rect(visible),
+                                    attached,
                                     desired_cards,
                                     actual_height,
                                     self.minimum_cards_height(),
@@ -10421,6 +10992,7 @@ impl Ui {
         if self.bubble_mode == BubbleMode::Expanded {
             return;
         }
+        self.capture_interaction_body();
         self.bubble_mode = BubbleMode::Expanded;
         self.bubble_content_dirty = true;
         let scene = self.last_scene.clone();
@@ -10499,6 +11071,7 @@ impl Ui {
     }
 
     fn hide_bubble_panel(&mut self) {
+        self.bubble_continuity = None;
         self.transition_generation = self.transition_generation.saturating_add(1);
         self.bubble_fade = None;
         self.bubble_panel.setAlphaValue(0.0);
@@ -12107,6 +12680,415 @@ mod tests {
     }
 
     #[test]
+    fn composing_pet_motion_uses_full_displayed_body_on_an_alternative_side() {
+        for (screen, pet, old_body, old_side, expected_side) in [
+            (
+                BubbleRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1920.0,
+                    height: 1050.0,
+                },
+                BubbleRect {
+                    x: 1600.0,
+                    y: 450.0,
+                    width: 213.0,
+                    height: 320.0,
+                },
+                BubbleRect {
+                    x: 1540.0,
+                    y: 336.0,
+                    width: 320.0,
+                    height: 458.0,
+                },
+                BubbleSide::Above,
+                BubbleSide::Left,
+            ),
+            (
+                BubbleRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1440.0,
+                    height: 900.0,
+                },
+                BubbleRect {
+                    x: 300.0,
+                    y: 200.0,
+                    width: 100.0,
+                    height: 160.0,
+                },
+                BubbleRect {
+                    x: 384.0,
+                    y: 130.0,
+                    width: 500.0,
+                    height: 300.0,
+                },
+                BubbleSide::Left,
+                BubbleSide::Above,
+            ),
+        ] {
+            let inset = BUBBLE_WINDOW_INSET;
+            let geometry = BubbleGeometry {
+                window: BubbleRect {
+                    x: old_body.x - inset,
+                    y: old_body.y - inset,
+                    width: old_body.width + 2.0 * inset,
+                    height: old_body.height + 2.0 * inset,
+                },
+                body: BubbleRect {
+                    x: inset,
+                    y: inset,
+                    ..old_body
+                },
+                tail: None,
+                side: Some(old_side),
+            };
+            let frame = NSRect::new(
+                NSPoint::new(geometry.window.x, geometry.window.y),
+                NSSize::new(geometry.window.width, geometry.window.height),
+            );
+            let visible = NSRect::new(
+                NSPoint::new(screen.x, screen.y),
+                NSSize::new(screen.width, screen.height),
+            );
+            let attachment = bubble_attachment(None, pet);
+            let (origin, side) = composing_attached_origin(
+                geometry,
+                frame,
+                visible,
+                attachment,
+                BubblePlacement::Auto,
+                Some(BubbleContinuity {
+                    side: old_side,
+                    body: None,
+                }),
+            );
+            let actual = BubbleRect {
+                x: origin.x + geometry.body.x,
+                y: origin.y + geometry.body.y,
+                ..geometry.body
+            };
+            assert_eq!(side, Some(expected_side));
+            assert_eq!(
+                (actual.width, actual.height),
+                (old_body.width, old_body.height)
+            );
+            assert!(rect_contains(screen, actual));
+            assert!(rect_contains(
+                bubble_side_visible(attachment, screen, side.unwrap()),
+                actual
+            ));
+        }
+    }
+
+    #[test]
+    fn composing_side_change_retires_old_tailed_hit_region_without_resizing() {
+        let screen = BubbleRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let old_pet = BubbleRect {
+            x: 900.0,
+            y: 200.0,
+            width: 100.0,
+            height: 160.0,
+        };
+        let moved_pet = BubbleRect {
+            x: 300.0,
+            ..old_pet
+        };
+        let old = place_bubble(
+            bubble_attachment(None, old_pet),
+            (500.0, 300.0),
+            (500.0, 300.0),
+            screen,
+            BubblePlacement::Left,
+            None,
+        );
+        assert_eq!(old.side, Some(BubbleSide::Left));
+        let old_tip = old.tail.expect("old left tail").tip;
+        assert!(old_tip.0 > old.body.x + old.body.width);
+        let frame = NSRect::new(
+            NSPoint::new(old.window.x, old.window.y),
+            NSSize::new(old.window.width, old.window.height),
+        );
+        let visible = NSRect::new(
+            NSPoint::new(screen.x, screen.y),
+            NSSize::new(screen.width, screen.height),
+        );
+        let (origin, side) = composing_attached_origin(
+            old,
+            frame,
+            visible,
+            bubble_attachment(None, moved_pet),
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: None,
+            }),
+        );
+        assert_eq!(side, Some(BubbleSide::Above));
+        let rebased = rebased_composing_geometry(old, origin, side);
+        assert_eq!(rebased.body, old.body);
+        assert_eq!(rebased.window.width, old.window.width);
+        assert_eq!(rebased.window.height, old.window.height);
+        assert_eq!(rebased.tail, None);
+        assert!(rect_contains(
+            bubble_side_visible(bubble_attachment(None, moved_pet), screen, side.unwrap()),
+            BubbleRect {
+                x: origin.x + rebased.body.x,
+                y: origin.y + rebased.body.y,
+                ..rebased.body
+            }
+        ));
+    }
+
+    #[test]
+    fn composing_impossible_full_size_body_is_not_labeled_collision_safe() {
+        let screen = BubbleRect {
+            x: 0.0,
+            y: 0.0,
+            width: 600.0,
+            height: 400.0,
+        };
+        let pet = BubbleRect {
+            x: 100.0,
+            y: 80.0,
+            width: 400.0,
+            height: 240.0,
+        };
+        let geometry = BubbleGeometry {
+            window: BubbleRect {
+                x: 12.0,
+                y: 12.0,
+                width: 800.0,
+                height: 500.0,
+            },
+            body: BubbleRect {
+                x: 12.0,
+                y: 12.0,
+                width: 500.0,
+                height: 300.0,
+            },
+            tail: None,
+            side: Some(BubbleSide::Left),
+        };
+        let frame = NSRect::new(NSPoint::new(12.0, 12.0), NSSize::new(800.0, 500.0));
+        let visible = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(600.0, 400.0));
+        let (origin, side) = composing_attached_origin(
+            geometry,
+            frame,
+            visible,
+            bubble_attachment(None, pet),
+            BubblePlacement::Auto,
+            None,
+        );
+        assert_eq!(side, None);
+        let actual = BubbleRect {
+            x: origin.x + geometry.body.x,
+            y: origin.y + geometry.body.y,
+            ..geometry.body
+        };
+        assert_eq!((actual.width, actual.height), (500.0, 300.0));
+        assert!(rect_contains(screen, actual));
+    }
+
+    #[test]
+    fn auto_reflow_uses_captured_body_edge_and_bottom_without_occupying_pet() {
+        let pet = BubbleRect {
+            x: 1320.0,
+            y: 80.0,
+            width: 100.0,
+            height: 160.0,
+        };
+        let visible = BubbleRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let attachment = bubble_attachment(
+            Some(BubbleRect {
+                x: 15.0,
+                y: 90.0,
+                width: 40.0,
+                height: 50.0,
+            }),
+            pet,
+        );
+        let initial = place_bubble(
+            attachment,
+            (260.0, 180.0),
+            (120.0, 100.0),
+            visible,
+            BubblePlacement::Left,
+            None,
+        );
+        assert_eq!(initial.side, Some(BubbleSide::Left));
+        let before = BubbleRect {
+            x: initial.window.x + initial.body.x,
+            y: initial.window.y + initial.body.y,
+            ..initial.body
+        };
+        let expanded = place_bubble(
+            attachment,
+            (320.0, 297.0),
+            (120.0, 180.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: Some(before),
+            }),
+        );
+        let after = BubbleRect {
+            x: expanded.window.x + expanded.body.x,
+            y: expanded.window.y + expanded.body.y,
+            ..expanded.body
+        };
+        assert_eq!(expanded.side, Some(BubbleSide::Left));
+        assert_eq!(after.y, before.y);
+        assert_eq!(after.x + after.width, before.x + before.width);
+        assert!(after.x + after.width <= pet.x);
+        assert!(expanded.body.height >= 180.0);
+    }
+
+    #[test]
+    fn continuity_resets_for_identity_and_user_placement_and_rebases_for_motion() {
+        let key = test_anchor_key();
+        let body = BubbleRect {
+            x: 40.0,
+            y: 50.0,
+            width: 250.0,
+            height: 180.0,
+        };
+        let stamp = BubbleContinuityStamp {
+            transform: key,
+            pet: test_panel(),
+            visible: test_visible(),
+            placement: BubblePlacement::Auto,
+        };
+        let prior = BubbleContinuity {
+            side: BubbleSide::Left,
+            body: Some(body),
+        };
+        assert_eq!(
+            qualified_bubble_continuity(Some((prior, stamp)), stamp),
+            Some(prior)
+        );
+        let moved = BubbleContinuityStamp {
+            pet: BubbleRect {
+                x: test_panel().x + 75.0,
+                ..test_panel()
+            },
+            ..stamp
+        };
+        assert_eq!(
+            qualified_bubble_continuity(Some((prior, stamp)), moved),
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: None,
+            })
+        );
+        let resized_screen = BubbleContinuityStamp {
+            visible: BubbleRect {
+                width: 800.0,
+                ..test_visible()
+            },
+            ..stamp
+        };
+        assert!(
+            qualified_bubble_continuity(Some((prior, stamp)), resized_screen)
+                .is_some_and(|continuity| continuity.body.is_none())
+        );
+        for transform in [
+            AnchorKey {
+                backend_epoch: key.backend_epoch + 1,
+                ..key
+            },
+            AnchorKey { scale: 1.25, ..key },
+            AnchorKey {
+                viewport: PresentationViewport {
+                    epoch: key.viewport.epoch + 1,
+                    ..key.viewport
+                },
+                ..key
+            },
+        ] {
+            assert_eq!(
+                qualified_bubble_continuity(
+                    Some((prior, stamp)),
+                    BubbleContinuityStamp { transform, ..stamp }
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            qualified_bubble_continuity(
+                Some((prior, stamp)),
+                BubbleContinuityStamp {
+                    placement: BubblePlacement::Left,
+                    ..stamp
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn expanded_minimum_reserves_selectable_row_reply_editor_and_status() {
+        let composer = ComposerMetrics {
+            content_height: 26.0,
+            input_height: 43.0,
+            reply_height: 69.0,
+        };
+        let cards = minimum_selectable_height() + composer.reply_height;
+        let closed = bubble_body_minimum(
+            BubbleMode::Expanded,
+            false,
+            false,
+            composer,
+            180.0,
+            minimum_selectable_height(),
+            true,
+            true,
+        );
+        let open = bubble_body_minimum(
+            BubbleMode::Expanded,
+            true,
+            false,
+            composer,
+            180.0,
+            cards,
+            true,
+            true,
+        );
+        let readonly = bubble_body_minimum(
+            BubbleMode::Expanded,
+            true,
+            true,
+            composer,
+            180.0,
+            minimum_selectable_height() + COMPOSER_READONLY_HEIGHT,
+            true,
+            true,
+        );
+        assert!(
+            open.0
+                >= composer.content_height
+                    + 58.0
+                    + 4.0
+                    + 4.0
+                    + 16.0
+                    + BUBBLE_HORIZONTAL_INSET * 2.0
+        );
+        assert!(open.1 > readonly.1 && readonly.1 > closed.1);
+        assert!(open.1 >= cards + STATUS_ROW_HEIGHT + BUBBLE_CONTROL_HEIGHT + BUBBLE_LINE_HEIGHT);
+    }
+
+    #[test]
     fn rig_transient_keeps_compatible_visual_and_retries_same_generation() {
         let key = test_anchor_key();
         let (initial, changed) = accept_visual_anchor(
@@ -12121,8 +13103,10 @@ mod tests {
             visual_relative_for(initial, key),
             test_panel(),
             body,
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
         assert_eq!(initial_geometry.side, Some(crate::bubble::BubbleSide::Left));
         let (retained, changed) = accept_visual_anchor(
@@ -12137,8 +13121,10 @@ mod tests {
                 visual_relative_for(retained, key),
                 test_panel(),
                 body,
+                (120.0, 80.0),
                 test_visible(),
                 BubblePlacement::Left,
+                None,
             ),
             initial_geometry,
         );
@@ -12161,25 +13147,17 @@ mod tests {
                 visual_relative_for(recovered, key),
                 test_panel(),
                 body,
+                (120.0, 80.0),
                 test_visible(),
                 BubblePlacement::Left,
+                None,
             ),
             initial_geometry,
         );
         let (anchorless, changed) =
             accept_visual_anchor(recovered, key, SpeechAnchorStatus::ReadyAnchorless, true);
         assert!(changed && anchorless.is_none());
-        assert_eq!(
-            placed_attached_bubble(
-                None,
-                test_panel(),
-                body,
-                test_visible(),
-                BubblePlacement::Left
-            )
-            .side,
-            Some(crate::bubble::BubbleSide::Above),
-        );
+        assert_eq!(bubble_attachment(None, test_panel()).anchor, test_panel());
     }
 
     #[test]
@@ -12197,8 +13175,10 @@ mod tests {
                 visual_relative_for(visual, key),
                 test_panel(),
                 body,
+                (120.0, 80.0),
                 test_visible(),
                 BubblePlacement::Left,
+                None,
             );
             let mut previous_key = key;
             for step in 1..=12 {
@@ -12233,8 +13213,10 @@ mod tests {
                         visual_relative_for(next, current),
                         test_panel(),
                         body,
+                        (120.0, 80.0),
                         test_visible(),
                         BubblePlacement::Left,
+                        None,
                     ),
                     initial,
                 );
@@ -12251,10 +13233,13 @@ mod tests {
                 visual_relative_for(visual, previous_key),
                 moved,
                 body,
+                (120.0, 80.0),
                 test_visible(),
                 BubblePlacement::Left,
+                None,
             );
-            assert!(close(translated.window.x - initial.window.x, 75.0));
+            assert!(translated.body.width >= initial.body.width);
+            assert!(translated.window.x + translated.body.x + translated.body.width <= moved.x);
             assert!(close(translated.window.y - initial.window.y, 40.0));
 
             let scaled = AnchorKey {
@@ -12290,8 +13275,10 @@ mod tests {
                 visual_relative_for(scaled_visual, scaled),
                 test_panel(),
                 body,
+                (120.0, 80.0),
                 test_visible(),
                 BubblePlacement::Left,
+                None,
             );
             assert_ne!(scaled_geometry, initial);
             assert_eq!(
@@ -12300,8 +13287,10 @@ mod tests {
                     Some(scaled_head),
                     test_panel(),
                     body,
+                    (120.0, 80.0),
                     test_visible(),
                     BubblePlacement::Left,
+                    None,
                 ),
             );
 
@@ -12325,14 +13314,8 @@ mod tests {
                 Some(replacement_head)
             );
             assert_ne!(
-                placed_attached_bubble(
-                    visual_relative_for(replacement, replaced),
-                    test_panel(),
-                    body,
-                    test_visible(),
-                    BubblePlacement::Left,
-                ),
-                scaled_geometry,
+                bubble_attachment(visual_relative_for(replacement, replaced), test_panel()).anchor,
+                bubble_attachment(visual_relative_for(scaled_visual, scaled), test_panel()).anchor,
             );
         }
     }
@@ -12354,8 +13337,10 @@ mod tests {
             visual_relative_for(old, key),
             test_panel(),
             body,
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
         assert_eq!(attached.side, Some(crate::bubble::BubbleSide::Left));
         let current = AnchorKey {
@@ -12370,10 +13355,12 @@ mod tests {
             visual_relative_for(old, current),
             test_panel(),
             body,
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
-        assert_eq!(fallback.side, Some(crate::bubble::BubbleSide::Above));
+        assert_eq!(bubble_attachment(None, test_panel()).anchor, test_panel());
         let (restored, invalidated) = accept_visual_anchor(
             old,
             current,
@@ -12385,13 +13372,17 @@ mod tests {
             visual_relative_for(restored, current),
             test_panel(),
             body,
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
         assert_eq!(final_geometry, attached);
         assert_eq!(final_geometry.side, Some(crate::bubble::BubbleSide::Left));
-        assert_ne!(final_geometry.window, fallback.window);
-        assert_ne!(final_geometry.tail, fallback.tail);
+        assert_ne!(
+            bubble_attachment(visual_relative_for(restored, current), test_panel()).anchor,
+            bubble_attachment(None, test_panel()).anchor
+        );
         // A later PNG frame with no usable head must clear the restored
         // attachment instead of replaying the cached geometry.
         let next_frame = AnchorKey {
@@ -12415,8 +13406,10 @@ mod tests {
                 visual_relative_for(missing, next_frame),
                 test_panel(),
                 body,
+                (120.0, 80.0),
                 test_visible(),
                 BubblePlacement::Left,
+                None,
             ),
             fallback,
         );
@@ -12460,13 +13453,6 @@ mod tests {
             },
             AnchorKey { scale: 1.25, ..key },
         ];
-        let applied = placed_attached_bubble(
-            visual_relative_for(valid, key),
-            test_panel(),
-            (320.0, 180.0),
-            test_visible(),
-            BubblePlacement::Left,
-        );
         for current in changed_keys {
             assert_eq!(visual_relative_for(valid, current), None);
             let (selected, invalidated) = accept_visual_anchor(
@@ -12476,15 +13462,10 @@ mod tests {
                 true,
             );
             assert!(invalidated && selected.is_none());
-            let fallback = placed_attached_bubble(
-                visual_relative_for(selected, current),
-                test_panel(),
-                (320.0, 180.0),
-                test_visible(),
-                BubblePlacement::Left,
+            assert_eq!(
+                bubble_attachment(visual_relative_for(selected, current), test_panel()).anchor,
+                test_panel()
             );
-            assert_eq!(fallback.side, Some(crate::bubble::BubbleSide::Above));
-            assert_ne!(fallback, applied);
         }
     }
 
@@ -12531,8 +13512,10 @@ mod tests {
             visual_relative_for(valid, key),
             test_panel(),
             (320.0, 180.0),
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
         let (retained, invalidated) =
             accept_visual_anchor(valid, key, SpeechAnchorStatus::TemporarilyUnavailable, true);
@@ -12541,18 +13524,23 @@ mod tests {
             visual_relative_for(retained, key),
             moved,
             (320.0, 180.0),
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
         assert_eq!(before.side, after.side);
-        assert!(close(after.window.x - before.window.x, 75.0));
+        assert!(after.body.width >= before.body.width);
+        assert!(after.window.x + after.body.x + after.body.width <= moved.x);
         assert!(close(after.window.y - before.window.y, 40.0));
         let changed_body = placed_attached_bubble(
             visual_relative_for(retained, key),
             moved,
             (280.0, 140.0),
+            (120.0, 80.0),
             test_visible(),
             BubblePlacement::Left,
+            None,
         );
         assert_ne!(changed_body.body, after.body);
     }
@@ -12604,14 +13592,10 @@ mod tests {
             assert_eq!(status, SpeechAnchorStatus::Invalid);
             let (removed, invalidated) = accept_visual_anchor(valid, key, status, true);
             assert!(removed.is_none() && invalidated);
-            let fallback = placed_attached_bubble(
-                visual_relative_for(removed, key),
-                test_panel(),
-                (320.0, 180.0),
-                test_visible(),
-                BubblePlacement::Left,
+            assert_eq!(
+                bubble_attachment(visual_relative_for(removed, key), test_panel()).anchor,
+                test_panel()
             );
-            assert_eq!(fallback.side, Some(crate::bubble::BubbleSide::Above));
         }
     }
 
@@ -13190,6 +14174,108 @@ mod tests {
     }
 
     #[test]
+    fn attached_resize_domain_preserves_opposite_edge_and_unsqueezed_request() {
+        let visible = BubbleRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let pet = BubbleRect {
+            x: 650.0,
+            y: 100.0,
+            width: 400.0,
+            height: 700.0,
+        };
+        let attachment = BubbleAttachment {
+            exclusion: pet,
+            anchor: BubbleRect {
+                x: 800.0,
+                y: 600.0,
+                width: 80.0,
+                height: 100.0,
+            },
+        };
+        let domain = resize_bubble_domain_for(visible, Some((attachment, Some(BubbleSide::Left))));
+        let start = BubbleRect {
+            x: 414.0,
+            y: 330.0,
+            width: 220.0,
+            height: 180.0,
+        };
+        let minimum = BubbleSize {
+            width: 120.0,
+            height: 100.0,
+        };
+        let effective = resize_bubble_body(
+            start,
+            BubbleResizeDirection::Right,
+            (120.0, 0.0),
+            minimum,
+            domain,
+        );
+        let requested = requested_bubble_resize_size(
+            start,
+            BubbleResizeDirection::Right,
+            (120.0, 0.0),
+            minimum,
+            None,
+        );
+        assert_eq!(requested.width, 340.0);
+        assert_eq!(effective.x, start.x);
+        assert_eq!(effective.width, start.width);
+        assert!(effective.x + effective.width <= pet.x - 16.0);
+        let geometry = place_resizing_bubble(
+            effective,
+            visible,
+            Some((attachment, Some(BubbleSide::Left))),
+        );
+        assert_eq!(geometry.side, Some(BubbleSide::Left));
+        assert_eq!(bubble_body_origin(geometry), (start.x, start.y));
+        assert_eq!(resize_bubble_domain_for(visible, None), visible);
+    }
+
+    #[test]
+    fn message_height_correction_uses_current_side_capacity() {
+        let visible = BubbleRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let pet = BubbleRect {
+            x: 660.0,
+            y: 260.0,
+            width: 300.0,
+            height: 400.0,
+        };
+        let attachment = BubbleAttachment {
+            exclusion: pet,
+            anchor: pet,
+        };
+        let above = corrected_expanded_height(
+            visible,
+            Some((attachment, Some(BubbleSide::Above))),
+            170.0,
+            330.0,
+            150.0,
+            true,
+        );
+        let left = corrected_expanded_height(
+            visible,
+            Some((attachment, Some(BubbleSide::Left))),
+            170.0,
+            330.0,
+            150.0,
+            true,
+        );
+        let standalone = corrected_expanded_height(visible, None, 170.0, 330.0, 150.0, true);
+        let above_domain = bubble_side_visible(attachment, visible, BubbleSide::Above);
+        assert!(above <= above_domain.height - 2.0 * BUBBLE_WINDOW_INSET);
+        assert!(above < left && left <= standalone);
+    }
+
+    #[test]
     fn applied_attachment_provenance_distinguishes_clipped_from_standalone_tailless_body() {
         let visible = BubbleRect {
             x: -500.0,
@@ -13197,7 +14283,17 @@ mod tests {
             width: 240.0,
             height: 180.0,
         };
-        let attached = place_bubble(visible, (150.0, 90.0), visible, BubblePlacement::Above);
+        let attached = place_bubble(
+            BubbleAttachment {
+                exclusion: visible,
+                anchor: visible,
+            },
+            (150.0, 90.0),
+            (150.0, 90.0),
+            visible,
+            BubblePlacement::Above,
+            None,
+        );
         assert!(attached.side.is_none() && attached.tail.is_none());
         let body_origin = bubble_body_origin(attached);
         assert_eq!(

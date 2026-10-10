@@ -2,7 +2,9 @@
 #[path = "../src/composer_layout.rs"]
 mod composer_layout;
 
-use composer_layout::{configure_composer, layout_composer, ComposerMetrics};
+use composer_layout::{
+    configure_composer, layout_composer, reveal_composer_selection, ComposerMetrics,
+};
 use objc2::{msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBitmapImageFileType,
@@ -306,6 +308,36 @@ impl Fixture {
             used.size.width, clip.bounds().origin.x);
     }
 
+    fn assert_selection_visible(&self, label: &str) {
+        let container = unsafe { self.view.textContainer() }.expect("text container");
+        let manager = unsafe { self.view.layoutManager() }.expect("layout manager");
+        manager.ensureLayoutForTextContainer(&container);
+        let glyphs = unsafe {
+            manager.glyphRangeForCharacterRange_actualCharacterRange(
+                self.view.selectedRange(),
+                std::ptr::null_mut(),
+            )
+        };
+        let selected = manager.boundingRectForGlyphRange_inTextContainer(glyphs, &container);
+        let origin = self.view.textContainerOrigin();
+        let selected = rect(
+            origin.x + selected.origin.x,
+            origin.y + selected.origin.y,
+            selected.size.width,
+            selected.size.height,
+        );
+        let visible = self.viewport();
+        let epsilon = 1.0 / self.window.backingScaleFactor().max(1.0);
+        assert!(
+            selected.size.width > 0.0 && inside(visible, selected, epsilon),
+            "{label}: selected text clipped: selection={selected:?} visible={visible:?}"
+        );
+        assert!(
+            self.scroll.contentView().bounds().size.height >= self.metrics.content_height,
+            "{label}: editable line does not fit clip"
+        );
+        self.assert_geometry(label, false);
+    }
     fn assert_reachable(&self, label: &str) {
         let length = self.view.string().length();
         let container = unsafe { self.view.textContainer() }.expect("text container");
@@ -479,6 +511,7 @@ fn state_transitions(f: &Fixture, style: &str) {
         .containerSize();
     let clip_bounds = f.scroll.contentView().bounds();
     layout_composer(&f.view, &f.scroll, f.metrics);
+    reveal_composer_selection(&f.view, &f.scroll);
     assert_eq!(
         f.view.frame(),
         frame,
@@ -521,6 +554,51 @@ fn state_transitions(f: &Fixture, style: &str) {
     );
     f.settle();
     f.assert_geometry("after unmark", false);
+}
+
+fn focused_reflow(f: &Fixture, style: &str) {
+    let draft = UNIT.repeat(18);
+    f.resize(390.0);
+    f.style(if style == "legacy" {
+        NSScrollerStyle::Legacy
+    } else {
+        NSScrollerStyle::Overlay
+    });
+    f.text(&draft);
+    let selection = NSRange::new(utf16_len(&draft) - utf16_len(UNIT), utf16_len("초안"));
+    f.view.setSelectedRange_affinity_stillSelecting(
+        selection,
+        NSSelectionAffinity::Upstream,
+        false,
+    );
+    let ranges = f.view.selectedRanges();
+    let affinity = f.view.selectionAffinity();
+    let clip = f.scroll.contentView();
+    clip.scrollToPoint(NSPoint::new(0.0, 0.0));
+    f.scroll.reflectScrolledClipView(&clip);
+    f.resize(95.0);
+    // settle/resize only reconciles geometry; the focused viewport-change
+    // path must invoke the production reveal, not a test-only native scroll.
+    reveal_composer_selection(&f.view, &f.scroll);
+    f.assert_selection_visible(&format!("{style}: focused narrow viewport"));
+    assert_eq!(f.view.string().to_string(), draft);
+    assert_eq!(f.view.selectedRanges(), ranges);
+    assert_eq!(f.view.selectionAffinity(), affinity);
+    f.assert_scroll_within_document("focused shrink");
+
+    f.reply.removeFromSuperview();
+    f.root.addSubview(&f.reply);
+    f.settle();
+    reveal_composer_selection(&f.view, &f.scroll);
+    f.assert_selection_visible(&format!("{style}: root reparent"));
+    f.second.addSubview(&f.reply);
+    f.settle();
+    reveal_composer_selection(&f.view, &f.scroll);
+    f.assert_selection_visible(&format!("{style}: card reparent"));
+    assert_eq!(f.view.string().to_string(), draft);
+    assert_eq!(f.view.selectedRanges(), ranges);
+    assert_eq!(f.view.selectionAffinity(), affinity);
+    f.assert_scroll_within_document("focused reparent");
 }
 
 fn run(mtm: MainThreadMarker) {
@@ -627,6 +705,7 @@ fn run(mtm: MainThreadMarker) {
         }
         f.resize(220.0);
         state_transitions(&f, name);
+        focused_reflow(&f, name);
     }
     println!("composer AppKit geometry and native insertion passed on main thread");
 }
