@@ -39,6 +39,7 @@ mod menu_panel;
 mod official_catalog;
 mod official_characters;
 mod pack_authoring;
+mod pointer_capture;
 mod pose;
 mod preferences;
 mod remote;
