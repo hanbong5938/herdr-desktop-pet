@@ -8,7 +8,7 @@
 
 [선택 캐릭터·의상 갤러리](https://hanbong5938.github.io/herdr-characters/) (처음에는 영어; **KO** 버튼 선택) · [캐릭터 저장소·출처](https://github.com/hanbong5938/herdr-characters). 기본 번들은 **루벨리아 `default@0` 하나뿐**이며 갤러리의 팩은 별도로 설치합니다.
 
-이 체크아웃의 안정판 **v0.3.4는 소스 및 기본/사전 빌드 대상**입니다. 소스 버전만으로 공개 바이너리·설치기·Homebrew 포뮬러 게시를 주장하지 않습니다. 사전 빌드 전 실제 [Release 자산](https://github.com/hanbong5938/herdr-desktop-pet/releases)과 설치 경로를 확인하세요. [v0.3.4 한영 노트](docs/releases/v0.3.4.md#한국어). 채린은 선택형 팩이며 내장 루벨리아의 대체물이 아닙니다.
+이 체크아웃의 안정판 **v0.3.5는 소스 및 기본/사전 빌드 대상**입니다. 소스 버전만으로 공개 바이너리·설치기·Homebrew 포뮬러 게시를 주장하지 않습니다. 사전 빌드 전 실제 [Release 자산](https://github.com/hanbong5938/herdr-desktop-pet/releases)과 설치 경로를 확인하세요. [v0.3.5 한영 노트](docs/releases/v0.3.5.md#한국어). 채린은 선택형 팩이며 내장 루벨리아의 대체물이 아닙니다.
 
 ## 주요 기능
 
@@ -33,11 +33,11 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-관리형 설치는 플러그인을 클론해 `scripts/install.sh`를 실행합니다. 기본 모드는 매니페스트에 고정된 v0.3.4 앱 전용 압축 파일을 시도하고 자산 부재·검증 실패 시 안내 후 소스를 빌드합니다. `--prebuilt`는 실패해도 소스로 전환하지 않고 `--source`는 현재 체크아웃을 빌드합니다. **기본 fallback은 공개 사전 빌드의 증거가 아닙니다.** 실제 압축 파일·체크섬·설치기 일치를 확인하세요. 별도 출처 사이드카는 설치기 압축 파일에 넣지 않습니다. 사전 빌드는 SHA-256·아카이브·arm64·서명을 검사하지만 앱은 **ad-hoc 서명·미공증**입니다. [설치기·서명 상세](docs/development.ko.md#소스-개발).
+관리형 설치는 플러그인을 클론해 `scripts/install.sh`를 실행합니다. 기본 모드는 매니페스트에 고정된 v0.3.5 앱 전용 압축 파일을 시도하고 자산 부재·검증 실패 시 안내 후 소스를 빌드합니다. `--prebuilt`는 실패해도 소스로 전환하지 않고 `--source`는 현재 체크아웃을 빌드합니다. **기본 fallback은 공개 사전 빌드의 증거가 아닙니다.** 실제 압축 파일·체크섬·설치기 일치를 확인하세요. 별도 출처 사이드카는 설치기 압축 파일에 넣지 않습니다. 사전 빌드는 SHA-256·아카이브·arm64·서명을 검사하지만 앱은 **ad-hoc 서명·미공증**입니다. [설치기·서명 상세](docs/development.ko.md#소스-개발).
 
 ## Homebrew로 설치
 
-[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 포뮬러와 실제 공개 v0.3.4 압축 파일·체크섬을 확인한 경우에만 설치하세요. 소스 매니페스트만으로 포뮬러 게시를 판단하지 마세요.
+[개인 tap](https://github.com/hanbong5938/homebrew-tap)의 포뮬러와 실제 공개 v0.3.5 압축 파일·체크섬을 확인한 경우에만 설치하세요. 소스 매니페스트만으로 포뮬러 게시를 판단하지 마세요.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -99,7 +99,7 @@ bash scripts/install.sh --source
 
 ## 문서 및 웹사이트
 
-[사용 안내](docs/usage.ko.md) · [개발 안내](docs/development.ko.md) · [v0.3.4 한영 노트](docs/releases/v0.3.4.md) · [CLI 계약](docs/cli.md#한국어) · [호스트 연동 (English)](integrations/herdr/README.md) · [릴리스 기록](docs/releases/README.ko.md) · [0.3 업그레이드/대응 베타](docs/releases/0.3.md#한국어--v03-계열) · [과거 베타·프리뷰](docs/migrations/unreleased.ko.md).
+[사용 안내](docs/usage.ko.md) · [개발 안내](docs/development.ko.md) · [v0.3.5 한영 노트](docs/releases/v0.3.5.md) · [CLI 계약](docs/cli.md#한국어) · [호스트 연동 (English)](integrations/herdr/README.md) · [릴리스 기록](docs/releases/README.ko.md) · [0.3 업그레이드/대응 베타](docs/releases/0.3.md#한국어--v03-계열) · [과거 베타·프리뷰](docs/migrations/unreleased.ko.md).
 
 [한국어 웹사이트](https://hanbong5938.github.io/herdr-desktop-pet/) · [English website](https://hanbong5938.github.io/herdr-desktop-pet/en/): 네이티브 앱 소개 페이지이며 브라우저에서 앱을 실행하지 않습니다. 웹사이트 개발·배포는 [개발 안내](docs/development.ko.md#웹사이트-github-pages)에 있습니다.
 

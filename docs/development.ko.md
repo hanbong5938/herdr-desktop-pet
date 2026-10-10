@@ -2,7 +2,7 @@
 
 [English](development.md) · **한국어** · [설치와 개요](../readme.ko.md)
 
-아래 명령은 저장소 루트에서 실행합니다. 이 체크아웃의 대상 버전은 v0.3.4이지만 소스 버전만으로 비초안 Release·완전한 자산·갱신된 설치기/Homebrew 포뮬러를 증명하지 않습니다. 사전 빌드 설치 전 [실제 Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)을 확인하세요. 네이티브 지원 플랫폼은 Apple Silicon macOS 13 이상이며 Intel Mac·Windows·Linux용 네이티브 배포는 없습니다.
+아래 명령은 저장소 루트에서 실행합니다. 이 체크아웃의 대상 버전은 v0.3.5이지만 소스 버전만으로 비초안 Release·완전한 자산·갱신된 설치기/Homebrew 포뮬러를 증명하지 않습니다. 사전 빌드 설치 전 [실제 Release 목록](https://github.com/hanbong5938/herdr-desktop-pet/releases)을 확인하세요. 네이티브 지원 플랫폼은 Apple Silicon macOS 13 이상이며 Intel Mac·Windows·Linux용 네이티브 배포는 없습니다.
 
 ## 소스 개발
 
@@ -18,7 +18,7 @@ bash scripts/install.sh --source
 
 소스 설치기는 고정된 Bun·npm 의존성을 설치하고 Rust 실행 파일·업데이트 코디네이터를 빌드한 뒤 네이티브 rig 런타임·캐릭터 제작 리소스를 패키징하고 앱을 검증합니다. Rust/Cargo·Bun·Node.js/npm·Xcode Command Line Tools·`codesign`이 필요하며 별도 호스트 빌드 조건은 연동 안내를 따릅니다. 이미 실행 중인 서버에서 연결·활성화만 해도 캐릭터가 시작되는 것은 아닙니다. `start`를 한 번 실행하거나 `auto_start`가 켜졌다면 이후 정상적인 shell/terminal 클라이언트 attach를 기다리세요. 서버 시작 시에도 `ensure`가 자동으로 실행됩니다. 플러그인 액션에는 실행 중인 활성 호스트가 필요하지만 패키지 네이티브 바이너리의 오프라인 설정 명령에는 필요하지 않습니다. 소스 자동화에는 `./dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet`을 사용하세요. 기존 데몬을 종료하거나 `start`·명령·`stop` 모두에 일관된 **설정과 상태** 격리 경로를 사용하세요. 소스 CLI 버전만으로 자산 게시나 구형 실행 데몬의 교체를 증명하지 못하므로 `status`의 실제 실행 파일을 확인하세요.
 
-공통 [설치기](../scripts/install.sh)는 세 모드를 제공합니다. 옵션이 없으면 매니페스트에 고정된 사전 빌드를 시도하고 **없거나 검증 실패한 경우에만** 소스 빌드로 전환합니다. `--prebuilt`는 실패하고 `--source`는 이 체크아웃을 빌드합니다(Bun/npm 의존성은 내려받을 수 있음). 관리형 Herdr 플러그인 설치는 `[[build]]`를 통해 설치기 실행 후 플러그인 디렉터리의 `dist/`에 앱을 둡니다. 매니페스트 대상 `0.3.4` 또는 소스 빌드만으로 공개 사전 빌드가 증명되지 않습니다. 설치기는 기존처럼 `HerdrDesktopPet.app/`만 포함한 압축 파일을 받아 체크섬·네이티브 서명을 검증하고 별도 rig 출처 기록을 설치 입력으로 사용하지 않습니다. client-attach 자동 시작에는 여전히 기능이 있는 패치 호스트가 필요합니다.
+공통 [설치기](../scripts/install.sh)는 세 모드를 제공합니다. 옵션이 없으면 매니페스트에 고정된 사전 빌드를 시도하고 **없거나 검증 실패한 경우에만** 소스 빌드로 전환합니다. `--prebuilt`는 실패하고 `--source`는 이 체크아웃을 빌드합니다(Bun/npm 의존성은 내려받을 수 있음). 관리형 Herdr 플러그인 설치는 `[[build]]`를 통해 설치기 실행 후 플러그인 디렉터리의 `dist/`에 앱을 둡니다. 매니페스트 대상 `0.3.5` 또는 소스 빌드만으로 공개 사전 빌드가 증명되지 않습니다. 설치기는 기존처럼 `HerdrDesktopPet.app/`만 포함한 압축 파일을 받아 체크섬·네이티브 서명을 검증하고 별도 rig 출처 기록을 설치 입력으로 사용하지 않습니다. client-attach 자동 시작에는 여전히 기능이 있는 패치 호스트가 필요합니다.
 
 저장소의 `herdr-plugin` 토픽으로 [Herdr 마켓](https://herdr.dev/plugins/) 자동 수집 대상에 등록됩니다. 인덱스는 30분마다 갱신되며 **심사받지 않은 커뮤니티 목록**이지 호스트 호환성 검토가 아닙니다. Homebrew [개인 tap](https://github.com/hanbong5938/homebrew-tap) 포뮬러는 `HerdrDesktopPet.app`을 `/Applications`가 아닌 Homebrew prefix에 설치하고 CLI를 `PATH`에 놓습니다. Herdr 플러그인이나 패치 호스트는 설치하지 않으므로 실행 관리 훅에는 플러그인, client-attach 자동 실행에는 호스트 패치가 별도로 필요합니다. 포뮬러 로딩이 거부된 경우에만 `brew trust --formula hanbong5938/tap/herdr-desktop-pet`으로 이 포뮬러만 신뢰하세요. 업그레이드 전 데몬을 종료하세요. `start`는 기존 데몬을 재사용하므로 CLI `--version`과 재시작 후 `status`의 `app_version` 및 실행 파일을 함께 확인하세요. 옛 cask는 `/Applications`에 앱을 복사했습니다. `brew uninstall --cask herdr-desktop-pet` 후 `brew install hanbong5938/tap/herdr-desktop-pet`으로 포뮬러에 이전할 수 있으며 사용자 데이터는 유지됩니다. 안정판·베타 프로필 격리와 이전은 [한영 0.3 이전 안내](releases/0.3.md#한국어--v03-계열)를 참고하세요. 소스 버전만으로 공개 자산이 존재한다고 추정하지 마세요.
 
@@ -37,7 +37,7 @@ debug·release 네이티브 빌드는 `codesign`을 필요로 하며 [`native/ri
 
 Rust/Swift rig 경계는 타입 있는 asset/token을 넘기기 **전에** ABI 버전과 C 구조체 일곱 개의 크기를 확인합니다. 초기 motion은 네이티브 호스트가 복사하는 봉인된 바이트이며 옛 경로 조회 방식으로 돌아가지 않습니다. Metal은 같은 인코더의 색상 그리기 전에 실제 흰자 구멍을 L/R/무방향 stencil로 준비하고 CPU 의미론적 hit·참조 래스터도 같은 소유권 규칙을 적용합니다. 흰자가 없는 rig의 기존 홍채 표시 동작은 유지합니다. `RIG_PROBE_FAULTS` probe의 `--eye-stencil-checks --output ABS`는 실제 픽셀·의미론적 fixture를 저장하지만 과거 취소/연결 해제 상황의 시각 현상 원인을 입증하지 않습니다.
 
-`scripts/build-rig-native.mjs`는 범위 제한된 소스/컴파일러/출력 해시를 `native/target/rig-native/release/rig-native.json`에 기록합니다. 패키징은 소스·생성 출력의 해시를 확인하고 원본 기록을 `Contents/Resources/rig-native-build.json`에 포함하며 독립 업데이트 코디네이터와 protocol/서명 검사도 유지합니다. 앱 서명 **이후** 코디네이터를 포함한 `Contents`의 모든 배포 파일 해시를 외부 `dist/HerdrDesktopPet.app.rig-native.json`에 기록해 서명 번들 안의 자체 해시 순환을 피합니다. 릴리스 워크플로는 기존 앱 전용 압축 파일·체크섬 두 파일 외에 별도 `HerdrDesktopPet-v0.3.4-rig-native.json` 자산을 게시합니다. 설치기/업데이터의 아카이브 입력 형식은 바꾸지 않으며 실제 추출된 서명 후 파일과 사이드카의 해시를 비교해야 배포 바이트 출처를 주장할 수 있습니다.
+`scripts/build-rig-native.mjs`는 범위 제한된 소스/컴파일러/출력 해시를 `native/target/rig-native/release/rig-native.json`에 기록합니다. 패키징은 소스·생성 출력의 해시를 확인하고 원본 기록을 `Contents/Resources/rig-native-build.json`에 포함하며 독립 업데이트 코디네이터와 protocol/서명 검사도 유지합니다. 앱 서명 **이후** 코디네이터를 포함한 `Contents`의 모든 배포 파일 해시를 외부 `dist/HerdrDesktopPet.app.rig-native.json`에 기록해 서명 번들 안의 자체 해시 순환을 피합니다. 릴리스 워크플로는 기존 앱 전용 압축 파일·체크섬 두 파일 외에 별도 `HerdrDesktopPet-v0.3.5-rig-native.json` 자산을 게시합니다. 설치기/업데이터의 아카이브 입력 형식은 바꾸지 않으며 실제 추출된 서명 후 파일과 사이드카의 해시를 비교해야 배포 바이트 출처를 주장할 수 있습니다.
 
 ## 저장소 구조
 
