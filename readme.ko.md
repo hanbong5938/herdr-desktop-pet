@@ -8,7 +8,7 @@
 
 [선택 캐릭터·의상 갤러리](https://hanbong5938.github.io/herdr-characters/) (처음에는 영어; **KO** 버튼 선택) · [캐릭터 저장소·출처](https://github.com/hanbong5938/herdr-characters). 기본 번들은 **루벨리아 `default@0` 하나뿐**이며 갤러리의 팩은 별도로 설치합니다.
 
-이 체크아웃의 안정판 **v0.3.5는 소스 및 기본/사전 빌드 대상**입니다. 소스 버전만으로 공개 바이너리·설치기·Homebrew 포뮬러 게시를 주장하지 않습니다. 사전 빌드 전 실제 [Release 자산](https://github.com/hanbong5938/herdr-desktop-pet/releases)과 설치 경로를 확인하세요. [v0.3.5 한영 노트](docs/releases/v0.3.5.md#한국어). 채린은 선택형 팩이며 내장 루벨리아의 대체물이 아닙니다.
+이 체크아웃은 안정판 v0.3.5 소스 `a765027`과 기능이 같은 **`0.3.5-beta.1` 배포 소스**입니다. 별도 `HerdrDesktopPetBeta.app` 압축 파일과 베타 Homebrew 포뮬러는 [베타 노트](docs/validation/v0.3.5-beta.1.md)를 확인하세요. 아래 상속된 설치 안내는 안정판 v0.3.5용이며 **베타 설치기가 아닙니다**. 베타에 안정판 설치기·`--prebuilt`를 사용하지 말고 실제 [Release 자산](https://github.com/hanbong5938/herdr-desktop-pet/releases)을 확인하세요. 채린은 선택형 팩이며 내장 루벨리아의 대체물이 아닙니다.
 
 ## 주요 기능
 

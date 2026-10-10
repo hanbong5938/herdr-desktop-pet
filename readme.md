@@ -8,7 +8,7 @@ A native macOS companion for [Herdr](https://herdr.dev). Rubelia reacts to touch
 
 [Browse the optional character and outfit gallery](https://hanbong5938.github.io/herdr-characters/) (opens in English; choose KO for Korean) · [Character pack source and licenses](https://github.com/hanbong5938/herdr-characters). **Only Rubelia (`default@0`) is bundled.**
 
-**v0.3.5 is this checkout's stable source/default-prebuilt target**, not proof that its binaries, installer or Homebrew formula are published. Check actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) before prebuilt installation; see the [bilingual v0.3.5 note](docs/releases/v0.3.5.md). Chaerin is an optional character pack, not a replacement for bundled Rubelia.
+**This is the `0.3.5-beta.1` distribution source**, functionally aligned with stable v0.3.5 at `a765027`. Use the [beta note](docs/validation/v0.3.5-beta.1.md) for the separate `HerdrDesktopPetBeta.app` archive and beta Homebrew formula. The inherited installation sections below describe stable v0.3.5, **not a beta installer**; do not use the stable installer or `--prebuilt` for this beta. Check actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) before installation. Chaerin is optional, not a replacement for bundled Rubelia.
 
 ## Features
 
