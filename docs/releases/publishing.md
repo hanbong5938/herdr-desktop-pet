@@ -2,7 +2,7 @@
 
 [Versions](README.md) · [Versioning and compatibility](policy.md) · [Unreleased](unreleased.md) · [한국어 버전 안내](README.ko.md)
 
-Reviewed Markdown in this repository is canonical; the Wiki is a generated reading view. New app Release bodies and Wiki version pages use the same note frozen by the exact release tag, while current indexes and status use reviewed default-branch documents and the live Release catalog. The [v0.3.4 note](v0.3.4.md) is the current source target; [v0.3.3](v0.3.3.md) retains its historical evidence. Neither note nor source build proves an uploaded, non-draft Release.
+Reviewed Markdown in this repository is canonical; the Wiki is a generated reading view. New app Release bodies and Wiki version pages use the same note frozen by the exact release tag, while current indexes and status use reviewed default-branch documents and the live Release catalog. The [v0.3.5 note](v0.3.5.md) is the current source target; [v0.3.4](v0.3.4.md) retains its historical candidate evidence. Neither note nor source build proves an uploaded, non-draft Release.
 
 The original documentation/tools-only authorization, v0.2.0 promotion and narrower v0.2.1 patch authorization below are **historical release scopes**, not a continuing ban on the separately authorized v0.3.2 minor source. Preserve beta1/beta2/beta3 and `beta/0.3.0-beta.2` tags/assets, the separate beta formula, pack v5, bundled `default@0`, artwork/rig overrides/motion/licensing and the independent Herdr host.
 
@@ -31,6 +31,13 @@ Review four matching manifests/root lock and the bilingual [v0.3.3 note](v0.3.3.
 
 Review the four matching manifests/root lock and [bilingual v0.3.4 note](v0.3.4.md) at final source. Run full TypeScript/Bun/native/coordinator, ABI mismatch, real Metal eye-pixel probe, release package/signature/worker-entitlement and isolated updater/UI/recovery gates; older source's checks are not v0.3.4 evidence. Freeze the note at the exact tag. Preserve the `.app`-only archive and its individual `.sha256` plus `SHA256SUMS`; publish the post-signing `HerdrDesktopPet-v0.3.4-rig-native.json` as a **fourth separate asset**, not inside the archive. Compare its `deployed_sha256` to the extracted signed app and verify uploaded bytes/digests anonymously before installer/formula cutover and restarted-daemon `app_version: 0.3.4` proof. Never treat a note, tag or sidecar alone as a completed release.
 
+### v0.3.5 stable and paired beta publication contract
+
+Review four matching manifests/root lock and [bilingual v0.3.5 note](v0.3.5.md) on the final candidate. Run full TypeScript/Bun/native/coordinator, pointer-capture and bubble/reply/IME acceptance, release package/signature/worker-entitlement and isolated updater/UI/recovery gates; the v0.3.4 candidate record is not v0.3.5 evidence. Freeze the note at the exact `v0.3.5` tag. Publish a non-draft stable Release with `.app`-only `HerdrDesktopPet-v0.3.5-macos-arm64.tar.gz`, its individual `.sha256`, `SHA256SUMS` and the post-signing `HerdrDesktopPet-v0.3.5-rig-native.json` as a **fourth separate asset**, never a member of the archive or an installer input. Anonymously verify uploaded bytes/digests and compare the sidecar's `deployed_sha256` to the extracted signed app before stable installer/formula cutover and restarted-daemon `app_version: 0.3.5` plus executable proof. Publish/check the Wiki's exact-tag version page and current pushed-default-branch navigation independently; recover a failed Wiki job with Wiki-only sync, not another binary release.
+
+The paired `beta/0.3.5-beta.1` has the same functionality but its own `HerdrDesktopPetBeta.app` archive (`HerdrDesktopPet-v0.3.5-beta.1-macos-arm64.tar.gz`), individual `.sha256`, `SHA256SUMS` and separate `HerdrDesktopPet-v0.3.5-beta.1-rig-native.json`. Publish it as a distinct non-latest prerelease, verify its own assets and deployed-byte sidecar, then update the separate rolling beta formula and check the beta executable and `app_version: 0.3.5-beta.1`. Neither candidate source/version nor stable assets prove beta publication. Preserve older stable and beta tags/assets.
+
+
 ### Credential prerequisite for future automation
 
 Before relying on main-push, workflow-dispatch or post-Release Wiki synchronization:
@@ -45,7 +52,7 @@ Recommended owner safeguards, not runtime prerequisites: protect the default bra
 
 ## Workflow and trust boundary
 
-The [Wiki workflow](../../.github/workflows/wiki.yml) uses the reviewed pushed default-branch SHA for **current** navigation and the exact fetched release tag for a **frozen** version page. For v0.3.3 this must be its stable tag, never the older v0.3.2 source, isolated v0.2.1 patch or a beta tag. It reads the actual default branch and Release catalog; an old tag is not a current-index snapshot. Only default-branch push/manual runs or matching release-tag push callers are accepted. Successful publication still requires the configured Wiki-write credential; the v0.2.1 Wiki run below is historical.
+The [Wiki workflow](../../.github/workflows/wiki.yml) uses the reviewed pushed default-branch SHA for **current** navigation and the exact fetched release tag for a **frozen** version page. For v0.3.5 this must be its stable tag, never the older v0.3.4 source, isolated v0.2.1 patch or a beta tag. It reads the actual default branch and Release catalog; an old tag is not a current-index snapshot. Only default-branch push/manual runs or matching release-tag push callers are accepted. Successful publication still requires the configured Wiki-write credential; the v0.2.1 Wiki run below is historical.
 
 The checkout does not persist credentials. GitHub API reads use only the ordinary `GITHUB_TOKEN` (`contents: read`). Rendering finishes and validates the full managed page set **before** the publisher is invoked. `WIKI_PUBLISH_TOKEN` is assigned only in the publishing step's environment. The workflow uses SHA-pinned actions and one repository-wide, non-cancelling publication concurrency group, shared by push, manual and reusable calls.
 

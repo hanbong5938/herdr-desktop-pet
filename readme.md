@@ -8,7 +8,7 @@ A native macOS companion for [Herdr](https://herdr.dev). Rubelia reacts to touch
 
 [Browse the optional character and outfit gallery](https://hanbong5938.github.io/herdr-characters/) (opens in English; choose KO for Korean) · [Character pack source and licenses](https://github.com/hanbong5938/herdr-characters). **Only Rubelia (`default@0`) is bundled.**
 
-**v0.3.4 is this checkout's stable source/default-prebuilt target**, not proof that its binaries, installer or Homebrew formula are published. Check actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) before prebuilt installation; see the [bilingual v0.3.4 note](docs/releases/v0.3.4.md). Chaerin is an optional character pack, not a replacement for bundled Rubelia.
+**v0.3.5 is this checkout's stable source/default-prebuilt target**, not proof that its binaries, installer or Homebrew formula are published. Check actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) before prebuilt installation; see the [bilingual v0.3.5 note](docs/releases/v0.3.5.md). Chaerin is an optional character pack, not a replacement for bundled Rubelia.
 
 ## Features
 
@@ -33,11 +33,11 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Managed installation runs `bash scripts/install.sh`: it tries the manifest-pinned v0.3.4 `.app`-only archive, validating checksums, archive entries, arm64 signature and bundled character. Require a **non-draft v0.3.4 Release with complete archive/checksums and updated installer**; the separately uploaded provenance sidecar does not enter the installer archive. If prebuilt assets are unavailable or invalid, the default installer reports this and builds the checkout from source. Explicit `--prebuilt` fails instead of falling back; `--source` builds the checkout. Plugin installation does not patch or build Herdr. See [installation details](docs/development.md#source-development).
+Managed installation runs `bash scripts/install.sh`: it tries the manifest-pinned v0.3.5 `.app`-only archive, validating checksums, archive entries, arm64 signature and bundled character. Require a **non-draft v0.3.5 Release with complete archive/checksums and updated installer**; the separately uploaded provenance sidecar does not enter the installer archive. If prebuilt assets are unavailable or invalid, the default installer reports this and builds the checkout from source. Explicit `--prebuilt` fails instead of falling back; `--source` builds the checkout. Plugin installation does not patch or build Herdr. See [installation details](docs/development.md#source-development).
 
 ## Install with Homebrew
 
-Use the [personal tap](https://github.com/hanbong5938/homebrew-tap) only after confirming its formula and the complete public v0.3.4 archive/checksums in [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases):
+Use the [personal tap](https://github.com/hanbong5938/homebrew-tap) only after confirming its formula and the complete public v0.3.5 archive/checksums in [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases):
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -56,7 +56,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-Verify the CLI reports `0.3.4` and, after restart, `status` shows `app_version: 0.3.4` **and the expected running executable**. The formula puts the app under Homebrew's prefix, **not** `/Applications`, and the CLI on `PATH`; it installs neither Herdr plugin nor patched host. Stop older daemons first; `start` otherwise reuses one. See [0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) for profile isolation and older cask migration. Formula availability depends on actual publication, not this source target.
+Verify the CLI reports `0.3.5` and, after restart, `status` shows `app_version: 0.3.5` **and the expected running executable**. The formula puts the app under Homebrew's prefix, **not** `/Applications`, and the CLI on `PATH`; it installs neither Herdr plugin nor patched host. Stop older daemons first; `start` otherwise reuses one. See [0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) for profile isolation and older cask migration. Formula availability depends on actual publication, not this source target.
 
 ## Install this checkout from source
 
@@ -102,7 +102,7 @@ If the app is hidden, use the menu-bar recovery above rather than reinstalling. 
 ## Documentation and websites
 
 - [Usage and recovery](docs/usage.md) · [development and installation](docs/development.md) · [native automation CLI contract](docs/cli.md#english) · [patched host integration](integrations/herdr/README.md).
-- [Release history](docs/releases/README.md) · [v0.3.4 changes](docs/releases/v0.3.4.md) · [v0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) · [historical beta/preview guidance](docs/migrations/unreleased.md) · [v0.1.11 → v0.2.0 migration](docs/migrations/v0.1.11-to-v0.2.0.md).
+- [Release history](docs/releases/README.md) · [v0.3.5 changes](docs/releases/v0.3.5.md) · [v0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) · [historical beta/preview guidance](docs/migrations/unreleased.md) · [v0.1.11 → v0.2.0 migration](docs/migrations/v0.1.11-to-v0.2.0.md).
 - The promotional [Korean](https://hanbong5938.github.io/herdr-desktop-pet/) and [English](https://hanbong5938.github.io/herdr-desktop-pet/en/) websites describe this **native** app; it does not run in a browser. Website development and deployment: [GitHub Pages guide](docs/development.md#website-github-pages). The separate [character gallery](https://hanbong5938.github.io/herdr-characters/) previews optional packs.
 
 ## Artwork and licensing
