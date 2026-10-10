@@ -2,7 +2,7 @@
 
 [Versions](README.md) · [Versioning and compatibility](policy.md) · [Unreleased](unreleased.md) · [한국어 버전 안내](README.ko.md)
 
-Reviewed Markdown in the repository is canonical. GitHub Wiki is a generated reading view, not a second editing authority. For **new** app releases, the Release body and Wiki version page use the same note frozen by the release tag. Current indexes, policy, migrations and Unreleased use reviewed default-branch documentation and the live GitHub release catalog. The [v0.3.3 note](v0.3.3.md) covers the current focused stable patch; the [v0.3.2 note](v0.3.2.md) retains its earlier candidate evidence. Neither a note nor a source build proves publication, which requires the exact non-draft Release and complete uploaded assets. The [v0.2.1 patch note](v0.2.1.md) remains frozen at its separate patch source.
+Reviewed Markdown in this repository is canonical; the Wiki is a generated reading view. New app Release bodies and Wiki version pages use the same note frozen by the exact release tag, while current indexes and status use reviewed default-branch documents and the live Release catalog. The [v0.3.4 note](v0.3.4.md) is the current source target; [v0.3.3](v0.3.3.md) retains its historical evidence. Neither note nor source build proves an uploaded, non-draft Release.
 
 The original documentation/tools-only authorization, v0.2.0 promotion and narrower v0.2.1 patch authorization below are **historical release scopes**, not a continuing ban on the separately authorized v0.3.2 minor source. Preserve beta1/beta2/beta3 and `beta/0.3.0-beta.2` tags/assets, the separate beta formula, pack v5, bundled `default@0`, artwork/rig overrides/motion/licensing and the independent Herdr host.
 
@@ -26,6 +26,10 @@ Review the integrated source, four matching manifests/root lock and bilingual [v
 ### v0.3.3 stable publication contract
 
 Review four matching manifests/root lock and the bilingual [v0.3.3 note](v0.3.3.md) on the final source candidate. Run combined TypeScript/Bun, native/coordinator, release build/package, signature/updater/helper and worker-entitlement checks and isolated updater/UI/recovery acceptance on that candidate; earlier v0.3.2 and pre-version-bump checks are not final packaging/publication evidence. Freeze this note at the exact `v0.3.3` tag; publish a non-draft stable Release with arm64 archive, `.sha256` and `SHA256SUMS`; anonymously download and verify uploaded assets/digests before updating the stable default/`--prebuilt` installer and Homebrew formula. Prove a consumer install/upgrade and restarted daemon `app_version: 0.3.3` plus executable. Publish/check the Wiki's exact-tag version page and current default-branch navigation separately; use Wiki-only recovery if needed, never rerun the binary Release just for Wiki. The separate `beta/0.3.3-beta.1` uses `HerdrDesktopPetBeta.app` and needs its own evidence; no old tags/assets are replaced. Neither candidate manifests nor this plan assert either release is already public.
+
+### v0.3.4 stable publication contract
+
+Review the four matching manifests/root lock and [bilingual v0.3.4 note](v0.3.4.md) at final source. Run full TypeScript/Bun/native/coordinator, ABI mismatch, real Metal eye-pixel probe, release package/signature/worker-entitlement and isolated updater/UI/recovery gates; older source's checks are not v0.3.4 evidence. Freeze the note at the exact tag. Preserve the `.app`-only archive and its individual `.sha256` plus `SHA256SUMS`; publish the post-signing `HerdrDesktopPet-v0.3.4-rig-native.json` as a **fourth separate asset**, not inside the archive. Compare its `deployed_sha256` to the extracted signed app and verify uploaded bytes/digests anonymously before installer/formula cutover and restarted-daemon `app_version: 0.3.4` proof. Never treat a note, tag or sidecar alone as a completed release.
 
 ### Credential prerequisite for future automation
 
