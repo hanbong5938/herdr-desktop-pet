@@ -357,28 +357,41 @@ pub(crate) fn bubble_resize_direction_at(
     }
 }
 
-/// Lay out a resized screen-space body without selecting a different pet side.
-/// An attached bubble loses its tail if its original side is no longer external;
-/// the caller retains attached intent independently of `side`.
+/// Lay out a captured screen-space body without choosing another pet side.
+/// `side` remains attached even when the small body cannot paint a tail.
 pub(crate) fn place_resizing_bubble(
     body: Rect,
     visible: Rect,
-    attached: Option<(Rect, Option<BubbleSide>)>,
+    attached: Option<(BubbleAttachment, Option<BubbleSide>)>,
 ) -> BubbleGeometry {
     let body = normalize_rect(body);
     let mut geometry =
         place_standalone_bubble((body.x, body.y), (body.width, body.height), visible);
-    if let Some((pet, Some(side))) = attached {
-        let pet = normalize_rect(pet);
-        let tail = tail_geometry(side, geometry.window, geometry.body, pet);
-        geometry.tail = tail;
-        if is_external(side, &geometry, pet) {
+    if let Some((attachment, Some(side))) = attached {
+        let attachment = BubbleAttachment {
+            exclusion: normalize_rect(attachment.exclusion),
+            anchor: normalize_rect(attachment.anchor),
+        };
+        let screen_body = screen_body(geometry);
+        if body_is_external(side, screen_body, attachment.exclusion) {
             geometry.side = Some(side);
-        } else {
-            geometry.tail = None;
+            geometry.tail = valid_tail(side, geometry, attachment);
         }
     }
     geometry
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BubbleAttachment {
+    pub exclusion: Rect,
+    pub anchor: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BubbleContinuity {
+    pub side: BubbleSide,
+    /// Actual painted body in screen coordinates (not the window).
+    pub body: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -420,61 +433,118 @@ impl BubbleSide {
     }
 }
 
-/// Places a bubble outside the pet, preferring the requested side.
-///
-/// `body_size` is the measured rounded body, excluding the tail and the
-/// transparent/stroke/shadow margin reserved by the returned window. The
-/// returned `window` is in screen coordinates; `body` and `tail` are local
-/// bottom-left coordinates inside that window.
-///
-/// Placement is selected in two passes. A candidate that fits without any
-/// clamp wins before a candidate that needs to be clamped, which preserves an
-/// external alternate side when the preferred side is blocked by an edge.
-/// If no side can remain external after clamping, the bounded body is returned
-/// without a potentially misleading tail.
+/// Safe window region on one side of the full painted-character exclusion.
+/// The four-pixel outer window gap and twelve-pixel body inset are reserved
+/// by callers measuring the body in this region.
+pub(crate) fn bubble_side_visible(
+    attachment: BubbleAttachment,
+    visible: Rect,
+    side: BubbleSide,
+) -> Rect {
+    let visible = normalize_rect(visible);
+    let exclusion = normalize_rect(attachment.exclusion);
+    let x1 = right(visible);
+    let y1 = top(visible);
+    let (x0, x1, y0, y1) = match side {
+        BubbleSide::Above => (visible.x, x1, top(exclusion) + OUTER_GAP, y1),
+        BubbleSide::Below => (visible.x, x1, visible.y, exclusion.y - OUTER_GAP),
+        BubbleSide::Left => (visible.x, exclusion.x - OUTER_GAP, visible.y, y1),
+        BubbleSide::Right => (right(exclusion) + OUTER_GAP, x1, visible.y, y1),
+    };
+    let x0 = clamp_scalar(x0, visible.x, right(visible));
+    let x1 = clamp_scalar(x1, x0, right(visible));
+    let y0 = clamp_scalar(y0, visible.y, top(visible));
+    let y1 = clamp_scalar(y1, y0, top(visible));
+    Rect {
+        x: x0,
+        y: y0,
+        width: saturating_sub(x1, x0),
+        height: saturating_sub(y1, y0),
+    }
+}
+
+/// Places the painted body clear of the full pet exclusion. Continuity
+/// preserves the prior direction in Auto and the facing edge/alignment while
+/// resizing; the saved requested size is never changed by this fitting step.
 pub(crate) fn place_bubble(
-    pet: Rect,
+    attachment: BubbleAttachment,
     body_size: (f64, f64),
+    minimum_body: (f64, f64),
     visible: Rect,
     placement: BubblePlacement,
+    continuity: Option<BubbleContinuity>,
 ) -> BubbleGeometry {
-    let pet = normalize_rect(pet);
+    let attachment = BubbleAttachment {
+        exclusion: normalize_rect(attachment.exclusion),
+        anchor: normalize_rect(attachment.anchor),
+    };
     let visible = normalize_rect(visible);
-    let body_size = (
+    let requested = (
         finite_non_negative(body_size.0),
         finite_non_negative(body_size.1),
     );
+    let minimum = (
+        finite_non_negative(minimum_body.0),
+        finite_non_negative(minimum_body.1),
+    );
     let order = BubbleSide::candidate_order(placement);
-
-    for side in order {
-        let proposed = candidate_window(side, pet, body_size, visible);
-        if !is_within(proposed, visible) {
+    let preferred = if placement == BubblePlacement::Auto {
+        continuity.map(|prior| prior.side)
+    } else {
+        None
+    };
+    let candidates = [
+        preferred.unwrap_or(order[0]),
+        order[0],
+        order[1],
+        order[2],
+        order[3],
+    ];
+    for (index, side) in candidates.into_iter().enumerate() {
+        if candidates[..index].contains(&side) {
             continue;
         }
-
-        let geometry = layout(side, proposed, body_size, pet);
-        if is_external(side, &geometry, pet) {
+        let domain = bubble_side_visible(attachment, visible, side);
+        let capacity = body_size_for_extent((f64::MAX, f64::MAX), domain);
+        if capacity.0 < minimum.0
+            || capacity.1 < minimum.1
+            || capacity.0 <= 0.0
+            || capacity.1 <= 0.0
+        {
+            continue;
+        }
+        let size = (requested.0.min(capacity.0), requested.1.min(capacity.1));
+        let prior_body = continuity
+            .filter(|prior| prior.side == side)
+            .and_then(|prior| prior.body);
+        let body = proposed_body(side, attachment, size, prior_body);
+        let geometry = place_standalone_bubble((body.x, body.y), size, domain);
+        let geometry = BubbleGeometry {
+            side: Some(side),
+            tail: valid_tail(side, geometry, attachment),
+            ..geometry
+        };
+        if body_is_external(side, screen_body(geometry), attachment.exclusion) {
             return geometry;
         }
     }
 
+    // No side fits the control/input floor. Keep a bounded, readable body and
+    // choose the least intersection, never presenting it as collision-safe.
+    let mut best = None;
+    let size = body_size_for_extent(requested, visible);
     for side in order {
-        let proposed = candidate_window(side, pet, body_size, visible);
-        let clamped = clamp_to_visible(proposed, visible);
-        let geometry = layout(side, clamped, body_size, pet);
-        if is_external(side, &geometry, pet) {
-            return geometry;
+        let prior_body = continuity
+            .filter(|prior| prior.side == side)
+            .and_then(|prior| prior.body);
+        let body = proposed_body(side, attachment, size, prior_body);
+        let geometry = place_standalone_bubble((body.x, body.y), size, visible);
+        let overlap = intersection_area(screen_body(geometry), attachment.exclusion);
+        if best.map_or(true, |(least, _)| overlap < least) {
+            best = Some((overlap, geometry));
         }
     }
-
-    let proposed = candidate_window(order[0], pet, body_size, visible);
-    let clamped = clamp_to_visible(proposed, visible);
-    let geometry = layout(order[0], clamped, body_size, pet);
-    BubbleGeometry {
-        tail: None,
-        side: None,
-        ..geometry
-    }
+    best.expect("four sides").1
 }
 
 /// Places a tailless bubble independently of the pet. `body_origin` is the
@@ -518,72 +588,101 @@ pub(crate) fn place_standalone_bubble(
     }
 }
 
-fn candidate_window(side: BubbleSide, pet: Rect, body_size: (f64, f64), visible: Rect) -> Rect {
-    let (body_width, body_height) = body_size_for_extent(body_size, visible);
-    let (window_width, window_height) = window_size(body_width, body_height);
-
-    let centered_x = centered(pet.x, pet.width, body_width);
-    let centered_y = centered(pet.y, pet.height, body_height);
-
-    match side {
-        BubbleSide::Above => Rect {
-            x: saturating_sub(centered_x, BUBBLE_WINDOW_INSET),
-            y: saturating_add(top(pet), OUTER_GAP),
-            width: window_width,
-            height: window_height,
-        },
-        BubbleSide::Below => Rect {
-            x: saturating_sub(centered_x, BUBBLE_WINDOW_INSET),
-            y: saturating_sub(saturating_sub(pet.y, OUTER_GAP), window_height),
-            width: window_width,
-            height: window_height,
-        },
-        BubbleSide::Left => Rect {
-            x: saturating_sub(saturating_sub(pet.x, OUTER_GAP), window_width),
-            y: saturating_sub(centered_y, BUBBLE_WINDOW_INSET),
-            width: window_width,
-            height: window_height,
-        },
-        BubbleSide::Right => Rect {
-            x: saturating_add(right(pet), OUTER_GAP),
-            y: saturating_sub(centered_y, BUBBLE_WINDOW_INSET),
-            width: window_width,
-            height: window_height,
-        },
+fn proposed_body(
+    side: BubbleSide,
+    attachment: BubbleAttachment,
+    size: (f64, f64),
+    prior: Option<Rect>,
+) -> Rect {
+    let prior = prior.map(normalize_rect);
+    let exclusion = attachment.exclusion;
+    let anchor = attachment.anchor;
+    let (x, y) = match side {
+        BubbleSide::Above => (
+            prior.map_or_else(|| centered(anchor.x, anchor.width, size.0), |body| body.x),
+            prior.map_or_else(
+                || top(exclusion) + OUTER_GAP + BUBBLE_WINDOW_INSET,
+                |body| body.y,
+            ),
+        ),
+        BubbleSide::Below => (
+            prior.map_or_else(|| centered(anchor.x, anchor.width, size.0), |body| body.x),
+            prior.map_or_else(
+                || exclusion.y - OUTER_GAP - BUBBLE_WINDOW_INSET - size.1,
+                |body| top(body) - size.1,
+            ),
+        ),
+        BubbleSide::Left => (
+            prior.map_or_else(
+                || exclusion.x - OUTER_GAP - BUBBLE_WINDOW_INSET - size.0,
+                |body| right(body) - size.0,
+            ),
+            prior.map_or_else(|| centered(anchor.y, anchor.height, size.1), |body| body.y),
+        ),
+        BubbleSide::Right => (
+            prior.map_or_else(
+                || right(exclusion) + OUTER_GAP + BUBBLE_WINDOW_INSET,
+                |body| body.x,
+            ),
+            prior.map_or_else(|| centered(anchor.y, anchor.height, size.1), |body| body.y),
+        ),
+    };
+    Rect {
+        x,
+        y,
+        width: size.0,
+        height: size.1,
     }
 }
 
-fn layout(side: BubbleSide, window: Rect, requested_body: (f64, f64), pet: Rect) -> BubbleGeometry {
-    let window = normalize_rect(window);
-    let (width_reserve, height_reserve) = body_reserve();
-    let body_width = body_capacity(window.width, width_reserve).min(requested_body.0);
-    let body_height = body_capacity(window.height, height_reserve).min(requested_body.1);
+fn screen_body(geometry: BubbleGeometry) -> Rect {
+    Rect {
+        x: saturating_add(geometry.window.x, geometry.body.x),
+        y: saturating_add(geometry.window.y, geometry.body.y),
+        ..geometry.body
+    }
+}
 
-    let cross_x = saturating_sub(centered(pet.x, pet.width, body_width), window.x);
-    let cross_y = saturating_sub(centered(pet.y, pet.height, body_height), window.y);
-    let body_x = if side.has_horizontal_tail() {
-        clamp_body_cross(BUBBLE_WINDOW_INSET, window.width, body_width)
-    } else {
-        clamp_body_cross(cross_x, window.width, body_width)
-    };
-    let body_y = if side.has_horizontal_tail() {
-        clamp_body_cross(cross_y, window.height, body_height)
-    } else {
-        clamp_body_cross(BUBBLE_WINDOW_INSET, window.height, body_height)
-    };
-    let body = Rect {
-        x: body_x,
-        y: body_y,
-        width: body_width,
-        height: body_height,
-    };
-    let tail = tail_geometry(side, window, body, pet);
+fn body_is_external(side: BubbleSide, body: Rect, exclusion: Rect) -> bool {
+    match side {
+        BubbleSide::Above => body.y >= saturating_add(top(exclusion), BUBBLE_GAP + TAIL_DEPTH),
+        BubbleSide::Below => top(body) <= saturating_sub(exclusion.y, BUBBLE_GAP + TAIL_DEPTH),
+        BubbleSide::Left => right(body) <= saturating_sub(exclusion.x, BUBBLE_GAP + TAIL_DEPTH),
+        BubbleSide::Right => body.x >= saturating_add(right(exclusion), BUBBLE_GAP + TAIL_DEPTH),
+    }
+}
 
-    BubbleGeometry {
-        window,
-        body,
-        side: tail.map(|_| side),
-        tail,
+fn valid_tail(
+    side: BubbleSide,
+    geometry: BubbleGeometry,
+    attachment: BubbleAttachment,
+) -> Option<TailGeometry> {
+    if !body_is_external(side, screen_body(geometry), attachment.exclusion) {
+        return None;
+    }
+    let tail = tail_geometry(side, geometry.window, geometry.body, attachment.anchor)?;
+    let point = (
+        saturating_add(geometry.window.x, tail.tip.0),
+        saturating_add(geometry.window.y, tail.tip.1),
+    );
+    let exclusion = attachment.exclusion;
+    let outside = match side {
+        BubbleSide::Above => point.1 >= top(exclusion) + BUBBLE_GAP,
+        BubbleSide::Below => point.1 <= exclusion.y - BUBBLE_GAP,
+        BubbleSide::Left => point.0 <= exclusion.x - BUBBLE_GAP,
+        BubbleSide::Right => point.0 >= right(exclusion) + BUBBLE_GAP,
+    };
+    outside.then_some(tail)
+}
+
+fn intersection_area(a: Rect, b: Rect) -> f64 {
+    let width = (right(a).min(right(b)) - a.x.max(b.x)).max(0.0);
+    let height = (top(a).min(top(b)) - a.y.max(b.y)).max(0.0);
+    let area = width * height;
+    if area.is_finite() {
+        area
+    } else {
+        f64::MAX
     }
 }
 
@@ -763,29 +862,6 @@ fn right(rect: Rect) -> f64 {
 
 fn top(rect: Rect) -> f64 {
     saturating_add(rect.y, rect.height)
-}
-
-fn is_within(rect: Rect, visible: Rect) -> bool {
-    rect.x >= visible.x
-        && rect.y >= visible.y
-        && right(rect) <= right(visible)
-        && top(rect) <= top(visible)
-}
-
-fn is_external(side: BubbleSide, bubble: &BubbleGeometry, pet: Rect) -> bool {
-    let Some(tail) = bubble.tail else {
-        return false;
-    };
-    let tip = (
-        saturating_add(bubble.window.x, tail.tip.0),
-        saturating_add(bubble.window.y, tail.tip.1),
-    );
-    match side {
-        BubbleSide::Above => tip.1 >= saturating_add(top(pet), BUBBLE_GAP),
-        BubbleSide::Below => tip.1 <= saturating_sub(pet.y, BUBBLE_GAP),
-        BubbleSide::Left => tip.0 <= saturating_sub(pet.x, BUBBLE_GAP),
-        BubbleSide::Right => tip.0 >= saturating_add(right(pet), BUBBLE_GAP),
-    }
 }
 
 fn clamp_to_visible(rect: Rect, visible: Rect) -> Rect {
@@ -1465,22 +1541,25 @@ mod tests {
     }
 
     #[test]
-    fn attached_resize_keeps_original_side_or_drops_tail_on_overlap() {
+    fn captured_resize_validates_body_independently_of_tail() {
         let visible = rect(0.0, 0.0, 500.0, 400.0);
-        let pet = rect(100.0, 100.0, 80.0, 60.0);
-        let start = place_bubble(pet, (120.0, 40.0), visible, BubblePlacement::Above);
-        let start_body = rect(
-            start.window.x + start.body.x,
-            start.window.y + start.body.y,
-            start.body.width,
-            start.body.height,
+        let attachment = BubbleAttachment {
+            exclusion: rect(100.0, 100.0, 80.0, 60.0),
+            anchor: rect(120.0, 120.0, 30.0, 30.0),
+        };
+        let start = place_bubble(
+            attachment,
+            (120.0, 40.0),
+            (80.0, 30.0),
+            visible,
+            BubblePlacement::Above,
+            None,
         );
-        let same = place_resizing_bubble(start_body, visible, Some((pet, start.side)));
+        let start_body = screen_body(start);
+        let same = place_resizing_bubble(start_body, visible, Some((attachment, start.side)));
         assert_eq!(same.side, Some(BubbleSide::Above));
-        assert_eq!(same.body.width, start.body.width);
-        assert_eq!(same.window.x + same.body.x, start_body.x);
-        assert_eq!(same.window.y + same.body.y, start_body.y);
-
+        assert_eq!(screen_body(same), start_body);
+        let domain = bubble_side_visible(attachment, visible, BubbleSide::Above);
         let expanded = resize_bubble_body(
             start_body,
             BubbleResizeDirection::BottomRight,
@@ -1489,37 +1568,26 @@ mod tests {
                 width: 80.0,
                 height: 30.0,
             },
-            visible,
+            domain,
         );
-        let resized = place_resizing_bubble(expanded, visible, Some((pet, start.side)));
+        let resized = place_resizing_bubble(expanded, visible, Some((attachment, start.side)));
         assert_eq!(resized.side, Some(BubbleSide::Above));
-        assert_eq!(resized.body.width, 200.0);
-        assert_eq!(resized.body.height, 30.0);
-        assert_bounded(resized.window, visible);
-        assert_local_body(resized);
-
-        let overlapping = place_resizing_bubble(
-            rect(100.0, 120.0, 120.0, 40.0),
-            visible,
-            Some((pet, Some(BubbleSide::Above))),
-        );
-        assert_eq!(overlapping.side, None);
-        assert_eq!(overlapping.tail, None);
+        assert_eq!(screen_body(resized), expanded);
+        assert_bounded(resized.window, domain);
         assert_eq!(
-            place_resizing_bubble(start_body, visible, Some((pet, None))).side,
+            place_resizing_bubble(
+                rect(100.0, 120.0, 120.0, 40.0),
+                visible,
+                Some((attachment, Some(BubbleSide::Above)))
+            )
+            .side,
+            None
+        );
+        assert_eq!(
+            place_resizing_bubble(start_body, visible, Some((attachment, None))).side,
             None
         );
         assert_eq!(place_resizing_bubble(start_body, visible, None).tail, None);
-
-        let edge_pet = rect(160.0, 360.0, 80.0, 30.0);
-        let retained = place_resizing_bubble(
-            rect(140.0, 352.0, 120.0, 40.0),
-            visible,
-            Some((edge_pet, Some(BubbleSide::Above))),
-        );
-        assert_ne!(retained.side, Some(BubbleSide::Below));
-        assert_eq!(retained.side, None);
-        assert_eq!(retained.tail, None);
     }
 
     #[test]
@@ -1569,170 +1637,365 @@ mod tests {
         assert_eq!(geometry.body.height, 0.0);
     }
 
+    fn attachment(exclusion: Rect, anchor: Rect) -> BubbleAttachment {
+        BubbleAttachment { exclusion, anchor }
+    }
+
     #[test]
-    fn each_side_returns_bounded_body_and_attached_tail() {
-        let pet = rect(100.0, 100.0, 80.0, 60.0);
-        let visible = rect(-200.0, 0.0, 700.0, 400.0);
-        let cases = [
+    fn full_character_exclusion_replaces_head_only_collision() {
+        let visible = rect(0.0, 0.0, 1920.0, 1080.0);
+        let pet = attachment(
+            rect(650.0, 100.0, 400.0, 700.0),
+            rect(800.0, 600.0, 80.0, 100.0),
+        );
+        for (placement, side) in [
             (BubblePlacement::Above, BubbleSide::Above),
             (BubblePlacement::Below, BubbleSide::Below),
             (BubblePlacement::Left, BubbleSide::Left),
             (BubblePlacement::Right, BubbleSide::Right),
-        ];
-
-        for (placement, expected_side) in cases {
-            let geometry = place_bubble(pet, (120.0, 40.0), visible, placement);
-            assert_eq!(geometry.side, Some(expected_side));
-            let tail = geometry.tail.expect("fitting placement should have a tail");
-            assert_bounded(geometry.window, visible);
-            assert_local_body(geometry);
-
-            let reserve = BUBBLE_WINDOW_INSET * 2.0;
-            assert!((geometry.window.width - (geometry.body.width + reserve)).abs() < 1e-9);
-            assert!((geometry.window.height - (geometry.body.height + reserve)).abs() < 1e-9);
-
-            let screen_tip = tip_screen(geometry);
-            let (tip_margin, outer_gap) = match expected_side {
-                BubbleSide::Above => {
-                    assert!(screen_tip.1 >= top(pet) + BUBBLE_GAP);
-                    assert!((screen_tip.0 - center(pet.x, pet.width)).abs() < 1e-9);
-                    (tail.tip.1, geometry.window.y - top(pet))
-                }
-                BubbleSide::Below => {
-                    assert!(screen_tip.1 <= pet.y - BUBBLE_GAP);
-                    assert!((screen_tip.0 - center(pet.x, pet.width)).abs() < 1e-9);
-                    (
-                        geometry.window.height - tail.tip.1,
-                        pet.y - top(geometry.window),
-                    )
-                }
-                BubbleSide::Left => {
-                    assert!(screen_tip.0 <= pet.x - BUBBLE_GAP);
-                    assert!((screen_tip.1 - center(pet.y, pet.height)).abs() < 1e-9);
-                    (
-                        geometry.window.width - tail.tip.0,
-                        pet.x - right(geometry.window),
-                    )
-                }
-                BubbleSide::Right => {
-                    assert!(screen_tip.0 >= right(pet) + BUBBLE_GAP);
-                    assert!((screen_tip.1 - center(pet.y, pet.height)).abs() < 1e-9);
-                    (tail.tip.0, geometry.window.x - right(pet))
-                }
-            };
-            assert!((tip_margin - (BUBBLE_WINDOW_INSET - TAIL_DEPTH)).abs() < 1e-9);
-            assert!((outer_gap - OUTER_GAP).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn body_width_capacity_is_uniform_across_sides() {
-        let visible = rect(-80.0, -40.0, 200.0, 180.0);
-        let pet = rect(-20.0, 20.0, 40.0, 40.0);
-        let expected_body_width = visible.width - BUBBLE_WINDOW_INSET * 2.0;
-
-        for placement in [
-            BubblePlacement::Above,
-            BubblePlacement::Below,
-            BubblePlacement::Left,
-            BubblePlacement::Right,
         ] {
-            let geometry = place_bubble(pet, (500.0, 40.0), visible, placement);
-            assert_bounded(geometry.window, visible);
+            let geometry =
+                place_bubble(pet, (320.0, 180.0), (200.0, 60.0), visible, placement, None);
+            assert_eq!(geometry.side, Some(side));
+            assert_eq!(intersection_area(screen_body(geometry), pet.exclusion), 0.0);
+            assert!(body_is_external(side, screen_body(geometry), pet.exclusion));
+            assert_bounded(geometry.window, bubble_side_visible(pet, visible, side));
             assert_local_body(geometry);
-            assert!((geometry.body.width - expected_body_width).abs() < 1e-9);
-            assert!((geometry.window.width - visible.width).abs() < 1e-9);
+            let tip = tip_screen(geometry);
+            match side {
+                BubbleSide::Above => assert!(tip.1 >= top(pet.exclusion) + BUBBLE_GAP),
+                BubbleSide::Below => assert!(tip.1 <= pet.exclusion.y - BUBBLE_GAP),
+                BubbleSide::Left => assert!(tip.0 <= pet.exclusion.x - BUBBLE_GAP),
+                BubbleSide::Right => assert!(tip.0 >= right(pet.exclusion) + BUBBLE_GAP),
+            }
         }
     }
 
     #[test]
-    fn fitting_alternate_side_wins_before_clamping() {
+    fn cross_axis_corner_clamp_keeps_requested_side() {
         let visible = rect(0.0, 0.0, 400.0, 300.0);
-        let pet = rect(160.0, 260.0, 80.0, 30.0);
-        let geometry = place_bubble(pet, (120.0, 40.0), visible, BubblePlacement::Above);
-
-        assert_eq!(geometry.side, Some(BubbleSide::Below));
-        assert_bounded(geometry.window, visible);
-        assert_local_body(geometry);
-        let tip = tip_screen(geometry);
-        assert!(tip.1 <= pet.y - BUBBLE_GAP);
-    }
-
-    #[test]
-    fn cross_axis_clamp_keeps_preferred_side_external() {
-        let visible = rect(0.0, 0.0, 400.0, 300.0);
-        let pet = rect(0.0, 40.0, 80.0, 60.0);
-        let geometry = place_bubble(pet, (300.0, 40.0), visible, BubblePlacement::Above);
-
-        assert_eq!(geometry.side, Some(BubbleSide::Above));
-        assert_bounded(geometry.window, visible);
-        assert_local_body(geometry);
-        let tip = tip_screen(geometry);
-        assert!(tip.1 >= top(pet) + BUBBLE_GAP);
-    }
-
-    #[test]
-    fn tail_base_is_clamped_away_from_rounded_corners() {
+        let pet = attachment(rect(0.0, 40.0, 80.0, 60.0), rect(0.0, 40.0, 30.0, 30.0));
         let geometry = place_bubble(
-            rect(100.0, 100.0, 80.0, 60.0),
-            (120.0, 40.0),
-            rect(0.0, 0.0, 400.0, 300.0),
-            BubblePlacement::Left,
-        );
-        let tail = geometry.tail.expect("left placement should have a tail");
-        let radius = BUBBLE_RADIUS.min(geometry.body.height * 0.5);
-        assert!(tail.base_start.1 >= geometry.body.y + radius);
-        assert!(tail.base_end.1 <= top(geometry.body) - radius);
-        assert!(tail.base_end.1 - tail.base_start.1 <= TAIL_BASE_WIDTH);
-    }
-
-    #[test]
-    fn oversized_body_and_negative_visible_origin_stay_finite_and_bounded() {
-        let visible = rect(-1920.0, -1080.0, 1920.0, 1080.0);
-        let geometry = place_bubble(
-            rect(-1920.0, -1080.0, 80.0, 80.0),
-            (10_000.0, f64::INFINITY),
+            pet,
+            (300.0, 40.0),
+            (120.0, 35.0),
             visible,
             BubblePlacement::Above,
+            None,
         );
-
+        assert_eq!(geometry.side, Some(BubbleSide::Above));
+        assert_eq!(geometry.window.x, visible.x);
+        assert!(screen_body(geometry).y >= top(pet.exclusion) + 16.0);
         assert_bounded(geometry.window, visible);
-        assert_local_body(geometry);
-        assert_eq!(geometry.window, visible);
-        assert_eq!(geometry.side, None);
-        assert_eq!(geometry.tail, None);
+        let corner = attachment(
+            rect(310.0, 180.0, 80.0, 60.0),
+            rect(370.0, 220.0, 15.0, 15.0),
+        );
+        let left = place_bubble(
+            corner,
+            (120.0, 40.0),
+            (100.0, 35.0),
+            visible,
+            BubblePlacement::Left,
+            None,
+        );
+        assert_eq!(left.side, Some(BubbleSide::Left));
+        assert_bounded(left.window, visible);
     }
 
     #[test]
-    fn tiny_visible_frame_omits_impossible_tail() {
-        let visible = rect(-2.0, -3.0, 3.0, 2.0);
+    fn auto_keeps_legal_side_and_bottom_during_296_297_296_reflow() {
+        let visible = rect(0.0, 0.0, 1440.0, 900.0);
+        let pet = attachment(
+            rect(1100.0, 80.0, 320.0, 700.0),
+            rect(1320.0, 80.0, 100.0, 160.0),
+        );
+        let first = place_bubble(
+            pet,
+            (320.0, 296.0),
+            (240.0, 180.0),
+            visible,
+            BubblePlacement::Auto,
+            None,
+        );
+        assert_eq!(first.side, Some(BubbleSide::Left));
+        let second = place_bubble(
+            pet,
+            (320.0, 297.0),
+            (240.0, 180.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: Some(screen_body(first)),
+            }),
+        );
+        let third = place_bubble(
+            pet,
+            (320.0, 296.0),
+            (240.0, 180.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: Some(screen_body(second)),
+            }),
+        );
+        assert_eq!((second.side, third.side), (first.side, first.side));
+        assert_eq!(screen_body(first).y, screen_body(second).y);
+        assert_eq!(screen_body(first).y, screen_body(third).y);
+        assert_eq!(right(screen_body(first)), right(screen_body(second)));
+        let wider = place_bubble(
+            pet,
+            (400.0, 297.0),
+            (240.0, 180.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: Some(screen_body(second)),
+            }),
+        );
+        assert_eq!(right(screen_body(wider)), right(screen_body(second)));
+        assert_eq!(screen_body(wider).y, screen_body(second).y);
+        assert!(screen_body(wider).x < screen_body(second).x);
+        let side_only = place_bubble(
+            pet,
+            (320.0, 297.0),
+            (240.0, 180.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: None,
+            }),
+        );
+        assert_eq!(side_only.side, Some(BubbleSide::Left));
+        let explicit = place_bubble(
+            pet,
+            (320.0, 100.0),
+            (240.0, 60.0),
+            visible,
+            BubblePlacement::Above,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: Some(screen_body(second)),
+            }),
+        );
+        assert_eq!(explicit.side, Some(BubbleSide::Above));
+    }
+
+    #[test]
+    fn only_minimum_failure_relocates_and_infeasible_floor_falls_back() {
+        let visible = rect(0.0, 0.0, 500.0, 400.0);
+        let pet = attachment(
+            rect(170.0, 130.0, 160.0, 140.0),
+            rect(200.0, 230.0, 50.0, 30.0),
+        );
+        let fitted = place_bubble(
+            pet,
+            (240.0, 140.0),
+            (80.0, 60.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Above,
+                body: None,
+            }),
+        );
+        assert_eq!(fitted.side, Some(BubbleSide::Above));
+        assert_eq!(fitted.body.height, 400.0 - 270.0 - OUTER_GAP - 24.0);
+        let relocated = place_bubble(
+            pet,
+            (240.0, 140.0),
+            (80.0, 110.0),
+            visible,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Above,
+                body: Some(screen_body(fitted)),
+            }),
+        );
+        assert_ne!(relocated.side, Some(BubbleSide::Above));
+        assert!(relocated.side.is_some());
+        let impossible = place_bubble(
+            pet,
+            (240.0, 180.0),
+            (480.0, 360.0),
+            visible,
+            BubblePlacement::Auto,
+            None,
+        );
+        assert_eq!(impossible.side, None);
+        assert_eq!(impossible.tail, None);
+        assert_bounded(impossible.window, visible);
+        assert_local_body(impossible);
+    }
+
+    #[test]
+    fn tiny_tailless_body_remains_attached_and_resize_does_not_reselect() {
+        let visible = rect(0.0, 0.0, 400.0, 300.0);
+        let pet = attachment(
+            rect(100.0, 100.0, 80.0, 60.0),
+            rect(120.0, 120.0, 30.0, 30.0),
+        );
+        let small = place_bubble(
+            pet,
+            (16.0, 16.0),
+            (12.0, 12.0),
+            visible,
+            BubblePlacement::Above,
+            None,
+        );
+        assert_eq!(small.side, Some(BubbleSide::Above));
+        assert_eq!(small.tail, None);
+        let resized = place_resizing_bubble(screen_body(small), visible, Some((pet, small.side)));
+        assert_eq!(resized.side, small.side);
+        assert_eq!(resized.tail, None);
+        assert_ne!(screen_body(small), small.body);
+    }
+
+    #[test]
+    fn all_eight_resizes_use_safe_side_domain_and_keep_opposite_edge() {
+        use BubbleResizeDirection::*;
+        let visible = rect(0.0, 0.0, 600.0, 500.0);
+        let pet = attachment(
+            rect(250.0, 80.0, 100.0, 100.0),
+            rect(280.0, 110.0, 40.0, 50.0),
+        );
+        for (placement, side) in [
+            (BubblePlacement::Above, BubbleSide::Above),
+            (BubblePlacement::Below, BubbleSide::Below),
+            (BubblePlacement::Left, BubbleSide::Left),
+            (BubblePlacement::Right, BubbleSide::Right),
+        ] {
+            let original = screen_body(place_bubble(
+                pet,
+                (100.0, 35.0),
+                (80.0, 30.0),
+                visible,
+                placement,
+                None,
+            ));
+            let domain = bubble_side_visible(pet, visible, side);
+            for direction in [
+                Left,
+                Right,
+                Top,
+                Bottom,
+                TopLeft,
+                TopRight,
+                BottomLeft,
+                BottomRight,
+            ] {
+                let dx = if matches!(direction, Left | TopLeft | BottomLeft) {
+                    -1000.0
+                } else {
+                    1000.0
+                };
+                let dy = if matches!(direction, Bottom | BottomLeft | BottomRight) {
+                    -1000.0
+                } else {
+                    1000.0
+                };
+                let saved = requested_bubble_resize_size(
+                    original,
+                    direction,
+                    (dx, dy),
+                    BubbleSize {
+                        width: 80.0,
+                        height: 30.0,
+                    },
+                    None,
+                );
+                let effective = resize_bubble_body(
+                    original,
+                    direction,
+                    (dx, dy),
+                    BubbleSize {
+                        width: 80.0,
+                        height: 30.0,
+                    },
+                    domain,
+                );
+                let fitted = fit_resizing_bubble_body(
+                    original,
+                    direction,
+                    BubbleSize {
+                        width: effective.width,
+                        height: effective.height,
+                    },
+                    domain,
+                );
+                assert_eq!(fitted, effective);
+                assert!(saved.width >= effective.width && saved.height >= effective.height);
+                match direction {
+                    Left | TopLeft | BottomLeft => assert_eq!(right(effective), right(original)),
+                    Right | TopRight | BottomRight => assert_eq!(effective.x, original.x),
+                    _ => {}
+                }
+                match direction {
+                    Bottom | BottomLeft | BottomRight => assert_eq!(top(effective), top(original)),
+                    Top | TopLeft | TopRight => assert_eq!(effective.y, original.y),
+                    _ => {}
+                }
+                let geometry = place_resizing_bubble(effective, visible, Some((pet, Some(side))));
+                assert_eq!(geometry.side, Some(side));
+                assert_eq!(screen_body(geometry), effective);
+                assert_bounded(geometry.window, domain);
+                assert_local_body(geometry);
+            }
+        }
+    }
+
+    #[test]
+    fn negative_tiny_and_nonfinite_frames_remain_bounded() {
+        let visible = rect(-1920.0, -1080.0, 1920.0, 1080.0);
+        let pet = attachment(
+            rect(-1920.0, -1080.0, 80.0, 80.0),
+            rect(-1920.0, -1080.0, 80.0, 80.0),
+        );
         let geometry = place_bubble(
-            rect(-2.0, -3.0, 1.0, 1.0),
+            pet,
+            (10_000.0, f64::INFINITY),
             (100.0, 50.0),
             visible,
             BubblePlacement::Above,
+            None,
         );
-
-        assert_eq!(geometry.window, visible);
-        assert_eq!(geometry.side, None);
-        assert_eq!(geometry.tail, None);
         assert_bounded(geometry.window, visible);
         assert_local_body(geometry);
-    }
-
-    #[test]
-    fn non_finite_inputs_are_deterministic_and_bounded() {
-        let visible = rect(-20.0, -10.0, 100.0, 80.0);
-        let geometry = place_bubble(
-            rect(f64::NAN, f64::NEG_INFINITY, f64::INFINITY, -5.0),
-            (f64::NAN, f64::INFINITY),
-            visible,
+        let tiny = rect(-2.0, -3.0, 3.0, 2.0);
+        let tiny_pet = attachment(rect(-2.0, -3.0, 1.0, 1.0), rect(-2.0, -3.0, 1.0, 1.0));
+        let tiny_bubble = place_bubble(
+            tiny_pet,
+            (100.0, 50.0),
+            (80.0, 30.0),
+            tiny,
             BubblePlacement::Auto,
+            None,
         );
-
-        assert_bounded(geometry.window, visible);
+        assert_eq!(tiny_bubble.side, None);
+        assert_eq!(tiny_bubble.tail, None);
+        assert_bounded(tiny_bubble.window, tiny);
+        assert_local_body(tiny_bubble);
+        let invalid = attachment(
+            rect(f64::NAN, f64::NEG_INFINITY, f64::INFINITY, -5.0),
+            rect(f64::INFINITY, f64::NAN, -1.0, f64::NAN),
+        );
+        let negative = rect(-20.0, -10.0, 100.0, 80.0);
+        let geometry = place_bubble(
+            invalid,
+            (f64::NAN, f64::INFINITY),
+            (50.0, 20.0),
+            negative,
+            BubblePlacement::Auto,
+            Some(BubbleContinuity {
+                side: BubbleSide::Left,
+                body: Some(invalid.anchor),
+            }),
+        );
+        assert_bounded(geometry.window, negative);
         assert_local_body(geometry);
-        assert!(geometry.window.x.is_finite());
-        assert!(geometry.window.y.is_finite());
     }
 }

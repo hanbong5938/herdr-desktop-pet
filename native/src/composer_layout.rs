@@ -3,7 +3,7 @@ use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBorderType, NSLineBreakMode, NSScrollView, NSScroller,
     NSScrollerStyle, NSTextView,
 };
-use objc2_foundation::NSSize;
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 const BASELINE_LINE_HEIGHT: f64 = 18.0;
 pub(crate) const INPUT_ORIGIN_Y: f64 = 23.0;
@@ -125,5 +125,44 @@ pub(crate) fn layout_composer(view: &NSTextView, scroll: &NSScrollView, metrics:
             clip_view.scrollToPoint(constrained);
             scroll.reflectScrolledClipView(&clip_view);
         }
+    }
+}
+
+/// Reveal a selection after an explicit focused reflow or reply reparent.
+/// The caller decides when revealing is warranted; routine layout must not
+/// steal a reader's horizontal scroll position.
+pub(crate) fn reveal_composer_selection(view: &NSTextView, scroll: &NSScrollView) {
+    let marked: bool = unsafe { objc2::msg_send![view, hasMarkedText] };
+    if marked || scroll.contentSize().width <= 0.0 || scroll.contentSize().height <= 0.0 {
+        return;
+    }
+    let selection = view.selectedRange();
+    if selection.length == 0 {
+        view.scrollRangeToVisible(selection);
+        return;
+    }
+    let container = unsafe { view.textContainer() }.expect("composer has a text container");
+    let manager = unsafe { view.layoutManager() }.expect("composer has a layout manager");
+    manager.ensureLayoutForTextContainer(&container);
+    let glyphs = unsafe {
+        manager.glyphRangeForCharacterRange_actualCharacterRange(selection, std::ptr::null_mut())
+    };
+    let selected = manager.boundingRectForGlyphRange_inTextContainer(glyphs, &container);
+    if selected.size.width <= scroll.contentView().bounds().size.width {
+        let origin = view.textContainerOrigin();
+        view.scrollRectToVisible(NSRect::new(
+            NSPoint::new(origin.x + selected.origin.x, origin.y + selected.origin.y),
+            selected.size,
+        ));
+    } else {
+        // A selection longer than the clip cannot fit in full. Keep the
+        // affinity-facing edge/caret visible rather than scrolling arbitrarily
+        // toward the middle of the selected range.
+        let location = if view.selectionAffinity() == objc2_app_kit::NSSelectionAffinity::Upstream {
+            selection.location
+        } else {
+            selection.location + selection.length
+        };
+        view.scrollRangeToVisible(objc2_foundation::NSRange::new(location, 0));
     }
 }
