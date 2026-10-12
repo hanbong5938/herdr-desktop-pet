@@ -164,9 +164,11 @@ where
             "system" => Ok(LanguagePreference::System),
             "ko" => Ok(LanguagePreference::Ko),
             "en" => Ok(LanguagePreference::En),
+            "zh-Hans" => Ok(LanguagePreference::ZhHans),
+            "ja" => Ok(LanguagePreference::Ja),
             _ => Err(serde::de::Error::unknown_variant(
                 &token,
-                &["system", "ko", "en"],
+                &["system", "ko", "en", "zh-Hans", "ja"],
             )),
         })
         .transpose()
@@ -2024,6 +2026,11 @@ mod tests {
         .is_err());
         for language in [
             serde_json::json!("future"),
+            serde_json::json!("zh-Hant"),
+            serde_json::json!("zh"),
+            serde_json::json!("zh-hans"),
+            serde_json::json!("JA"),
+            serde_json::json!("ja "),
             serde_json::json!(42),
             serde_json::json!({}),
         ] {
@@ -2034,12 +2041,20 @@ mod tests {
                 .is_err()
             );
         }
-        assert_eq!(
-            serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": "ko"}))
-                .unwrap()
-                .language,
-            Some(LanguagePreference::Ko)
-        );
+        for (token, expected) in [
+            ("system", LanguagePreference::System),
+            ("ko", LanguagePreference::Ko),
+            ("en", LanguagePreference::En),
+            ("zh-Hans", LanguagePreference::ZhHans),
+            ("ja", LanguagePreference::Ja),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": token}))
+                    .unwrap()
+                    .language,
+                Some(expected)
+            );
+        }
         assert_eq!(
             serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": null}))
                 .unwrap()
@@ -2822,9 +2837,9 @@ mod tests {
         let path = directory.join(PREFERENCES_FILE);
         fs::write(
             &path,
-            br#"{"visible":false,"passthrough":true,"scale":0.875,"position":[123.25,456.75],"language":"ja"}"#,
+            br#"{"visible":false,"passthrough":true,"scale":0.875,"position":[123.25,456.75],"language":"zh-Hant"}"#,
         )
-        .expect("preferences with invalid language should be written");
+        .expect("preferences with unsupported language should be written");
 
         let loaded = Preferences::load_path(&path).expect("preferences should load");
         assert_eq!(loaded.language(), LanguagePreference::System);
@@ -2841,27 +2856,32 @@ mod tests {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
         let mut preferences = Preferences::default();
-        preferences
-            .apply_patch_in_directory(
-                PreferencePatch {
-                    language: Some(LanguagePreference::En),
-                    ..PreferencePatch::default()
-                },
-                &directory,
-            )
-            .expect("language preference should save");
+        for (token, language) in [
+            ("system", LanguagePreference::System),
+            ("ko", LanguagePreference::Ko),
+            ("en", LanguagePreference::En),
+            ("zh-Hans", LanguagePreference::ZhHans),
+            ("ja", LanguagePreference::Ja),
+        ] {
+            let patch: PreferencePatch =
+                serde_json::from_value(serde_json::json!({"language": token})).unwrap();
+            let snapshot = preferences
+                .apply_patch_in_directory(patch, &directory)
+                .expect("language preference should save");
+            assert_eq!(snapshot.language, language);
 
-        let bytes = fs::read(&path).expect("saved preferences should be readable");
-        let disk: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("saved preferences should be valid JSON");
-        assert_eq!(
-            disk.get("language").and_then(serde_json::Value::as_str),
-            Some("en")
-        );
+            let bytes = fs::read(&path).expect("saved preferences should be readable");
+            let disk: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("saved preferences should be valid JSON");
+            assert_eq!(
+                disk.get("language").and_then(serde_json::Value::as_str),
+                Some(token)
+            );
 
-        let loaded = Preferences::load_path(&path).expect("preferences should load");
-        assert_eq!(loaded.language(), LanguagePreference::En);
-        assert_eq!(preferences.language(), LanguagePreference::En);
+            let loaded = Preferences::load_path(&path).expect("preferences should load");
+            assert_eq!(loaded.language(), language);
+            assert_eq!(preferences.language(), language);
+        }
 
         let _ = fs::remove_dir_all(directory);
     }

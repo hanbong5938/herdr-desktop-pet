@@ -2,7 +2,7 @@
 
 [Herdr](https://herdr.dev)용 네이티브 macOS 데스크톱 캐릭터입니다. 루벨리아가 터치에 반응하고 관측한 세션 상태를 말풍선에 표시하며 선택한 로컬 에이전트에게 메시지를 제출할 수 있습니다.
 
-[English](readme.md) · **한국어** · [버전 문서](docs/releases/README.ko.md) · [릴리스](https://github.com/hanbong5938/herdr-desktop-pet/releases)
+[English](readme.md) · **한국어** · [简体中文](readme.zh-Hans.md) · [日本語](readme.ja.md) · [버전 문서](docs/releases/README.ko.md) · [릴리스](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
 <img src="assets/rubelia-thumbnail.png" alt="기본 데스크톱 캐릭터 루벨리아" width="220">
 
@@ -12,7 +12,7 @@
 
 ## 주요 기능
 
-- 메뉴 막대에서 제어하는 네이티브 캐릭터: 터치·쓰다듬기·이동·크기 변경, 한국어/영어 UI.
+- 메뉴 막대에서 제어하는 네이티브 캐릭터: 터치·쓰다듬기·이동·크기 변경, 시스템 언어 또는 한국어/영어/중국어 간체/일본어 UI.
 - 관측한 로컬·원격 세션의 상태 카드와 검색·정렬; 원격 카드는 읽기 전용.
 - 로컬 에이전트 카드의 한 줄 답장과 별도 말풍선 표시·크기·대사 설정.
 - 공식 캐릭터 브라우저의 선택형 팩 다운로드·적용 및 로컬 팩 가져오기.
@@ -135,7 +135,7 @@ bash scripts/install.sh --source
 
 [사용 안내](docs/usage.ko.md) · [개발 안내](docs/development.ko.md) · [v0.3.5 한영 노트](docs/releases/v0.3.5.md) · [CLI 계약](docs/cli.md#한국어) · [호스트 연동 (English)](integrations/herdr/README.md) · [릴리스 기록](docs/releases/README.ko.md) · [0.3 업그레이드/대응 베타](docs/releases/0.3.md#한국어--v03-계열) · [과거 베타·프리뷰](docs/migrations/unreleased.ko.md).
 
-[한국어 웹사이트](https://hanbong5938.github.io/herdr-desktop-pet/) · [English website](https://hanbong5938.github.io/herdr-desktop-pet/en/): 네이티브 앱 소개 페이지이며 브라우저에서 앱을 실행하지 않습니다. 웹사이트 개발·배포는 [개발 안내](docs/development.ko.md#웹사이트-github-pages)에 있습니다.
+[한국어 웹사이트](https://hanbong5938.github.io/herdr-desktop-pet/) · [영어 웹사이트](https://hanbong5938.github.io/herdr-desktop-pet/en/) · [중국어 간체 웹사이트](https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/) · [일본어 웹사이트](https://hanbong5938.github.io/herdr-desktop-pet/ja/): 네이티브 앱 소개 페이지이며 브라우저에서 앱을 실행하지 않습니다. 별도 캐릭터 갤러리는 영어·한국어만 제공합니다. 웹사이트 개발·배포는 [개발 안내](docs/development.ko.md#웹사이트-github-pages)에 있습니다.
 
 ## 그림 및 라이선스
 

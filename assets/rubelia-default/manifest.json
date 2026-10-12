@@ -48,6 +48,48 @@
         "pet": "루벨리아가 안심한 듯 따뜻하게 미소 지어요.",
         "completion_observed": "루벨리아가 함께 이룬 결과를 기쁘게 축하해요."
       }
+    },
+    "en": {
+      "phases": {
+        "idle": "Rubelia calmly looks ahead to what comes next.",
+        "running": "Rubelia steadily continues her work.",
+        "waiting": "Rubelia waits a moment with a warm smile.",
+        "unknown": "Rubelia thoughtfully considers the next clue."
+      },
+      "reactions": {
+        "head_tap": "Rubelia tilts her head slightly in response.",
+        "body_tap": "Rubelia looks at you, a little startled.",
+        "pet": "Rubelia smiles warmly, as if reassured.",
+        "completion_observed": "Rubelia happily celebrates what you achieved together."
+      }
+    },
+    "zh-Hans": {
+      "phases": {
+        "idle": "露贝莉亚正平静地留意接下来要做的事。",
+        "running": "露贝莉亚正沉着地继续手头的工作。",
+        "waiting": "露贝莉亚带着温暖的微笑稍作等待。",
+        "unknown": "露贝莉亚正机敏地思考下一条线索。"
+      },
+      "reactions": {
+        "head_tap": "露贝莉亚微微歪头作出回应。",
+        "body_tap": "露贝莉亚有些惊讶地望向你。",
+        "pet": "露贝莉亚仿佛松了口气，露出温暖的笑容。",
+        "completion_observed": "露贝莉亚开心地庆祝与你共同取得的成果。"
+      }
+    },
+    "ja": {
+      "phases": {
+        "idle": "ルベリアは落ち着いて次にすることを見ています。",
+        "running": "ルベリアは冷静に作業を続けています。",
+        "waiting": "ルベリアは温かな笑顔で少し待っています。",
+        "unknown": "ルベリアは次の手がかりを賢く考えています。"
+      },
+      "reactions": {
+        "head_tap": "ルベリアは少し首をかしげて応えます。",
+        "body_tap": "ルベリアは少し驚いて、あなたを見つめます。",
+        "pet": "ルベリアはほっとしたように温かく微笑みます。",
+        "completion_observed": "ルベリアは一緒に成し遂げた成果を喜んで祝います。"
+      }
     }
   },
   "source": {

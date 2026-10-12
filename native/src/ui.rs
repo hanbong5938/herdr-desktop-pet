@@ -2315,6 +2315,8 @@ define_class!(
                 0 => LanguagePreference::System,
                 1 => LanguagePreference::Ko,
                 2 => LanguagePreference::En,
+                3 => LanguagePreference::ZhHans,
+                4 => LanguagePreference::Ja,
                 _ => return,
             };
             with_ui_mut(|ui| ui.set_language_preference(preference));
@@ -2538,6 +2540,8 @@ define_class!(
             let locale = match popup.selectedItem().map(|item| item.tag()) {
                 Some(0) => UiLocale::Ko,
                 Some(1) => UiLocale::En,
+                Some(2) => UiLocale::ZhHans,
+                Some(3) => UiLocale::Ja,
                 _ => return,
             };
             with_ui_mut(|ui| ui.dialogue_editor.select_locale(locale));
@@ -4162,10 +4166,18 @@ fn confirm_app_update() {
             format!("저장된 ref '{reference}'를 다시 설치합니다. 고정 ref는 최신 릴리스를 보장하지 않습니다."),
         (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::En) =>
             format!("Reinstalls recorded ref '{reference}'; a pinned ref does not guarantee the latest release."),
+        (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::ZhHans) =>
+            format!("重新安装记录的 ref“{reference}”；固定的 ref 不保证是最新版本。"),
+        (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::Ja) =>
+            format!("記録された ref「{reference}」を再インストールします。固定された ref が最新リリースとは限りません。"),
         (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::Ko) =>
             "현재 체크아웃만 빌드합니다. git pull 또는 ref 변경은 하지 않습니다.".into(),
         (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::En) =>
             "Builds the current checkout only. No git pull or ref change.".into(),
+        (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::ZhHans) =>
+            "仅构建当前检出的代码；不会执行 git pull 或更改 ref。".into(),
+        (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::Ja) =>
+            "現在のチェックアウトのみをビルドします。git pull や ref の変更は行いません。".into(),
         _ => String::new(),
     };
         let action_note = match (&plan.action, locale) {
@@ -4179,18 +4191,40 @@ fn confirm_app_update() {
             format!("Applies only this verified installed image without an installer command: {} · SHA-256 {}",
                 candidate.path.display(), candidate.sha256)
         }
+        (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::ZhHans) => {
+            let candidate = plan.candidate.as_ref().expect("verified installed candidate");
+            format!("不运行安装命令，仅应用此已验证的安装映像：{} · SHA-256 {}",
+                candidate.path.display(), candidate.sha256)
+        }
+        (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::Ja) => {
+            let candidate = plan.candidate.as_ref().expect("verified installed candidate");
+            format!("インストーラーのコマンドを実行せず、検証済みのインストールイメージのみを適用します：{} · SHA-256 {}",
+                candidate.path.display(), candidate.sha256)
+        }
         (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::Ko) =>
             "동의하면 이 formula에 대해서만 Homebrew 메타데이터 갱신 및 업그레이드를 실행할 수 있습니다.".into(),
         (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::En) =>
             "Only after this consent may Homebrew refresh metadata and upgrade this same formula.".into(),
+        (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::ZhHans) =>
+            "仅在您同意后，Homebrew 才会更新元数据并升级同一个 formula。".into(),
+        (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::Ja) =>
+            "同意後に限り、Homebrew はメタデータを更新し、同じ formula をアップグレードできます。".into(),
         (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::Ko) =>
             "현재 디스크의 소스와 빌드 스크립트를 신뢰해야 합니다. 코드를 받거나 ref를 변경하지 않습니다.".into(),
         (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::En) =>
             "Trust the on-disk source and build scripts. No code is fetched or ref changed.".into(),
+        (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::ZhHans) =>
+            "您需要信任磁盘上的源代码和构建脚本；不会获取代码或更改 ref。".into(),
+        (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::Ja) =>
+            "ディスク上のソースとビルドスクリプトを信頼する必要があります。コードの取得や ref の変更は行いません。".into(),
         (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::Ko) =>
             "등록된 Herdr 관리자와 소스의 빌드 스크립트를 실행합니다. 사전 빌드 파일 설치 실패 후에도 소스 빌드로 전환될 수 있습니다.".into(),
         (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::En) =>
             "Runs the registered Herdr manager and source build scripts. Source fallback may follow even a failed prebuilt replacement.".into(),
+        (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::ZhHans) =>
+            "将运行已注册的 Herdr 管理器和源代码构建脚本。即使预构建映像替换失败，也可能转为从源码构建。".into(),
+        (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::Ja) =>
+            "登録済みの Herdr マネージャーとソースのビルドスクリプトを実行します。ビルド済みイメージの置き換えに失敗した場合も、ソースからのビルドに移ることがあります。".into(),
     };
         format!(
             "{}\n\n{}: {}\n{}\n{}\n\n{}\n{}",
@@ -4210,6 +4244,8 @@ fn confirm_app_update() {
         let warning = match locale {
             UiLocale::Ko => "이 공식 릴리스의 정확한 버전과 설치 대상을 승인합니다. 자동으로 이전 버전으로 되돌리지 않으며, 설치/재시작은 이 동의 후에만 진행됩니다.",
             UiLocale::En => "You approve this exact official release and installation target. No automatic downgrade occurs; installation and restart require this consent.",
+            UiLocale::ZhHans => "您批准此官方版本的确切版本号和安装目标。不会自动降级；安装和重新启动必须先获得您的同意。",
+            UiLocale::Ja => "この公式リリースの正確なバージョンとインストール先を承認します。自動的なダウングレードは行われず、インストールと再起動にはこの同意が必要です。",
         };
         format!(
             "{label}\n{} → {} ({})\n\n{}:\n{}\n→\n{}\n\n{}\n{}\n{}",
@@ -12051,6 +12087,8 @@ impl Ui {
             locale: match baseline.locale {
                 UiLocale::Ko => DialogueLanguage::Ko,
                 UiLocale::En => DialogueLanguage::En,
+                UiLocale::ZhHans => DialogueLanguage::ZhHans,
+                UiLocale::Ja => DialogueLanguage::Ja,
             },
             slot: baseline.slot,
         }

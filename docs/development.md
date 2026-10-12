@@ -61,6 +61,12 @@ The rig bridge checks version and seven C layout sizes **before** handing typed 
 | [`scripts/`](../scripts/) | Installation, native builds and app packaging |
 | [`.github/workflows/release.yml`](../.github/workflows/release.yml) | Release packaging workflow |
 
+## Native localization
+
+Native UI strings live in the static catalog [`native/src/i18n.rs`](../native/src/i18n.rs), with Simplified Chinese and Japanese catalogs in [`native/src/i18n/zh_hans.rs`](../native/src/i18n/zh_hans.rs) and [`native/src/i18n/ja.rs`](../native/src/i18n/ja.rs). Add each new UI message to every catalog rather than translating runtime values, paths, IDs, or pack-owned metadata. Preferences persist the canonical tokens `system|ko|en|zh-Hans|ja`; dialogue overrides accept `ko|en|zh-Hans|ja`, with independent drafts per locale. Keep CLI/patch validation strict while preserving the tolerant fallback for older saved preferences. `system` checks preferred OS languages in order: Japanese tags match case-insensitively; `zh`, explicit Hans and CN/SG regions resolve to Simplified Chinese, but explicit Hant or TW/HK/MO without Hans must be skipped for the next supported language (default English). External catalog metadata remains Korean for `ko` and English fallback for `en`, `zh-Hans` and `ja`; authored dialogue and its fallback belong to each pack.
+
+When changing native text or CLI language contracts, keep the [CLI contract](cli.md), [English](../readme.md), [한국어](../readme.ko.md), [简体中文](../readme.zh-Hans.md) and [日本語](../readme.ja.md) READMEs, and the [English](usage.md), [한국어](usage.ko.md), [简体中文](usage.zh-Hans.md) and [日本語](usage.ja.md) usage guides aligned. These links describe the native app; maintain the promotional website's four translations separately.
+
 ## Character authoring
 
 Use the [character creator guide](../.agents/skills/character-creator/SKILL.md) and [`tools/character-pack.py`](../tools/character-pack.py) to author/validate packs. The packaged app includes these resources at `Contents/Resources/creator/SKILL.md` and `Contents/Resources/creator/character-pack.py`. In a source checkout the [local Qwen + See-through production skill](../.agents/skills/create-pet-character/SKILL.md) produces ten independent poses **from an approved illustration**; external engines and model weights are not bundled. Rubelia is the bundled rig template. PNG templates, Aurora, Coding Cat, optional Rubelia outfits and their artwork generators are maintained in [herdr-characters](https://github.com/hanbong5938/herdr-characters); supply an external template with `--templates-root PATH` rather than assuming those assets are bundled.
@@ -73,13 +79,13 @@ The website currently uses static images for its product visuals; no video or MP
 
 Before publishing captures, inspect the rendered pixels: use an isolated demo profile and include only the app, never real session content, account names, local paths, hostnames, email addresses or credentials. Public PNGs must contain only image/color chunks; `check` and `stage` reject EXIF, text, profiles and other metadata. This metadata gate does not inspect visible text, so manual privacy review remains required.
 
-The Korean-default/English promotional website is in [`site/`](../site/); it describes the native macOS app, not an app running in the browser. Published Pages URLs: [Korean](https://hanbong5938.github.io/herdr-desktop-pet/) · [English](https://hanbong5938.github.io/herdr-desktop-pet/en/). Headings use a compact responsive scale and tighter spacing; body text, terminal commands and control sizes remain independent of heading scale. From the repository root:
+The Korean-default promotional website is in [`site/`](../site/); it describes the native macOS app, not an app running in the browser. Published Pages URLs: [Korean](https://hanbong5938.github.io/herdr-desktop-pet/) · [English](https://hanbong5938.github.io/herdr-desktop-pet/en/) · [Simplified Chinese](https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/) · [Japanese](https://hanbong5938.github.io/herdr-desktop-pet/ja/). Keep all four page translations and navigation links aligned when editing product copy, with reciprocal `hreflang` links for `ko`, `en`, `zh-Hans`, `ja` and `x-default` pointing to the Korean root; each page also needs its own canonical URL and matching Open Graph locale. The external [character gallery](https://github.com/hanbong5938/herdr-characters) remains separate and Korean/English only. Historical v0.3.2 screenshots must not be presented as current or translated screenshots; sharing an English social preview image does not change the page's language. Headings use a compact responsive scale and tighter spacing; body text, terminal commands and control sizes remain independent of heading scale. From the repository root:
 
 ```sh
 bun test tools/pages.test.ts
 node tools/pages.mjs check
 node tools/pages.mjs serve --port 4173
-# Open http://127.0.0.1:4173/herdr-desktop-pet/ (English: /herdr-desktop-pet/en/)
+# Open http://127.0.0.1:4173/herdr-desktop-pet/ (English: /herdr-desktop-pet/en/; Simplified Chinese: /herdr-desktop-pet/zh-Hans/; Japanese: /herdr-desktop-pet/ja/)
 node tools/pages.mjs stage /tmp/herdr-pages
 ```
 

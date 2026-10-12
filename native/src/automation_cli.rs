@@ -732,7 +732,11 @@ pub(crate) fn parse_domain(preferences: bool, tokens: &[String]) -> Result<Domai
                         "system" => LanguagePreference::System,
                         "ko" => LanguagePreference::Ko,
                         "en" => LanguagePreference::En,
-                        _ => return Err("unknown language (expected system|ko|en)".into()),
+                        "zh-Hans" => LanguagePreference::ZhHans,
+                        "ja" => LanguagePreference::Ja,
+                        _ => {
+                            return Err("unknown language (expected system|ko|en|zh-Hans|ja)".into())
+                        }
                     });
                 }
                 let colors = ["--surface", "--text", "--muted", "--border", "--accent"];
@@ -1047,7 +1051,9 @@ pub(crate) fn parse_family(family: &str, tokens: &[String]) -> Result<DomainComm
         let locale = match take("--locale") {
             Some("ko") => DialogueLanguage::Ko,
             Some("en") => DialogueLanguage::En,
-            _ => return Err("--locale must be ko or en".into()),
+            Some("zh-Hans") => DialogueLanguage::ZhHans,
+            Some("ja") => DialogueLanguage::Ja,
+            _ => return Err("--locale must be ko|en|zh-Hans|ja".into()),
         };
         let slot: DialogueSlot = serde_json::from_value(serde_json::json!(
             take("--slot").ok_or("--slot is required")?
@@ -1950,6 +1956,8 @@ mod domain_tests {
             ("system", LanguagePreference::System),
             ("ko", LanguagePreference::Ko),
             ("en", LanguagePreference::En),
+            ("zh-Hans", LanguagePreference::ZhHans),
+            ("ja", LanguagePreference::Ja),
         ] {
             for args in [
                 vec!["set".to_owned(), "--language".to_owned(), token.to_owned()],
@@ -1963,7 +1971,9 @@ mod domain_tests {
                 ));
             }
         }
-        for token in ["eng", "EN", "", " en", "en ", "ko\n"] {
+        for token in [
+            "eng", "EN", "", " en", "en ", "ko\n", "zh", "zh-hans", "zh-Hans ", "JA",
+        ] {
             for args in [
                 vec!["set".to_owned(), "--language".to_owned(), token.to_owned()],
                 vec!["set".to_owned(), format!("--language={token}")],
@@ -2123,12 +2133,8 @@ mod domain_tests {
             }
             seen
         });
-        let result = domain_read_with_wait(
-            &socket,
-            "daemon_read",
-            DomainAction::DialogueList {},
-            wait,
-        );
+        let result =
+            domain_read_with_wait(&socket, "daemon_read", DomainAction::DialogueList {}, wait);
         assert!(
             result.is_err(),
             "a terminal read reply after the deadline must not be accepted"
@@ -2298,6 +2304,62 @@ mod domain_tests {
                 &args.into_iter().map(str::to_owned).collect::<Vec<_>>()
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn dialogue_cli_locales_are_canonical_for_get_set_and_reset() {
+        let target = r#"{"target":{"kind":"character","id":"default"},"reference":{"id":"default","revision":0},"generation":3}"#;
+        for (token, expected) in [
+            ("ko", DialogueLanguage::Ko),
+            ("en", DialogueLanguage::En),
+            ("zh-Hans", DialogueLanguage::ZhHans),
+            ("ja", DialogueLanguage::Ja),
+        ] {
+            for operation in ["get", "set", "reset-entry"] {
+                for locale_args in [
+                    vec!["--locale".to_owned(), token.to_owned()],
+                    vec![format!("--locale={token}")],
+                ] {
+                    let mut args = vec![
+                        operation.to_owned(),
+                        "--target".to_owned(),
+                        target.to_owned(),
+                    ];
+                    args.extend(locale_args);
+                    args.extend(["--slot".to_owned(), "idle".to_owned()]);
+                    if operation == "set" {
+                        args.extend(["--text".to_owned(), "hello".to_owned()]);
+                    }
+                    let selection = match parse_family("dialogue", &args).unwrap() {
+                        DomainCommand::DialogueRead(selection) => selection,
+                        DomainCommand::DialogueSet { selection, .. } => selection,
+                        DomainCommand::DialogueResetEntry { selection, .. } => selection,
+                        _ => panic!("unexpected dialogue command"),
+                    };
+                    assert_eq!(selection.locale, expected);
+                    assert_eq!(serde_json::to_value(&selection).unwrap()["locale"], token);
+                }
+            }
+        }
+        for token in [
+            "zh", "zh-hans", "zh-Hans ", "JA", " ja", "ko\n", "system", "",
+        ] {
+            for operation in ["get", "set", "reset-entry"] {
+                let mut args = vec![
+                    operation.to_owned(),
+                    "--target".to_owned(),
+                    target.to_owned(),
+                    "--locale".to_owned(),
+                    token.to_owned(),
+                    "--slot".to_owned(),
+                    "idle".to_owned(),
+                ];
+                if operation == "set" {
+                    args.extend(["--text".to_owned(), "hello".to_owned()]);
+                }
+                assert!(parse_family("dialogue", &args).is_err(), "{args:?}");
+            }
         }
     }
 

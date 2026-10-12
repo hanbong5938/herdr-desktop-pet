@@ -245,10 +245,10 @@ pub(crate) fn validate_text(text: &str) -> Result<(), String> {
 }
 
 fn validate_locale(locale: &str) -> Result<(), String> {
-    if matches!(locale, "ko" | "en") {
+    if matches!(locale, "ko" | "en" | "zh-Hans" | "ja") {
         Ok(())
     } else {
-        Err("dialogue language must be ko or en".to_string())
+        Err("dialogue language must be ko|en|zh-Hans|ja".to_string())
     }
 }
 
@@ -392,6 +392,43 @@ mod tests {
             .dialogue_text("waiting", None, "ko")
             .is_none());
     }
+    #[test]
+    fn override_locales_accept_canonical_tokens_without_mutating_on_aliases() {
+        let target = DialogueTarget::Character("default".to_owned());
+        let mut overrides = DialogueOverrides::default();
+        for locale in ["ko", "en", "zh-Hans", "ja"] {
+            overrides
+                .set_entry(&target, locale, DialogueSlot::Idle, Some(locale.to_owned()))
+                .unwrap();
+        }
+        for locale in ["zh", "zh-Hant", "zh-hans", "JA", "ja ", " ko"] {
+            let before = overrides.clone();
+            assert!(overrides
+                .set_entry(&target, locale, DialogueSlot::Idle, Some("invalid".into()))
+                .is_err());
+            assert_eq!(overrides, before);
+        }
+        overrides.validate().unwrap();
+        let stored = serde_json::to_value(&overrides).unwrap();
+        for locale in ["ko", "en", "zh-Hans", "ja"] {
+            assert_eq!(
+                stored["characters"]["default"][locale]["phases"]["idle"],
+                locale
+            );
+        }
+        overrides
+            .set_entry(&target, "zh-Hans", DialogueSlot::Idle, None)
+            .unwrap();
+        assert_eq!(
+            overrides.entry(&target, "zh-Hans", DialogueSlot::Idle),
+            None
+        );
+        assert_eq!(
+            overrides.entry(&target, "ja", DialogueSlot::Idle),
+            Some("ja")
+        );
+    }
+
     #[test]
     fn utf8_boundary_and_whitespace_are_preserved_without_blank_overrides() {
         let target = DialogueTarget::Character("default".to_owned());

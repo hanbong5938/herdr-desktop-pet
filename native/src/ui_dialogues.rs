@@ -378,7 +378,7 @@ impl Ui {
                     None => self.external_dialogue_target.as_ref() == Some(&choice.target),
                 }
         }).map(|choice| {
-            json!({"identity": DialogueIdentity::from(choice), "name": choice.name, "locales": ["ko", "en"], "slots": slots})
+            json!({"identity": DialogueIdentity::from(choice), "name": choice.name, "locales": ["ko", "en", "zh-Hans", "ja"], "slots": slots})
         }).collect::<Vec<_>>() })
     }
 

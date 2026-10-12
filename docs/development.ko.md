@@ -61,6 +61,12 @@ Rust/Swift rig 경계는 타입 있는 asset/token을 넘기기 **전에** ABI �
 | [`scripts/`](../scripts/) | 설치·네이티브 빌드·앱 패키징 |
 | [`.github/workflows/release.yml`](../.github/workflows/release.yml) | 릴리스 패키징 워크플로 |
 
+## 네이티브 현지화
+
+네이티브 UI 문구는 정적 카탈로그 [`native/src/i18n.rs`](../native/src/i18n.rs)에 있으며 중국어 간체와 일본어 카탈로그는 각각 [`native/src/i18n/zh_hans.rs`](../native/src/i18n/zh_hans.rs), [`native/src/i18n/ja.rs`](../native/src/i18n/ja.rs)입니다. UI 메시지를 추가할 때는 모든 카탈로그를 갱신하고 런타임 값·경로·ID·팩 소유 메타데이터는 번역하지 마세요. 환경 설정의 정규 저장 토큰은 `system|ko|en|zh-Hans|ja`, 대화문 override 토큰은 `ko|en|zh-Hans|ja`이며 언어별 초안은 독립적입니다. CLI/패치 검사는 엄격하게 유지하고 기존 저장 설정의 알 수 없는 값에는 관대한 fallback을 유지하세요. `system`은 OS 선호 언어를 순서대로 검사합니다. 일본어 태그는 대소문자와 무관하며 중국어 `zh`·명시적 Hans·CN/SG 지역은 간체로 해석합니다. 명시적 Hant 또는 Hans가 없는 TW/HK/MO는 다음 지원 언어로 넘기고 없으면 영어를 사용합니다. 외부 카탈로그 메타데이터는 `ko`에 한국어, `en`·`zh-Hans`·`ja`에 영어 fallback을 사용하고 작성된 대화문과 fallback은 팩 소유를 유지합니다.
+
+네이티브 문구나 CLI 언어 계약을 바꿀 때 [CLI 계약](cli.md), README [English](../readme.md)·[한국어](../readme.ko.md)·[简体中文](../readme.zh-Hans.md)·[日本語](../readme.ja.md), 사용 안내 [English](usage.md)·[한국어](usage.ko.md)·[简体中文](usage.zh-Hans.md)·[日本語](usage.ja.md)를 함께 갱신하세요. 이 문서들은 네이티브 앱에 관한 것이며 홍보 웹사이트의 네 언어 번역은 별도로 관리하세요.
+
 ## 캐릭터 제작
 
 팩 제작·검증은 [캐릭터 제작 가이드](../.agents/skills/character-creator/SKILL.md)와 [`tools/character-pack.py`](../tools/character-pack.py)를 참고하세요. 배포 앱에도 `Contents/Resources/creator/SKILL.md`·`Contents/Resources/creator/character-pack.py`가 포함됩니다. 소스 체크아웃의 [로컬 Qwen + See-through 제작 스킬](../.agents/skills/create-pet-character/SKILL.md)은 **승인된 그림에서** 독립된 10포즈를 만듭니다. 외부 엔진·모델 가중치는 번들에 포함하지 않습니다. 루벨리아가 기본 rig 템플릿입니다. PNG 템플릿·Aurora·Coding Cat·선택형 루벨리아 의상과 각각의 그림 생성기는 별도 [herdr-characters](https://github.com/hanbong5938/herdr-characters)에서 관리합니다. 외부 템플릿은 `--templates-root PATH`로 지정해야 하며 번들에 있다고 가정하지 마세요.
@@ -73,13 +79,13 @@ Rust/Swift rig 경계는 타입 있는 asset/token을 넘기기 **전에** ABI �
 
 캡처를 게시하기 전에 화면 내용을 직접 확인하세요. 격리된 시연 프로필에서 앱만 담고 실제 세션 내용·계정명·로컬 경로·호스트명·이메일·인증 정보를 포함하지 마세요. 공개 PNG에는 이미지·색상 청크만 허용하며 `check`와 `stage`는 EXIF·텍스트·프로필 등 메타데이터를 거부합니다. 이 검사는 화면에 보이는 글자를 판별하지 않으므로 개인정보 수동 검토도 반드시 필요합니다.
 
-한국어 기본·영어 홍보 웹사이트는 [`site/`](../site/)에 있습니다. 네이티브 macOS 앱을 설명하는 사이트이며 브라우저에서 앱을 실행하지 않습니다. Pages 주소: [한국어](https://hanbong5938.github.io/herdr-desktop-pet/) · [영어](https://hanbong5938.github.io/herdr-desktop-pet/en/). 제목은 화면 폭에 맞춘 간결한 크기와 좁은 주변 여백을 사용하며 본문·터미널 명령어·버튼 크기는 제목과 독립적으로 유지합니다. 저장소 루트에서 실행하세요.
+한국어 기본 홍보 웹사이트는 [`site/`](../site/)에 있습니다. 네이티브 macOS 앱을 설명하는 사이트이며 브라우저에서 앱을 실행하지 않습니다. Pages 주소: [한국어](https://hanbong5938.github.io/herdr-desktop-pet/) · [영어](https://hanbong5938.github.io/herdr-desktop-pet/en/) · [중국어 간체](https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/) · [일본어](https://hanbong5938.github.io/herdr-desktop-pet/ja/). 제품 문구를 바꿀 때 네 페이지의 번역과 언어 전환 링크를 함께 갱신하고 `ko`·`en`·`zh-Hans`·`ja`의 상호 `hreflang` 및 한국어 루트를 가리키는 `x-default`를 유지하세요. 각 페이지의 canonical URL과 Open Graph 언어도 해당 페이지에 맞춰야 합니다. 외부 [캐릭터 갤러리](https://github.com/hanbong5938/herdr-characters)는 별도로 유지되며 한국어·영어만 제공합니다. 과거 v0.3.2 스크린샷을 최신 화면이나 번역된 스크린샷처럼 소개하지 마세요. 영어 소셜 미리보기 이미지를 공유해도 페이지 언어는 바뀌지 않습니다. 제목은 화면 폭에 맞춘 간결한 크기와 좁은 주변 여백을 사용하며 본문·터미널 명령어·버튼 크기는 제목과 독립적으로 유지합니다. 저장소 루트에서 실행하세요.
 
 ```sh
 bun test tools/pages.test.ts
 node tools/pages.mjs check
 node tools/pages.mjs serve --port 4173
-# http://127.0.0.1:4173/herdr-desktop-pet/ 접속 (영어: /herdr-desktop-pet/en/)
+# http://127.0.0.1:4173/herdr-desktop-pet/ 접속 (영어: /herdr-desktop-pet/en/; 중국어 간체: /herdr-desktop-pet/zh-Hans/; 일본어: /herdr-desktop-pet/ja/)
 node tools/pages.mjs stage /tmp/herdr-pages
 ```
 

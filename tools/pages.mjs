@@ -9,9 +9,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = join(ROOT, 'site');
 const ORIGIN = 'https://hanbong5938.github.io';
 const PREFIX = '/herdr-desktop-pet/';
-const LOCALES = new Map([['ko', `${ORIGIN}${PREFIX}`], ['en', `${ORIGIN}${PREFIX}en/`]]);
+const LOCALES = new Map([
+  ['ko', `${ORIGIN}${PREFIX}`], ['en', `${ORIGIN}${PREFIX}en/`],
+  ['zh-Hans', `${ORIGIN}${PREFIX}zh-Hans/`], ['ja', `${ORIGIN}${PREFIX}ja/`],
+]);
+const OG_LOCALES = new Map([['ko', 'ko_KR'], ['en', 'en_US'], ['zh-Hans', 'zh_CN'], ['ja', 'ja_JP']]);
 const PUBLIC_FILES = new Set([
-  'index.html', 'en/index.html', '404.html', 'sitemap.xml',
+  'index.html', 'en/index.html', 'zh-Hans/index.html', 'ja/index.html', '404.html', 'sitemap.xml',
   'assets/css/site.css', 'assets/js/site.js',
   'assets/images/favicon.svg', 'assets/images/rubelia-thumbnail.png',
   'assets/images/product-desktop.png', 'assets/images/product-detail.png',
@@ -130,10 +134,12 @@ function localReference(raw, source, files, ids, { absolute = false } = {}) {
 function parseDocument(html, name) {
   const ids = new Set();
   const links = [];
+  let language;
   const canonical = [];
   const alternates = new Map();
   const metas = new Map();
   for (const { name: tag, attrs } of tags(html)) {
+    if (tag === 'html') language = attrs.get('lang');
     const id = attrs.get('id');
     if (id !== undefined) {
       if (!id || ids.has(id)) fail(`site/${name}: empty or duplicate id ${JSON.stringify(id)}`);
@@ -163,7 +169,7 @@ function parseDocument(html, name) {
       for (const candidate of attrs.get('srcset').split(',')) links.push(candidate.trim().split(/\s+/)[0]);
     }
   }
-  return { ids, links, canonical, alternates, metas };
+  return { ids, links, canonical, alternates, metas, language };
 }
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -204,14 +210,17 @@ async function check() {
   for (const [name, doc] of documents) {
     for (const link of doc.links) localReference(link, `${name} resource`, files, ids);
     if (name === '404.html') continue;
-    const expected = LOCALES.get(name === 'index.html' ? 'ko' : 'en');
+    const locale = name === 'index.html' ? 'ko' : name.split('/')[0];
+    const expected = LOCALES.get(locale);
+    if (doc.language !== locale) fail(`site/${name}: html lang must be ${locale}`);
     if (doc.canonical.length !== 1 || doc.canonical[0] !== expected) fail(`site/${name}: canonical must be ${expected}`);
-    if (doc.alternates.size !== 3) fail(`site/${name}: expected ko, en and x-default hreflang links`);
-    for (const [locale, url] of [...LOCALES, ['x-default', LOCALES.get('ko')]]) {
-      if (doc.alternates.get(locale) !== url) fail(`site/${name}: incorrect ${locale} hreflang URL`);
+    if (doc.alternates.size !== LOCALES.size + 1) fail(`site/${name}: expected all locale and x-default hreflang links`);
+    for (const [alternate, url] of [...LOCALES, ['x-default', LOCALES.get('ko')]]) {
+      if (doc.alternates.get(alternate.toLowerCase()) !== url) fail(`site/${name}: incorrect ${alternate} hreflang URL`);
     }
+    if (doc.metas.get('og:locale') !== OG_LOCALES.get(locale)) fail(`site/${name}: incorrect og:locale`);
     if (doc.metas.get('og:url') !== expected) fail(`site/${name}: og:url must be ${expected}`);
-    const expectedImage = `${ORIGIN}${PREFIX}assets/images/og-${name === 'index.html' ? 'ko' : 'en'}.png`;
+    const expectedImage = `${ORIGIN}${PREFIX}assets/images/og-${locale === 'ko' ? 'ko' : 'en'}.png`;
     if (doc.metas.get('og:image') !== expectedImage) fail(`site/${name}: og:image must be ${expectedImage}`);
     for (const key of ['og:image', 'twitter:image']) {
       if (key === 'twitter:image' && doc.metas.has(key) && doc.metas.get(key) !== expectedImage) fail(`site/${name}: twitter:image must be ${expectedImage}`);
@@ -227,11 +236,29 @@ async function check() {
     localReference(match[1], `${cssSource} @import`, files, ids);
   }
   const sitemap = await readFile(join(SITE, 'sitemap.xml'), 'utf8');
-  const locations = [...sitemap.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map(match => entities(match[1]));
-  if (locations.length !== LOCALES.size || locations.some(url => ![...LOCALES.values()].includes(url)) || new Set(locations).size !== LOCALES.size) {
-    fail('site/sitemap.xml: expected exactly the Korean and English canonical URLs');
+  const entries = [...sitemap.matchAll(/<url>\s*([\s\S]*?)\s*<\/url>/gi)];
+  if (entries.length !== LOCALES.size) fail('site/sitemap.xml: expected exactly four locale URLs');
+  const locations = new Set();
+  for (const [, entry] of entries) {
+    const locs = [...entry.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)];
+    if (locs.length !== 1) fail('site/sitemap.xml: each url requires one loc');
+    const location = entities(locs[0][1]);
+    if (![...LOCALES.values()].includes(location) || locations.has(location)) fail(`site/sitemap.xml: unexpected or duplicate loc ${location}`);
+    locations.add(location);
+    localReference(location, 'sitemap.xml loc', files, ids, { absolute: true });
+    const alternates = new Map();
+    for (const { name, attrs } of tags(entry)) {
+      if (name !== 'xhtml:link') continue;
+      const locale = attrs.get('hreflang')?.toLowerCase();
+      if (attrs.get('rel') !== 'alternate' || !locale || alternates.has(locale)) fail(`site/sitemap.xml: invalid alternate in ${location}`);
+      alternates.set(locale, attrs.get('href'));
+    }
+    if (alternates.size !== LOCALES.size + 1) fail(`site/sitemap.xml: missing locale alternates in ${location}`);
+    for (const [locale, url] of [...LOCALES, ['x-default', LOCALES.get('ko')]]) {
+      if (alternates.get(locale.toLowerCase()) !== url) fail(`site/sitemap.xml: incorrect ${locale} alternate in ${location}`);
+      localReference(url, 'sitemap.xml alternate', files, ids, { absolute: true });
+    }
   }
-  for (const url of locations) localReference(url, 'sitemap.xml loc', files, ids, { absolute: true });
   console.log(`Checked ${names.length} public site files and local references.`);
   return names;
 }

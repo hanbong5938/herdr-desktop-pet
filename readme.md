@@ -2,7 +2,7 @@
 
 A native macOS companion for [Herdr](https://herdr.dev). Rubelia reacts to touch, shows observed agent sessions on your desktop, and lets you reply to a selected local session.
 
-**English** · [한국어](readme.ko.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
+**English** · [한국어](readme.ko.md) · [简体中文](readme.zh-Hans.md) · [日本語](readme.ja.md) · [Version documentation](docs/releases/README.md) · [Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases)
 
 <img src="assets/rubelia-thumbnail.png" alt="Rubelia, the default desktop companion" width="220">
 
@@ -138,7 +138,7 @@ If the pet disappears about 30 seconds after a no-server start, use `settings ge
 
 - [Usage and recovery](docs/usage.md) · [development and installation](docs/development.md) · [native automation CLI contract](docs/cli.md#english) · [patched host integration](integrations/herdr/README.md).
 - [Release history](docs/releases/README.md) · [v0.3.5 changes](docs/releases/v0.3.5.md) · [v0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) · [historical beta/preview guidance](docs/migrations/unreleased.md) · [v0.1.11 → v0.2.0 migration](docs/migrations/v0.1.11-to-v0.2.0.md).
-- The promotional [Korean](https://hanbong5938.github.io/herdr-desktop-pet/) and [English](https://hanbong5938.github.io/herdr-desktop-pet/en/) websites describe this **native** app; it does not run in a browser. Website development and deployment: [GitHub Pages guide](docs/development.md#website-github-pages). The separate [character gallery](https://hanbong5938.github.io/herdr-characters/) previews optional packs.
+- The promotional [English](https://hanbong5938.github.io/herdr-desktop-pet/en/), [Korean](https://hanbong5938.github.io/herdr-desktop-pet/), [Simplified Chinese](https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/), and [Japanese](https://hanbong5938.github.io/herdr-desktop-pet/ja/) websites describe this **native** app; it does not run in a browser. Website development and deployment: [GitHub Pages guide](docs/development.md#website-github-pages). The separate [character gallery](https://hanbong5938.github.io/herdr-characters/) previews optional packs in English and Korean.
 
 ## Artwork and licensing
 

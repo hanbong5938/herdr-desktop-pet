@@ -901,11 +901,11 @@ fn build_index(
             }
             let desc = match locale {
                 UiLocale::Ko => &entry.description.ko,
-                UiLocale::En => &entry.description.en,
+                UiLocale::En | UiLocale::ZhHans | UiLocale::Ja => &entry.description.en,
             };
             let variant = match locale {
                 UiLocale::Ko => &entry.variant_name.ko,
-                UiLocale::En => &entry.variant_name.en,
+                UiLocale::En | UiLocale::ZhHans | UiLocale::Ja => &entry.variant_name.en,
             };
             if !(query.is_empty()
                 || entry.name.to_lowercase().contains(&query)
@@ -1861,7 +1861,7 @@ impl CharacterBrowser {
             BrowserItemKind::Official { entry, installed } => {
                 let description = match locale {
                     UiLocale::Ko => &entry.description.ko,
-                    UiLocale::En => &entry.description.en,
+                    UiLocale::En | UiLocale::ZhHans | UiLocale::Ja => &entry.description.en,
                 };
                 let tags = entry.tags.join(", ");
                 let details = if installed.is_some() {

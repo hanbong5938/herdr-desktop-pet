@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 const prefix = '/herdr-desktop-pet/';
 const korean = '<h1>한국어 fixture</h1>';
 const english = '<h1>English fixture</h1>';
+const chinese = '<h1>简体中文 fixture</h1>';
+const japanese = '<h1>日本語 fixture</h1>';
 const notFound = '<h1>Not found fixture</h1>';
 const secret = 'PRIVATE_SENTINEL_1234';
 
@@ -58,12 +60,14 @@ test('serve CLI keeps public responses safe when requested paths and 404 fallbac
   let child: ChildProcessWithoutNullStreams | undefined;
   try {
     await mkdir(join(root, 'tools'));
-    await mkdir(join(site, 'en'), { recursive: true });
+    for (const locale of ['en', 'zh-Hans', 'ja']) await mkdir(join(site, locale), { recursive: true });
     await mkdir(join(site, 'assets', 'css'), { recursive: true });
     await mkdir(outside);
     await copyFile(fileURLToPath(new URL('./pages.mjs', import.meta.url)), join(root, 'tools', 'pages.mjs'));
     await writeFile(join(site, 'index.html'), korean);
     await writeFile(join(site, 'en', 'index.html'), english);
+    await writeFile(join(site, 'zh-Hans', 'index.html'), chinese);
+    await writeFile(join(site, 'ja', 'index.html'), japanese);
     await writeFile(join(site, '404.html'), notFound);
     await writeFile(join(site, 'assets', 'css', 'site.css'), 'body { color: blue; }');
     await writeFile(join(outside, 'secret.txt'), secret);
@@ -101,10 +105,16 @@ test('serve CLI keeps public responses safe when requested paths and 404 fallbac
     verify(await get(port, prefix, 'HEAD'), 200, 'text/html; charset=utf-8', '');
     verify(await get(port, `${prefix}en/?source=test`), 200, 'text/html; charset=utf-8', english);
     verify(await get(port, `${prefix}en/`, 'HEAD'), 200, 'text/html; charset=utf-8', '');
+    verify(await get(port, `${prefix}zh-Hans/?source=test`), 200, 'text/html; charset=utf-8', chinese);
+    verify(await get(port, `${prefix}zh-Hans/`, 'HEAD'), 200, 'text/html; charset=utf-8', '');
+    verify(await get(port, `${prefix}ja/?source=test`), 200, 'text/html; charset=utf-8', japanese);
+    verify(await get(port, `${prefix}ja/`, 'HEAD'), 200, 'text/html; charset=utf-8', '');
     verify(await get(port, `${prefix}assets/css/site.css`), 200, 'text/css; charset=utf-8', 'body { color: blue; }');
     for (const [path, location] of [
       ['/herdr-desktop-pet?source=test', `${prefix}?source=test`],
       [`${prefix}en?source=test`, `${prefix}en/?source=test`],
+      [`${prefix}zh-Hans?source=test`, `${prefix}zh-Hans/?source=test`],
+      [`${prefix}ja?source=test`, `${prefix}ja/?source=test`],
     ]) {
       const redirected = await get(port, path);
       expect(redirected.status).toBe(308);
@@ -215,6 +225,11 @@ test('stage publishes clean PNGs and check/stage reject private PNG chunks and m
     expect(success.stdout).not.toContain(secret);
     expect(success.stderr).not.toContain(secret);
     expect(await readFile(join(cleanStage, 'assets', 'images', 'product-desktop.png'))).toEqual(clean);
+    for (const path of ['', 'en/', 'zh-Hans/', 'ja/']) {
+      expect(await readFile(join(cleanStage, path, 'index.html')))
+        .toEqual(await readFile(join(root, 'site', path, 'index.html')));
+    }
+    expect(await readFile(join(cleanStage, 'sitemap.xml'))).toEqual(await readFile(join(root, 'site', 'sitemap.xml')));
 
     const iend = beforeIend(clean);
     const xmp = Buffer.from(`XML:com.adobe.xmp\0\0\0\0\0${secret}`);
@@ -250,5 +265,33 @@ test('stage publishes clean PNGs and check/stage reject private PNG chunks and m
   } finally {
     await rm(root, { recursive: true, force: true });
     if (outputs) await rm(outputs, { recursive: true, force: true });
+  }
+});
+
+test('check CLI rejects broken locale metadata and sitemap alternates', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'herdr-pages-locale-checkout-'));
+  try {
+    await mkdir(join(root, 'tools'));
+    const script = join(root, 'tools', 'pages.mjs');
+    await copyFile(fileURLToPath(new URL('./pages.mjs', import.meta.url)), script);
+    await cp(fileURLToPath(new URL('../site/', import.meta.url)), join(root, 'site'), { recursive: true });
+    const cases = [
+      { file: 'ja/index.html', before: '<html lang="ja">', after: '<html lang="en">', error: 'html lang must be ja' },
+      { file: 'zh-Hans/index.html', before: 'hreflang="ja"', after: 'hreflang="de"', error: 'incorrect ja hreflang URL' },
+      { file: 'ja/index.html', before: 'content="ja_JP"', after: 'content="en_US"', error: 'incorrect og:locale' },
+      { file: 'sitemap.xml', before: 'hreflang="zh-Hans"', after: 'hreflang="de"', error: 'incorrect zh-Hans alternate' },
+    ];
+    for (const { file, before, after, error } of cases) {
+      const target = join(root, 'site', file);
+      const original = await readFile(target, 'utf8');
+      expect(original).toContain(before);
+      await writeFile(target, original.replace(before, after));
+      const result = await runPages(script, 'check');
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain(error);
+      await writeFile(target, original);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

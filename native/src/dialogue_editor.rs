@@ -94,6 +94,22 @@ type Key = (DialogueTarget, UiLocaleKey, DialogueSlot);
 
 // UiLocale has no ordering; use its stable language token for ordered draft keys.
 type UiLocaleKey = &'static str;
+const DIALOGUE_LANGUAGES: [(UiLocale, Message); 4] = [
+    (UiLocale::Ko, Message::KoreanLanguage),
+    (UiLocale::En, Message::EnglishLanguage),
+    (UiLocale::ZhHans, Message::SimplifiedChineseLanguage),
+    (UiLocale::Ja, Message::JapaneseLanguage),
+];
+
+fn locale_for_key(key: UiLocaleKey) -> UiLocale {
+    match key {
+        "ko" => UiLocale::Ko,
+        "en" => UiLocale::En,
+        "zh-Hans" => UiLocale::ZhHans,
+        "ja" => UiLocale::Ja,
+        _ => unreachable!("draft key must originate from a supported UI locale"),
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DialogueChoice {
@@ -405,11 +421,7 @@ impl Model {
             .as_ref()
             .filter(|choice| choice.target == key.0)?
             .clone();
-        let locale = if key.1 == "ko" {
-            UiLocale::Ko
-        } else {
-            UiLocale::En
-        };
+        let locale = locale_for_key(key.1);
         let authored_reference = self.authored_reference(locale, key.2).map(str::to_owned);
         Some(DialogueDraftBaseline {
             choice,
@@ -582,16 +594,7 @@ impl Model {
         self.overrides
             .entry(&key.0, key.1, key.2)
             .map(str::to_owned)
-            .or_else(|| {
-                self.reference(
-                    if key.1 == "ko" {
-                        UiLocale::Ko
-                    } else {
-                        UiLocale::En
-                    },
-                    key.2,
-                )
-            })
+            .or_else(|| self.reference(locale_for_key(key.1), key.2))
             .unwrap_or_default()
     }
 
@@ -1048,8 +1051,8 @@ impl EditorTextView {
             let slot = DialogueSlot::ALL[index];
             let label = text(locale, dialogue_slot_message(slot));
             let marked = model.selected.as_ref().is_some_and(|choice| {
-                ["ko", "en"].iter().any(|language| {
-                    let key = (choice.target.clone(), *language, slot);
+                DIALOGUE_LANGUAGES.iter().any(|(language, _)| {
+                    let key = (choice.target.clone(), language.tag(), slot);
                     model.dirty(&key)
                 })
             });
@@ -1515,16 +1518,14 @@ impl DialogueEditor {
         let target_popup = popup(target, sel!(setDialogueTarget:), mtm);
         let language_label = label("", 11.0, true, secondary_color(), mtm);
         let language = popup(target, sel!(setDialogueLocale:), mtm);
-        language.addItemWithTitle(&NSString::from_str(text(locale, Message::KoreanLanguage)));
-        language.addItemWithTitle(&NSString::from_str(text(locale, Message::EnglishLanguage)));
-        for (index, item) in language
-            .menu()
-            .expect("language menu")
-            .itemArray()
-            .iter()
-            .enumerate()
-        {
-            item.setTag(index as isize);
+        for (index, (_, message)) in DIALOGUE_LANGUAGES.iter().enumerate() {
+            language.addItemWithTitle(&NSString::from_str(text(locale, *message)));
+            language
+                .menu()
+                .expect("language menu")
+                .itemAtIndex(index as isize)
+                .expect("language item")
+                .setTag(index as isize);
         }
         language.selectItemWithTag(0);
         let slot_label = label("", 11.5, true, primary_color(), mtm);
@@ -1744,10 +1745,7 @@ impl DialogueEditor {
         let draft_help = NSString::from_str(text(locale, Message::DialogueDraftSessionHelp));
         self.input.setToolTip(Some(&draft_help));
         view.count.setToolTip(Some(&draft_help));
-        for (index, message) in [Message::KoreanLanguage, Message::EnglishLanguage]
-            .iter()
-            .enumerate()
-        {
+        for (index, (_, message)) in DIALOGUE_LANGUAGES.iter().enumerate() {
             view.language
                 .menu()
                 .expect("language menu")
@@ -2116,12 +2114,13 @@ impl DialogueEditor {
         let model = self.model.borrow();
         let layout = self.root.ivars().borrow();
         let view = layout.as_ref().expect("editor layout");
-        view.language
-            .selectItemWithTag(if model.locale == Some(UiLocale::Ko) {
-                0
-            } else {
-                1
-            });
+        if let Some(locale) = model.locale {
+            let tag = DIALOGUE_LANGUAGES
+                .iter()
+                .position(|(language, _)| *language == locale)
+                .expect("selected dialogue language must have a menu item");
+            view.language.selectItemWithTag(tag as isize);
+        }
         let expanded = view.expanded;
         view.original_button.setTitle(&NSString::from_str(text(
             self.ui_locale,
@@ -2443,6 +2442,90 @@ mod tests {
         assert!(!model.dirty(&waiting));
         assert!(!model.dirty(&korean));
         assert!(model.dirty(&unrelated));
+    }
+
+    #[test]
+    fn four_locale_drafts_keep_their_own_authored_sources_and_cas_entries() {
+        use crate::assets::DialogueLocale;
+
+        let mut model = Model {
+            ready: true,
+            ..selectable_model()
+        };
+        model.metadata = Some(CharacterMetadata {
+            dialogue: Some(
+                DIALOGUE_LANGUAGES
+                    .iter()
+                    .map(|(locale, _)| {
+                        (
+                            locale.tag().to_owned(),
+                            DialogueLocale {
+                                phases: Some(BTreeMap::from([(
+                                    "idle".to_owned(),
+                                    format!("authored {}", locale.tag()),
+                                )])),
+                                reactions: None,
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+        });
+        let target = model.key().unwrap().0;
+        for (locale, _) in DIALOGUE_LANGUAGES {
+            model.locale = Some(locale);
+            let key = model.key().unwrap();
+            model.reconcile(false);
+            assert_eq!(
+                model.mutation_baseline().unwrap().authored_reference,
+                Some(format!("authored {}", locale.tag()))
+            );
+            model.capture(format!("draft {}", locale.tag()));
+            assert!(model.dirty(&key));
+        }
+
+        model
+            .overrides
+            .set_entry(
+                &target,
+                "ja",
+                DialogueSlot::Idle,
+                Some("external ja".into()),
+            )
+            .unwrap();
+        model.reconcile(true);
+        let japanese = model.key().unwrap();
+        assert!(model.conflicted(&japanese));
+        assert_eq!(model.value(&japanese), "draft ja");
+        model.locale = Some(UiLocale::ZhHans);
+        let chinese = model.key().unwrap();
+        model.reconcile(true);
+        assert!(!model.conflicted(&chinese));
+        assert_eq!(model.value(&chinese), "draft zh-Hans");
+        assert_eq!(model.mutation_baseline().unwrap().locale, UiLocale::ZhHans);
+
+        model.locale = Some(UiLocale::Ja);
+        assert!(model.rebase_current("draft ja".into()));
+        assert!(!model.conflicted(&japanese));
+        assert_eq!(
+            model.mutation_baseline().unwrap().override_entry.as_deref(),
+            Some("external ja")
+        );
+        assert_eq!(model.reload_current().as_deref(), Some("external ja"));
+        assert!(!model.dirty(&japanese));
+        for (locale, _) in DIALOGUE_LANGUAGES {
+            if locale != UiLocale::Ja {
+                model.locale = Some(locale);
+                let key = model.key().unwrap();
+                assert_eq!(model.value(&key), format!("draft {}", locale.tag()));
+                assert!(model.dirty(&key));
+            }
+        }
+        model.clear_target_drafts(&target);
+        for (locale, _) in DIALOGUE_LANGUAGES {
+            model.locale = Some(locale);
+            assert!(!model.dirty(&model.key().unwrap()));
+        }
     }
 
     #[test]

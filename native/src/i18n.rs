@@ -8,13 +8,15 @@ use std::fmt;
 use std::fmt::Write as _;
 
 /// The persisted language choice. `System` resolves to the first supported
-/// primary language reported by the operating system.
+/// language and writing system reported by the operating system.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum LanguagePreference {
     #[default]
     System,
     Ko,
     En,
+    ZhHans,
+    Ja,
 }
 
 impl LanguagePreference {
@@ -23,6 +25,8 @@ impl LanguagePreference {
             Self::System => "system",
             Self::Ko => "ko",
             Self::En => "en",
+            Self::ZhHans => "zh-Hans",
+            Self::Ja => "ja",
         }
     }
 }
@@ -47,7 +51,7 @@ impl<'de> Deserialize<'de> for LanguagePreference {
             type Value = LanguagePreference;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("the language token system, ko, or en")
+                formatter.write_str("the language token system, ko, en, zh-Hans, or ja")
             }
 
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
@@ -57,6 +61,8 @@ impl<'de> Deserialize<'de> for LanguagePreference {
                 Ok(match value {
                     "ko" => LanguagePreference::Ko,
                     "en" => LanguagePreference::En,
+                    "zh-Hans" => LanguagePreference::ZhHans,
+                    "ja" => LanguagePreference::Ja,
                     "system" => LanguagePreference::System,
                     _ => LanguagePreference::System,
                 })
@@ -140,11 +146,13 @@ impl<'de> Deserialize<'de> for LanguagePreference {
 }
 
 /// A concrete UI language. The system preference is intentionally not a
-/// locale: it is resolved to one of these two values before rendering.
+/// locale: it is resolved before rendering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UiLocale {
     Ko,
     En,
+    ZhHans,
+    Ja,
 }
 
 impl UiLocale {
@@ -152,6 +160,8 @@ impl UiLocale {
         match self {
             Self::Ko => "ko",
             Self::En => "en",
+            Self::ZhHans => "zh-Hans",
+            Self::Ja => "ja",
         }
     }
 }
@@ -160,8 +170,12 @@ pub(crate) const fn cli_preference_feedback(locale: UiLocale, saved: bool) -> &'
     match (locale, saved) {
         (UiLocale::Ko, true) => "자동화 설정 저장됨",
         (UiLocale::En, true) => "Automation settings saved",
+        (UiLocale::ZhHans, true) => "自动化设置已保存",
+        (UiLocale::Ja, true) => "自動化設定を保存しました",
         (UiLocale::Ko, false) => "자동화 설정 실패",
         (UiLocale::En, false) => "Automation settings failed",
+        (UiLocale::ZhHans, false) => "自动化设置保存失败",
+        (UiLocale::Ja, false) => "自動化設定の保存に失敗しました",
     }
 }
 
@@ -180,18 +194,26 @@ pub(crate) const fn cli_prompt_feedback(
     match (locale, feedback) {
         (UiLocale::Ko, CliPromptFeedback::Sending) => "Herdr에 프롬프트 전송 중",
         (UiLocale::En, CliPromptFeedback::Sending) => "Sending prompt to Herdr",
+        (UiLocale::ZhHans, CliPromptFeedback::Sending) => "正在向 Herdr 发送提示词",
+        (UiLocale::Ja, CliPromptFeedback::Sending) => "Herdr にプロンプトを送信中",
         (UiLocale::Ko, CliPromptFeedback::Acknowledged) => "Herdr가 프롬프트를 수락함",
         (UiLocale::En, CliPromptFeedback::Acknowledged) => "Herdr acknowledged prompt",
+        (UiLocale::ZhHans, CliPromptFeedback::Acknowledged) => "Herdr 已确认收到提示词",
+        (UiLocale::Ja, CliPromptFeedback::Acknowledged) => "Herdr がプロンプトを受け付けました",
         (UiLocale::Ko, CliPromptFeedback::Failed) => "프롬프트 전송 실패",
         (UiLocale::En, CliPromptFeedback::Failed) => "Prompt delivery failed",
+        (UiLocale::ZhHans, CliPromptFeedback::Failed) => "提示词发送失败",
+        (UiLocale::Ja, CliPromptFeedback::Failed) => "プロンプトの送信に失敗しました",
         (UiLocale::Ko, CliPromptFeedback::UnknownDelivery) => "프롬프트 전달 여부 불확실",
         (UiLocale::En, CliPromptFeedback::UnknownDelivery) => "Prompt delivery uncertain",
+        (UiLocale::ZhHans, CliPromptFeedback::UnknownDelivery) => "无法确定提示词是否已送达",
+        (UiLocale::Ja, CliPromptFeedback::UnknownDelivery) => "プロンプトが届いたか確認できません",
     }
 }
 
-/// Resolve an explicit preference or the first supported primary language in
-/// an ordered system language list. Both hyphenated BCP-47 tags and the
-/// underscore form returned by some platform APIs are accepted.
+/// Resolve an explicit preference or the first supported tag in an ordered
+/// system language list. Both hyphenated BCP-47 tags and underscore forms
+/// returned by platform APIs are accepted.
 pub(crate) fn resolve_language(
     preference: LanguagePreference,
     preferred_tags: &[&str],
@@ -199,6 +221,8 @@ pub(crate) fn resolve_language(
     match preference {
         LanguagePreference::Ko => UiLocale::Ko,
         LanguagePreference::En => UiLocale::En,
+        LanguagePreference::ZhHans => UiLocale::ZhHans,
+        LanguagePreference::Ja => UiLocale::Ja,
         LanguagePreference::System => preferred_tags
             .iter()
             .find_map(|tag| primary_locale(tag))
@@ -207,17 +231,49 @@ pub(crate) fn resolve_language(
 }
 
 fn primary_locale(tag: &str) -> Option<UiLocale> {
-    let tag = tag.trim();
-    let end = tag
-        .find(|character| character == '-' || character == '_')
-        .unwrap_or(tag.len());
-    let primary = &tag[..end];
+    let mut parts = tag.trim().split(['-', '_']);
+    let primary = parts.next()?;
     if primary.eq_ignore_ascii_case("ko") {
-        Some(UiLocale::Ko)
-    } else if primary.eq_ignore_ascii_case("en") {
-        Some(UiLocale::En)
-    } else {
-        None
+        return Some(UiLocale::Ko);
+    }
+    if primary.eq_ignore_ascii_case("en") {
+        return Some(UiLocale::En);
+    }
+    if primary.eq_ignore_ascii_case("ja") {
+        return Some(UiLocale::Ja);
+    }
+    if !primary.eq_ignore_ascii_case("zh") {
+        return None;
+    }
+
+    // Script is authoritative even when the region ordinarily uses another
+    // writing system (e.g. zh-Hans-TW or zh-Hant-CN).
+    let mut script = None;
+    let mut region = None;
+    for part in parts {
+        if script.is_none()
+            && part.len() == 4
+            && part.bytes().all(|byte| byte.is_ascii_alphabetic())
+        {
+            script = Some(part);
+        } else if region.is_none()
+            && ((part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_alphabetic()))
+                || (part.len() == 3 && part.bytes().all(|byte| byte.is_ascii_digit())))
+        {
+            region = Some(part);
+        }
+    }
+    if let Some(script) = script {
+        return script
+            .eq_ignore_ascii_case("Hans")
+            .then_some(UiLocale::ZhHans);
+    }
+    match region {
+        None => Some(UiLocale::ZhHans),
+        Some(region) if region.eq_ignore_ascii_case("CN") || region.eq_ignore_ascii_case("SG") => {
+            Some(UiLocale::ZhHans)
+        }
+        Some(_) => None,
     }
 }
 
@@ -233,6 +289,8 @@ pub(crate) enum Message {
     LanguageSystem,
     KoreanLanguage,
     EnglishLanguage,
+    SimplifiedChineseLanguage,
+    JapaneseLanguage,
     More,
     MenuPanelTitle,
     MenuCharacterTab,
@@ -597,6 +655,9 @@ pub(crate) const fn dialogue_slot_message(slot: DialogueSlot) -> Message {
     }
 }
 
+mod ja;
+mod zh_hans;
+
 /// Look up one fixed catalog entry without allocating.
 pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
     match locale {
@@ -608,6 +669,8 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::LanguageSystem => "시스템",
             Message::KoreanLanguage => "한국어",
             Message::EnglishLanguage => "English",
+            Message::SimplifiedChineseLanguage => "简体中文",
+            Message::JapaneseLanguage => "日本語",
             Message::More => "더 보기",
             Message::MenuPanelTitle => "Herdr Desktop Pet 설정",
             Message::MenuCharacterTab => "캐릭터",
@@ -979,6 +1042,8 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::LanguageSystem => "System",
             Message::KoreanLanguage => "한국어",
             Message::EnglishLanguage => "English",
+            Message::SimplifiedChineseLanguage => "简体中文",
+            Message::JapaneseLanguage => "日本語",
             Message::More => "More",
             Message::MenuPanelTitle => "Herdr Desktop Pet Settings",
             Message::MenuCharacterTab => "Character",
@@ -1342,6 +1407,8 @@ pub(crate) const fn text(locale: UiLocale, message: Message) -> &'static str {
             Message::OfficialUnsupportedFormat => "Unsupported official character format",
             Message::OfficialLocalIdExists => "A pack with this ID is already installed. Select it on its character card",
         },
+        UiLocale::ZhHans => zh_hans::text(message),
+        UiLocale::Ja => ja::text(message),
     }
 }
 
@@ -1354,6 +1421,8 @@ pub(crate) fn character_count_label(locale: UiLocale, count: usize) -> String {
         UiLocale::Ko => format!("캐릭터 {count}개"),
         UiLocale::En if count == 1 => "1 character".to_owned(),
         UiLocale::En => format!("{count} characters"),
+        UiLocale::ZhHans => format!("{count} 个角色"),
+        UiLocale::Ja => format!("キャラクター {count} 体"),
     }
 }
 
@@ -1402,6 +1471,8 @@ pub(crate) fn task_status(
         }
         UiLocale::En if count == 1 => format!("1 task {}", text(locale, label)),
         UiLocale::En => format!("{count} tasks {}", text(locale, label)),
+        UiLocale::ZhHans => format!("{count} 个任务{}", text(locale, label)),
+        UiLocale::Ja => format!("タスク {count} 件：{}", text(locale, label)),
     }
 }
 
@@ -1428,6 +1499,26 @@ pub(crate) fn display_status_label(locale: UiLocale, status: DisplayStatus) -> &
         (UiLocale::En, DisplayStatus::Completed) => "Completed (success unverified)",
         (UiLocale::En, DisplayStatus::Unknown) => "Unknown",
         (UiLocale::En, DisplayStatus::Offline) => "Offline",
+        (UiLocale::ZhHans, DisplayStatus::NoSessions) => text(locale, Message::NoConnectedTasks),
+        (UiLocale::ZhHans, DisplayStatus::Idle) => "空闲 · 等待任务",
+        (UiLocale::ZhHans, DisplayStatus::Running) => "运行中",
+        (UiLocale::ZhHans, DisplayStatus::Waiting) => "等待处理",
+        (UiLocale::ZhHans, DisplayStatus::Succeeded) => "已确认成功",
+        (UiLocale::ZhHans, DisplayStatus::Failed) => "失败",
+        (UiLocale::ZhHans, DisplayStatus::Cancelled) => "已取消",
+        (UiLocale::ZhHans, DisplayStatus::Completed) => "已完成（成功未验证）",
+        (UiLocale::ZhHans, DisplayStatus::Unknown) => "状态未知",
+        (UiLocale::ZhHans, DisplayStatus::Offline) => "离线",
+        (UiLocale::Ja, DisplayStatus::NoSessions) => text(locale, Message::NoConnectedTasks),
+        (UiLocale::Ja, DisplayStatus::Idle) => "待機中 · 作業待ち",
+        (UiLocale::Ja, DisplayStatus::Running) => "実行中",
+        (UiLocale::Ja, DisplayStatus::Waiting) => "対応待ち",
+        (UiLocale::Ja, DisplayStatus::Succeeded) => "成功を確認済み",
+        (UiLocale::Ja, DisplayStatus::Failed) => "失敗",
+        (UiLocale::Ja, DisplayStatus::Cancelled) => "キャンセル済み",
+        (UiLocale::Ja, DisplayStatus::Completed) => "完了（成功は未確認）",
+        (UiLocale::Ja, DisplayStatus::Unknown) => "状態不明",
+        (UiLocale::Ja, DisplayStatus::Offline) => "オフライン",
     }
 }
 
@@ -1459,6 +1550,16 @@ pub(crate) fn status_indicator_summary(locale: UiLocale, summary: SessionStatusS
             };
             format!("{} {noun} {state}", summary.count)
         }
+        UiLocale::ZhHans => format!(
+            "{} 个任务 · {}",
+            summary.count,
+            display_status_label(locale, summary.status)
+        ),
+        UiLocale::Ja => format!(
+            "タスク {} 件 · {}",
+            summary.count,
+            display_status_label(locale, summary.status)
+        ),
     }
 }
 
@@ -1467,6 +1568,8 @@ pub(crate) fn task_disclosure(locale: UiLocale, tasks: usize) -> String {
         UiLocale::Ko => format!("작업 {tasks}개 보기"),
         UiLocale::En if tasks == 1 => "View 1 task".to_owned(),
         UiLocale::En => format!("View {tasks} tasks"),
+        UiLocale::ZhHans => format!("查看 {tasks} 个任务"),
+        UiLocale::Ja => format!("タスク {tasks} 件を表示"),
     }
 }
 
@@ -1480,6 +1583,8 @@ pub(crate) fn disconnected_sources(locale: UiLocale, count: usize) -> String {
             format!("1 {}", text(locale, Message::DisconnectedSource))
         }
         UiLocale::En => format!("{count} disconnected sources"),
+        UiLocale::ZhHans => format!("{} {count} 个", text(locale, Message::DisconnectedSource)),
+        UiLocale::Ja => format!("{} {count} 件", text(locale, Message::DisconnectedSource)),
     }
 }
 
@@ -1487,6 +1592,8 @@ pub(crate) fn session_list_summary(locale: UiLocale, matched: usize, omitted: us
     match locale {
         UiLocale::Ko => format!("일치: {matched}개\n제외: {omitted}개"),
         UiLocale::En => format!("Matched: {matched}\nOmitted: {omitted}"),
+        UiLocale::ZhHans => format!("匹配：{matched}\n已排除：{omitted}"),
+        UiLocale::Ja => format!("一致：{matched} 件\n除外：{omitted} 件"),
     }
 }
 
@@ -1505,19 +1612,29 @@ pub(crate) fn session_sort_title(
     sort: SessionSort,
     running_first: bool,
 ) -> &'static str {
-    match (locale, sort, running_first) {
-        (UiLocale::Ko, SessionSort::Stable, false) => text(locale, Message::SessionSortStable),
-        (UiLocale::Ko, SessionSort::TitleAsc, false) => text(locale, Message::SessionSortName),
-        (UiLocale::Ko, SessionSort::SourceAsc, false) => text(locale, Message::SessionSortSource),
-        (UiLocale::En, SessionSort::Stable, false) => text(locale, Message::SessionSortStable),
-        (UiLocale::En, SessionSort::TitleAsc, false) => text(locale, Message::SessionSortName),
-        (UiLocale::En, SessionSort::SourceAsc, false) => text(locale, Message::SessionSortSource),
-        (UiLocale::Ko, SessionSort::Stable, true) => "기본순 · 실행 중 우선",
-        (UiLocale::Ko, SessionSort::TitleAsc, true) => "이름순 · 실행 중 우선",
-        (UiLocale::Ko, SessionSort::SourceAsc, true) => "출처순 · 실행 중 우선",
-        (UiLocale::En, SessionSort::Stable, true) => "Stable · Running first",
-        (UiLocale::En, SessionSort::TitleAsc, true) => "Name · Running first",
-        (UiLocale::En, SessionSort::SourceAsc, true) => "Source · Running first",
+    if !running_first {
+        return text(
+            locale,
+            match sort {
+                SessionSort::Stable => Message::SessionSortStable,
+                SessionSort::TitleAsc => Message::SessionSortName,
+                SessionSort::SourceAsc => Message::SessionSortSource,
+            },
+        );
+    }
+    match (locale, sort) {
+        (UiLocale::Ko, SessionSort::Stable) => "기본순 · 실행 중 우선",
+        (UiLocale::Ko, SessionSort::TitleAsc) => "이름순 · 실행 중 우선",
+        (UiLocale::Ko, SessionSort::SourceAsc) => "출처순 · 실행 중 우선",
+        (UiLocale::En, SessionSort::Stable) => "Stable · Running first",
+        (UiLocale::En, SessionSort::TitleAsc) => "Name · Running first",
+        (UiLocale::En, SessionSort::SourceAsc) => "Source · Running first",
+        (UiLocale::ZhHans, SessionSort::Stable) => "默认顺序 · 运行中优先",
+        (UiLocale::ZhHans, SessionSort::TitleAsc) => "按名称 · 运行中优先",
+        (UiLocale::ZhHans, SessionSort::SourceAsc) => "按来源 · 运行中优先",
+        (UiLocale::Ja, SessionSort::Stable) => "標準順 · 実行中を優先",
+        (UiLocale::Ja, SessionSort::TitleAsc) => "名前順 · 実行中を優先",
+        (UiLocale::Ja, SessionSort::SourceAsc) => "ソース順 · 実行中を優先",
     }
 }
 
@@ -1663,6 +1780,14 @@ pub(crate) fn remove_character_confirmation(locale: UiLocale, id: &str) -> Strin
         UiLocale::En => {
             format!("Remove {id} and all retained revisions? This cannot be undone.")
         }
+        UiLocale::ZhHans => {
+            format!("要删除 {id} 及其所有保留的修订版本吗？此操作无法撤销。")
+        }
+        UiLocale::Ja => {
+            format!(
+                "{id} と保持されているすべてのリビジョンを削除しますか？この操作は取り消せません。"
+            )
+        }
     }
 }
 
@@ -1680,6 +1805,12 @@ pub(crate) fn worktree_remove_confirmation(
         UiLocale::En => format!(
             "Repository: {repo_name}\nCheckout to remove: {checkout_path}\n\nAcross this entire workspace, {tabs} tab(s) and {panes} pane(s) will close, terminating running processes and agents—not just the selected card.\n\nIgnored files (such as build outputs) will be deleted. The server may refuse removal if tracked or untracked files are dirty. The Git branch remains. This cannot be undone."
         ),
+        UiLocale::ZhHans => format!(
+            "仓库：{repo_name}\n要删除的检出目录：{checkout_path}\n\n此工作树的整个工作区中，{tabs} 个标签页和 {panes} 个面板将关闭，正在运行的进程和代理也会终止；并非仅关闭所选卡片。\n\n忽略的文件（如构建产物）将被删除。如果已跟踪或未跟踪的文件存在改动，服务器可能拒绝删除。Git 分支会保留。此操作无法撤销。"
+        ),
+        UiLocale::Ja => format!(
+            "リポジトリ：{repo_name}\n削除するチェックアウト：{checkout_path}\n\nこのワークツリーのワークスペース全体で、タブ {tabs} 件とペイン {panes} 件が閉じられ、実行中のプロセスとエージェントが終了します。選択したカードだけを閉じる操作ではありません。\n\n無視対象のファイル（ビルド成果物など）は削除されます。追跡対象または未追跡のファイルに変更がある場合、サーバーが削除を拒否することがあります。Git ブランチは残ります。この操作は取り消せません。"
+        ),
     }
 }
 
@@ -1690,23 +1821,32 @@ pub(crate) fn pack_inspect_details(
     head: u64,
     revisions: &[u64],
 ) -> String {
-    let rev_list = if revisions.is_empty() {
-        "-".to_owned()
-    } else {
-        revisions
-            .iter()
-            .map(|r| r.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    match locale {
+    let mut details = match locale {
         UiLocale::Ko => format!(
-            "이름: {name}\n패키지 ID: {id}\n최신 리비전 (Head): rev.{head}\n보관된 리비전: [{rev_list}]"
+            "이름: {name}\n패키지 ID: {id}\n최신 리비전 (Head): rev.{head}\n보관된 리비전: ["
         ),
         UiLocale::En => format!(
-            "Name: {name}\nPackage ID: {id}\nHead Revision: rev.{head}\nRetained Revisions: [{rev_list}]"
+            "Name: {name}\nPackage ID: {id}\nHead Revision: rev.{head}\nRetained Revisions: ["
         ),
+        UiLocale::ZhHans => {
+            format!("名称：{name}\n包 ID：{id}\n最新修订版本：rev.{head}\n保留的修订版本：[")
+        }
+        UiLocale::Ja => format!(
+            "名前：{name}\nパッケージ ID：{id}\n最新リビジョン：rev.{head}\n保持中のリビジョン：["
+        ),
+    };
+    if revisions.is_empty() {
+        details.push('-');
+    } else {
+        for (index, revision) in revisions.iter().enumerate() {
+            if index != 0 {
+                details.push_str(", ");
+            }
+            let _ = write!(details, "{revision}");
+        }
     }
+    details.push(']');
+    details
 }
 
 pub(crate) fn character_diagnostics_details(
@@ -1718,23 +1858,23 @@ pub(crate) fn character_diagnostics_details(
     error: Option<&str>,
     operation: Option<&str>,
 ) -> String {
-    let active_str = active.unwrap_or(if matches!(locale, UiLocale::Ko) {
-        "대기 중"
-    } else {
-        "Pending"
+    let active_str = active.unwrap_or(match locale {
+        UiLocale::Ko => "대기 중",
+        UiLocale::En => "Pending",
+        UiLocale::ZhHans => "待生效",
+        UiLocale::Ja => "適用待ち",
     });
     let err_str = error.unwrap_or("-");
     let op_str = operation.unwrap_or("-");
-    let override_str = if override_active {
-        if matches!(locale, UiLocale::Ko) {
-            "예 (Override)"
-        } else {
-            "Yes (Override)"
-        }
-    } else if matches!(locale, UiLocale::Ko) {
-        "아니오 (Normal)"
-    } else {
-        "No (Normal)"
+    let override_str = match (locale, override_active) {
+        (UiLocale::Ko, true) => "예 (Override)",
+        (UiLocale::Ko, false) => "아니오 (Normal)",
+        (UiLocale::En, true) => "Yes (Override)",
+        (UiLocale::En, false) => "No (Normal)",
+        (UiLocale::ZhHans, true) => "是（覆盖）",
+        (UiLocale::ZhHans, false) => "否（正常）",
+        (UiLocale::Ja, true) => "はい（上書き）",
+        (UiLocale::Ja, false) => "いいえ（通常）",
     };
     match locale {
         UiLocale::Ko => format!(
@@ -1742,6 +1882,12 @@ pub(crate) fn character_diagnostics_details(
         ),
         UiLocale::En => format!(
             "Selected: {selected}\nActive: {active_str}\nOverride Active: {override_str}\nGeneration: {generation}\nOperation: {op_str}\nError: {err_str}"
+        ),
+        UiLocale::ZhHans => format!(
+            "已选择：{selected}\n当前角色：{active_str}\n覆盖已启用：{override_str}\n代次：{generation}\n操作：{op_str}\n错误：{err_str}"
+        ),
+        UiLocale::Ja => format!(
+            "選択中：{selected}\n適用中：{active_str}\n上書きの有効状態：{override_str}\n世代：{generation}\n操作：{op_str}\nエラー：{err_str}"
         ),
     }
 }
@@ -1768,6 +1914,18 @@ pub(crate) const fn default_dialogue(locale: UiLocale, key: DefaultDialogue) -> 
             DefaultDialogue::BodyTap => "That tickles.",
             DefaultDialogue::Pet => "Nice petting.",
         },
+        UiLocale::ZhHans => match key {
+            DefaultDialogue::Completion => "已观察到任务完成。",
+            DefaultDialogue::HeadTap => "你好。",
+            DefaultDialogue::BodyTap => "好痒呀。",
+            DefaultDialogue::Pet => "谢谢你摸摸我。",
+        },
+        UiLocale::Ja => match key {
+            DefaultDialogue::Completion => "完了を確認しました。",
+            DefaultDialogue::HeadTap => "こんにちは。",
+            DefaultDialogue::BodyTap => "くすぐったいよ。",
+            DefaultDialogue::Pet => "なでてくれてうれしいよ。",
+        },
     }
 }
 
@@ -1776,17 +1934,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolver_honors_explicit_and_ordered_primary_tags() {
-        assert_eq!(
-            resolve_language(LanguagePreference::Ko, &["en-US"]),
-            UiLocale::Ko
-        );
-        assert_eq!(
-            resolve_language(LanguagePreference::En, &["ko-KR"]),
-            UiLocale::En
-        );
+    fn resolver_honors_explicit_and_ordered_system_tags() {
+        for (preference, locale) in [
+            (LanguagePreference::Ko, UiLocale::Ko),
+            (LanguagePreference::En, UiLocale::En),
+            (LanguagePreference::ZhHans, UiLocale::ZhHans),
+            (LanguagePreference::Ja, UiLocale::Ja),
+        ] {
+            assert_eq!(resolve_language(preference, &["fr-FR", "ko-KR"]), locale);
+        }
         assert_eq!(
             resolve_language(LanguagePreference::System, &["ja-JP", "KO_kr"]),
+            UiLocale::Ja
+        );
+        assert_eq!(
+            resolve_language(LanguagePreference::System, &["fr-FR", "KO_kr"]),
             UiLocale::Ko
         );
         assert_eq!(
@@ -1796,6 +1958,43 @@ mod tests {
         assert_eq!(
             resolve_language(LanguagePreference::System, &["", "zh-Hant"]),
             UiLocale::En
+        );
+    }
+
+    #[test]
+    fn chinese_system_resolution_prefers_script_and_skips_traditional() {
+        for tag in [
+            "zh",
+            "ZH_hAnS",
+            "zh-CN",
+            "ZH_sG",
+            "zh-Hans-TW",
+            "zh_Hans_HK",
+            "zh-MO-Hans",
+        ] {
+            assert_eq!(
+                resolve_language(LanguagePreference::System, &[tag, "ja"]),
+                UiLocale::ZhHans,
+                "{tag}"
+            );
+        }
+        for tag in [
+            "zh-Hant",
+            "zh-Hant-CN",
+            "zh_TW",
+            "zh-HK",
+            "zh-MO",
+            "zh-Latn-CN",
+        ] {
+            assert_eq!(
+                resolve_language(LanguagePreference::System, &[tag, "ja-JP"]),
+                UiLocale::Ja,
+                "{tag}"
+            );
+        }
+        assert_eq!(
+            resolve_language(LanguagePreference::System, &["ja_JP"]),
+            UiLocale::Ja
         );
     }
 
@@ -1813,13 +2012,26 @@ mod tests {
             serde_json::from_str::<LanguagePreference>("null").unwrap(),
             LanguagePreference::System
         );
+
+        for (preference, token) in [
+            (LanguagePreference::System, "system"),
+            (LanguagePreference::Ko, "ko"),
+            (LanguagePreference::En, "en"),
+            (LanguagePreference::ZhHans, "zh-Hans"),
+            (LanguagePreference::Ja, "ja"),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&preference).unwrap(),
+                format!("\"{token}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<LanguagePreference>(&format!("\"{token}\"")).unwrap(),
+                preference
+            );
+        }
         assert_eq!(
-            serde_json::to_string(&LanguagePreference::Ko).unwrap(),
-            "\"ko\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LanguagePreference::System).unwrap(),
-            "\"system\""
+            serde_json::from_str::<LanguagePreference>("\"zh-hans\"").unwrap(),
+            LanguagePreference::System
         );
     }
 
@@ -1835,37 +2047,38 @@ mod tests {
             disconnected_sources(UiLocale::En, 2),
             "2 disconnected sources"
         );
-        assert_eq!(
-            pack_operation_state_label(UiLocale::Ko, "future_state"),
-            "future_state"
-        );
-    }
-
-    #[test]
-    fn worktree_confirmation_names_exact_checkout_impact_and_ignored_files() {
-        for locale in [UiLocale::Ko, UiLocale::En] {
-            let warning = worktree_remove_confirmation(locale, "repo", "/checkout/linked-b", 2, 3);
-            assert!(warning.contains("/checkout/linked-b"));
-            assert!(warning.contains('2'));
-            assert!(warning.contains('3'));
-            assert!(warning.contains(match locale {
-                UiLocale::Ko => "무시된 파일",
-                UiLocale::En => "Ignored files",
-            }));
+        for locale in [UiLocale::ZhHans, UiLocale::Ja] {
+            for count in [0, 1, 2] {
+                let label = character_count_label(locale, count);
+                assert!(label.contains(&count.to_string()));
+                let label = task_disclosure(locale, count);
+                assert!(label.contains(&count.to_string()));
+            }
+            assert_ne!(task_disclosure(locale, 1), task_disclosure(UiLocale::En, 1));
+            assert_ne!(task_disclosure(locale, 2), task_disclosure(UiLocale::En, 2));
+        }
+        for locale in [UiLocale::Ko, UiLocale::En, UiLocale::ZhHans, UiLocale::Ja] {
+            assert_eq!(
+                pack_operation_state_label(locale, "future_state"),
+                "future_state"
+            );
+            assert_eq!(disconnected_sources(locale, 0), "");
         }
     }
 
     #[test]
-    fn language_labels_and_system_tooltip_preserved() {
-        assert_eq!(text(UiLocale::Ko, Message::LanguageSystem), "시스템");
-        assert_eq!(text(UiLocale::En, Message::LanguageSystem), "System");
-        assert_eq!(
-            text(UiLocale::Ko, Message::FollowSystemSettings),
-            "시스템 설정 따르기"
-        );
-        assert_eq!(
-            text(UiLocale::En, Message::FollowSystemSettings),
-            "Follow System Settings"
-        );
+    fn worktree_confirmation_names_exact_checkout_impact_and_ignored_files() {
+        for (locale, ignored_files) in [
+            (UiLocale::Ko, "무시된 파일"),
+            (UiLocale::En, "Ignored files"),
+            (UiLocale::ZhHans, "忽略的文件"),
+            (UiLocale::Ja, "無視対象のファイル"),
+        ] {
+            let warning = worktree_remove_confirmation(locale, "repo", "/checkout/linked-b", 2, 3);
+            assert!(warning.contains("/checkout/linked-b"));
+            assert!(warning.contains('2'));
+            assert!(warning.contains('3'));
+            assert!(warning.contains(ignored_files));
+        }
     }
 }

@@ -982,6 +982,8 @@ impl MenuPanel {
             (Message::LanguageSystem, 0),
             (Message::KoreanLanguage, 1),
             (Message::EnglishLanguage, 2),
+            (Message::SimplifiedChineseLanguage, 3),
+            (Message::JapaneseLanguage, 4),
         ];
         let language_popup =
             make_selection_popup(&language_specs, locale, target, sel!(setLanguage:), mtm);
@@ -1636,6 +1638,8 @@ impl MenuPanel {
             LanguagePreference::System => 0,
             LanguagePreference::Ko => 1,
             LanguagePreference::En => 2,
+            LanguagePreference::ZhHans => 3,
+            LanguagePreference::Ja => 4,
         };
         self.language_popup.selectItemWithTag(tag);
     }
@@ -2218,6 +2222,8 @@ impl MenuPanel {
                 (Message::LanguageSystem, 0),
                 (Message::KoreanLanguage, 1),
                 (Message::EnglishLanguage, 2),
+                (Message::SimplifiedChineseLanguage, 3),
+                (Message::JapaneseLanguage, 4),
             ],
         );
         set_accessibility_label(&self.language_popup, text(locale, Message::MenuLanguage));
