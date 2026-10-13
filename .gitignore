@@ -2,6 +2,7 @@ node_modules/
 dist/
 native/target/
 native/update-coordinator/target/
+native-adapter/target/
 .DS_Store
 __pycache__/
 *.py[cod]
