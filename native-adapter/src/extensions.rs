@@ -43,8 +43,11 @@ impl ControlExtension for Registration {
             self.0.register(request.endpoint)?;
             true
         };
-        serde_json::to_vec(&serde_json::json!({"ok":true,"registration_accepted":accepted}))
-            .map_err(|error| error.to_string())
+        let mut bytes =
+            serde_json::to_vec(&serde_json::json!({"ok":true,"registration_accepted":accepted}))
+                .map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        Ok(bytes)
     }
 }
 pub(crate) struct Observation(pub Arc<HerdrIntegration>);
@@ -93,10 +96,11 @@ impl ControlExtension for Observation {
             .registry
             .lock()
             .map_err(|_| "Herdr registry is poisoned")?;
-        let encoded = serde_json::to_vec(&serde_json::json!({"ok":true,"preferences":registry.preferences,"catalog":registry.catalog,"failure":registry.failure})).map_err(|error| error.to_string())?;
+        let mut encoded = serde_json::to_vec(&serde_json::json!({"ok":true,"preferences":registry.preferences,"catalog":registry.catalog,"failure":registry.failure})).map_err(|error| error.to_string())?;
         if encoded.len().saturating_add(1) > self.max_response_bytes() {
             return Err("Herdr observation response exceeds size limit".to_owned());
         }
+        encoded.push(b'\n');
         Ok(encoded)
     }
 }
@@ -698,6 +702,38 @@ impl LifecycleExtension for HerdrIntegration {
             true
         } else {
             false
+        }
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+
+    #[test]
+    fn registration_and_observation_replies_are_complete_bounded_frames() {
+        let integration = HerdrIntegration::new();
+        let registration = Registration(integration.clone());
+        let observation = Observation(integration);
+        for (handler, request) in [
+            (
+                &registration as &dyn ControlExtension,
+                br#"{"kind":"register","endpoint":"/absent/herdr.sock","readiness_only":true}"#
+                    .as_slice(),
+            ),
+            (
+                &observation as &dyn ControlExtension,
+                br#"{"kind":"herdr-observation","command":"get"}"#.as_slice(),
+            ),
+        ] {
+            let response = handler.handle_frame(request).unwrap();
+            assert_eq!(response.last(), Some(&b'\n'));
+            assert!(!response[..response.len() - 1].contains(&b'\n'));
+            assert!(response.len() <= handler.max_response_bytes());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response).unwrap()["ok"],
+                true
+            );
         }
     }
 }
