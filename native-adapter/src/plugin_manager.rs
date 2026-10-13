@@ -159,9 +159,6 @@ impl PluginManagerCard {
     pub(crate) fn locale(&self) -> UiLocale {
         self.locale
     }
-    pub(crate) fn installed(&self) -> bool {
-        self.installed
-    }
     pub(crate) fn sync(&mut self, installed: bool) {
         self.installed = installed;
         self.update();
