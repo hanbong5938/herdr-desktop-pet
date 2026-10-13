@@ -107,6 +107,16 @@ pub(crate) fn preferences_from_object(object: &Map<String, Value>) -> Result<Obs
 pub(crate) fn read_preferences(store: &ProfileStore) -> Result<ObservationPreferences, String> {
     store.with_writer_lock(|| preferences_from_object(&read_preferences_object(store)?))
 }
+pub(crate) fn manager_installed_from_object(object: &Map<String, Value>) -> Result<bool, String> {
+    match object.get("plugin_manager_installed") {
+        None => Ok(false),
+        Some(Value::Bool(installed)) => Ok(*installed),
+        Some(_) => Err("plugin_manager_installed must be a boolean".to_owned()),
+    }
+}
+pub(crate) fn read_manager_installed(store: &ProfileStore) -> Result<bool, String> {
+    manager_installed_from_object(&store.read_committed_preferences()?)
+}
 pub(crate) fn patch_preferences(object: &mut Map<String, Value>, local: Option<bool>, remote: Option<bool>, machines: Option<&[String]>) -> Result<ObservationPreferences, String> {
     let mut preferences = preferences_from_object(object)?;
     if let Some(value) = local { preferences.local = value; }

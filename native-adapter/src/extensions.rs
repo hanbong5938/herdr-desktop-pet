@@ -53,8 +53,12 @@ impl ControlExtension for Observation {
             "get" if request.patch.is_none() => {}
             "set" => {
                 let patch = request.patch.as_ref().ok_or("Herdr observation set requires a patch")?;
-                let prepared = self.0.prepare_preference_patch(patch)?;
-                self.0.persist_patch(&self.0.store()?, prepared.as_ref())?;
+                if patch.contains_key("plugin_manager_installed") {
+                    return Err("manager availability must use the common preferences API".to_owned());
+                }
+                let store = self.0.store()?;
+                let prepared = self.0.prepare_preference_patch(&store, patch)?;
+                self.0.persist_patch(&store, prepared.as_ref())?;
             }
             _ => return Err("invalid Herdr observation command".to_owned()),
         }
@@ -123,7 +127,7 @@ impl CliExtension for HerdrIntegration {
         Ok(CliOutput { stdout: response, stderr: Vec::new(), exit_code: if ok { 0 } else { 1 } })
     }
 }
-const PATCH_KEYS: &[&str] = &["observation_local", "observation_remote", "observation_machines"];
+const PATCH_KEYS: &[&str] = &["observation_local", "observation_remote", "observation_machines", "plugin_manager_installed"];
 const PREFERENCE_OPTIONS: &[PreferencePatchOption] = &[
     PreferencePatchOption { name:"--observation-local", takes_value:true, repeatable:false, help:"Observe local Herdr sessions: on|off" },
     PreferencePatchOption { name:"--observation-remote", takes_value:true, repeatable:false, help:"Observe selected saved Herdr machines: on|off" },
@@ -132,13 +136,24 @@ const PREFERENCE_OPTIONS: &[PreferencePatchOption] = &[
 ];
 struct PreparedPatch {
     shared: Arc<Shared>,
+    store: ProfileStore,
     local: Option<bool>,
     remote: Option<bool>,
     machines: Option<Vec<String>>,
+    manager_installed: Option<bool>,
+    // The actual operation lease is retained through the common sole atomic
+    // save, not merely checked and released during candidate preparation.
+    _availability: Option<crate::plugin_manager_backend::AvailabilityAdmission>,
 }
 impl PreparedPreferencePatch for PreparedPatch {
     fn apply(&self, candidate: &mut Map<String, Value>) -> Result<(), String> {
-        settings::patch_preferences(candidate, self.local, self.remote, self.machines.as_deref())?;
+        if self.local.is_some() || self.remote.is_some() || self.machines.is_some() {
+            settings::patch_preferences(candidate, self.local, self.remote, self.machines.as_deref())?;
+        }
+        if let Some(installed) = self.manager_installed {
+            settings::manager_installed_from_object(candidate)?;
+            candidate.insert("plugin_manager_installed".to_owned(), Value::Bool(installed));
+        }
         Ok(())
     }
     fn committed(&self, _saved: &Map<String, Value>) -> Result<(), String> {
@@ -147,8 +162,16 @@ impl PreparedPreferencePatch for PreparedPatch {
         // saved candidate over a newer already-applied write. The profile
         // writer is released before entering the domain transaction.
         let _policy_write = self.shared.policy_writes.lock().map_err(|_| "Herdr lifecycle policy is poisoned")?;
-        let store = self.shared.store.lock().map_err(|_| "Herdr profile is poisoned")?.clone().ok_or("Herdr profile is not configured")?;
-        let preferences = settings::read_preferences(&store)?;
+        let store = &self.store;
+        store.verify_owner()?;
+        if self.local.is_none() && self.remote.is_none() && self.machines.is_none() {
+            // Manager availability has no eager host-side policy. Actual saved
+            // state controls the next explicit open/admission.
+            settings::read_manager_installed(store)?;
+            self.shared.wake();
+            return Ok(());
+        }
+        let preferences = settings::read_preferences(store)?;
         if self.shared.runtime.get().is_none() {
             self.shared.registry.lock().map_err(|_| "Herdr registry is poisoned")?.preferences = preferences;
             return Ok(());
@@ -277,16 +300,50 @@ impl LifecycleExtension for HerdrIntegration {
                 // GUI deltas retain unavailable previously selected IDs; only
                 // the chosen machine requires fresh enabled catalog authority.
                 drop(registry);
-                let prepared = PreparedPatch { shared:Arc::clone(&self.shared), local:None, remote:None, machines:Some(machines) };
+                let prepared = PreparedPatch { shared:Arc::clone(&self.shared), store:store.clone(), local:None, remote:None, machines:Some(machines), manager_installed:None, _availability:None };
                 return self.persist_patch(store, &prepared);
             }
         }
-        self.persist_patch(store, self.prepare_preference_patch(&patch)?.as_ref())
+        self.persist_patch(store, self.prepare_preference_patch(store, &patch)?.as_ref())
     }
-    fn actions(&self, _store: &ProfileStore, selection: &ObservationSelection, locale: &str) -> Result<Vec<LifecycleActionView>, String> {
+    fn actions(&self, store: &ProfileStore, selection: &ObservationSelection, locale: &str) -> Result<Vec<LifecycleActionView>, String> {
         use crate::i18n::{text, Message};
         let registry = self.shared.registry.lock().map_err(|_| "Herdr registry is poisoned")?;
-        Ok(registry.catalog.machines.iter().filter(|machine| selection.includes_provider("herdr") && registry.preferences.remote && registry.preferences.machines.contains(&machine.id) && machine.enabled && machine.status == settings::MachineStatus::Offline).map(|machine| LifecycleActionView { key:format!("reconnect:{}",machine.id), label:format!("{} · {}",text(locale, Message::CopyReconnect),machine.label), help:text(locale, Message::ReconnectHelp).to_owned(), enabled:true, copy_text:Some(format!("herdr machine reconnect '{}'",machine.id.replace('\'',"'\\''"))) }).collect())
+        let mut actions: Vec<_> = registry.catalog.machines.iter().filter(|machine| selection.includes_provider("herdr") && registry.preferences.remote && registry.preferences.machines.contains(&machine.id) && machine.enabled && machine.status == settings::MachineStatus::Offline).map(|machine| LifecycleActionView { key:format!("reconnect:{}",machine.id), label:format!("{} · {}",text(locale, Message::CopyReconnect),machine.label), help:text(locale, Message::ReconnectHelp).to_owned(), enabled:true, copy_text:Some(format!("herdr machine reconnect '{}'",machine.id.replace('\'',"'\\''"))) }).collect();
+        let enabled = selection.includes_provider("herdr") && registry.enabled && !registry.finalized && !self.shared.stop.load(Ordering::Acquire);
+        drop(registry);
+        if !selection.includes_provider("herdr") { return Ok(actions); }
+        let installed = settings::read_manager_installed(store)?;
+        use crate::plugin_manager_i18n::{text as manager_text, Message as ManagerMessage, UiLocale};
+        let locale = UiLocale::from_tag(locale);
+        let help = manager_text(locale, if installed { ManagerMessage::PluginManagerAvailable } else { ManagerMessage::PluginManagerUnavailable });
+        for (key, message, available) in [
+            ("plugin_manager_open", ManagerMessage::PluginManagerOpen, installed),
+            ("plugin_manager_install", ManagerMessage::PluginManagerInstall, !installed),
+            ("plugin_manager_remove", ManagerMessage::PluginManagerRemove, installed),
+        ] {
+            actions.push(LifecycleActionView {
+                key: key.to_owned(), label: manager_text(locale, message).to_owned(),
+                help: help.to_owned(), enabled: enabled && available, copy_text: None,
+            });
+        }
+        Ok(actions)
+    }
+    fn activate_action(
+        &self, store: &ProfileStore, selection: &ObservationSelection, key: &str,
+        locale: &str, preferences: Arc<dyn PreferenceAccess>,
+    ) -> Result<(), String> {
+        if !matches!(key, "plugin_manager_open" | "plugin_manager_install" | "plugin_manager_remove") {
+            return Err("unsupported Herdr lifecycle action; copy actions cannot be activated".to_owned());
+        }
+        if !selection.includes_provider("herdr") { return Err("Herdr manager is not selected".to_owned()); }
+        crate::manager_mutation_allowed(store)?;
+        let socket = self.shared.registry.lock().map_err(|_| "Herdr registry is poisoned")?
+            .configured_socket.clone().unwrap_or_else(settings::default_herdr_socket);
+        crate::plugin_manager_frontend::activate(
+            store.paths(), store.clone(), socket,
+            crate::plugin_manager_i18n::UiLocale::from_tag(locale), key, preferences,
+        )
     }
     fn preference_patch_keys(&self) -> &'static [&'static str] { PATCH_KEYS }
     fn preference_snapshot(&self, saved: &Map<String, Value>) -> Result<Map<String, Value>, String> {
@@ -295,6 +352,7 @@ impl LifecycleExtension for HerdrIntegration {
         result.insert("observation_local".to_owned(), Value::Bool(preferences.local));
         result.insert("observation_remote".to_owned(), Value::Bool(preferences.remote));
         result.insert("observation_machines".to_owned(), serde_json::to_value(preferences.machines).map_err(|error| error.to_string())?);
+        result.insert("plugin_manager_installed".to_owned(), Value::Bool(settings::manager_installed_from_object(saved)?));
         Ok(result)
     }
     fn preference_options(&self) -> &'static [PreferencePatchOption] { PREFERENCE_OPTIONS }
@@ -316,18 +374,26 @@ impl LifecycleExtension for HerdrIntegration {
         if clear || !machines.is_empty() { patch.insert("observation_machines".to_owned(),serde_json::to_value(machines).map_err(|error| error.to_string())?); }
         Ok(patch)
     }
-    fn prepare_preference_patch(&self, patch: &Map<String, Value>) -> Result<Box<dyn PreparedPreferencePatch>, String> {
+    fn prepare_preference_patch(&self, store: &ProfileStore, patch: &Map<String, Value>) -> Result<Box<dyn PreparedPreferencePatch>, String> {
+        store.verify_owner()?;
         if patch.keys().any(|key| !PATCH_KEYS.contains(&key.as_str())) { return Err("unsupported Herdr preference patch field".to_owned()); }
         let boolean = |key| patch.get(key).map(|value| value.as_bool().ok_or_else(|| format!("{key} must be a boolean"))).transpose();
         let local = boolean("observation_local")?;
         let remote = boolean("observation_remote")?;
+        let manager_installed = boolean("plugin_manager_installed")?;
         let machines: Option<Vec<String>> = patch.get("observation_machines").map(|value| serde_json::from_value(value.clone()).map_err(|_| "observation_machines must be a list of strings".to_owned())).transpose()?;
         if let Some(machines) = &machines {
             settings::ObservationPreferences { local:true, remote:false, machines:machines.clone() }.validate()?;
             let registry = self.shared.registry.lock().map_err(|_| "Herdr registry is poisoned")?;
             if !machines.is_empty() && (!registry.catalog.initialized || machines.iter().any(|id| !registry.catalog.machines.iter().any(|machine| machine.id == *id && machine.enabled))) { return Err("selected machine is not in the enabled saved Herdr catalog".to_owned()); }
         }
-        Ok(Box::new(PreparedPatch { shared:Arc::clone(&self.shared), local, remote, machines }))
+        let availability = if let Some(installed) = manager_installed {
+            if self.shared.runtime.get().is_some() {
+                crate::manager_mutation_allowed(store)?;
+            }
+            Some(crate::plugin_manager_backend::availability_admission(&store.paths(), store, installed)?)
+        } else { None };
+        Ok(Box::new(PreparedPatch { shared:Arc::clone(&self.shared), store:store.clone(), local, remote, machines, manager_installed, _availability:availability }))
     }
     fn should_exit(&self, selection: &ObservationSelection, now: Instant) -> bool {
         if self.shared.stop.load(Ordering::Acquire) { return false; }

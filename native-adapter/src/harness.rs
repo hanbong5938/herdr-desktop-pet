@@ -123,6 +123,9 @@ impl RuntimePort for Runtime {
         operation(&mut *domain); Ok(())
     }
     fn wake_ui(&self) { self.wakes.fetch_add(1,Ordering::Relaxed); }
+    fn mutation_admission(&self) -> Result<(), String> {
+        self.domain.lock().map_err(|_| "test domain is poisoned")?.mutation_allowed()
+    }
 }
 pub(crate) fn integration() -> (Arc<HerdrIntegration>,Arc<Runtime>) {
     let integration = HerdrIntegration::new();

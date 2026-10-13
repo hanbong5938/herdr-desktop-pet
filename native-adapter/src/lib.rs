@@ -5,6 +5,15 @@ mod extensions;
 mod i18n;
 mod operations;
 mod outcome;
+mod plugin_manager;
+mod plugin_manager_frontend;
+mod plugin_manager_control;
+mod plugin_manager_i18n;
+mod plugin_manager_runtime;
+mod plugin_manager_backend;
+pub(crate) use plugin_manager_runtime::{
+    mutation_allowed as manager_mutation_allowed, mutation_fence as manager_mutation_fence,
+};
 mod protocol;
 mod remote;
 mod settings;
@@ -64,6 +73,7 @@ struct Registry {
     endpoint_revision: u64,
     bindings: HashMap<String, Binding>,
     operations: HashMap<u64, PendingOperation>,
+    manager_operations: HashMap<u64, plugin_manager_runtime::PendingMutation>,
     preferences: settings::ObservationPreferences,
     catalog: settings::SourceCatalog,
     exit_with_herdr: bool,
@@ -77,7 +87,7 @@ impl Default for Registry {
     fn default() -> Self {
         Self {
             enabled: false, epoch: 0, configured_socket: None, initial_endpoints: Vec::new(),
-            endpoints_loaded: false, endpoint_revision: 0, bindings: HashMap::new(), operations: HashMap::new(),
+            endpoints_loaded: false, endpoint_revision: 0, bindings: HashMap::new(), operations: HashMap::new(), manager_operations: HashMap::new(),
             preferences: settings::ObservationPreferences::default(), catalog: settings::SourceCatalog::default(),
             exit_with_herdr: true, policy_selection: ObservationSelection::Auto, deadline: Some(Instant::now() + DISCONNECTION_GRACE), connected: 0,
             finalized: false, failure: None,
@@ -244,6 +254,7 @@ impl HerdrIntegration {
         registry.deadline = exit.then_some(Instant::now() + DISCONNECTION_GRACE);
         drop(registry);
         *self.shared.store.lock().map_err(|_| "Herdr profile is poisoned")? = Some(store);
+        plugin_manager_runtime::register(&self.shared)?;
         Ok(())
     }
     pub fn extensions(self: &Arc<Self>) -> IntegrationExtensions {
@@ -303,6 +314,7 @@ impl HerdrIntegration {
         registry.enabled = false;
         for (source, binding) in registry.bindings.drain() { domain.remove_source(&source, binding.generation); }
         for (_, operation) in registry.operations.drain() { operation.cancel(); }
+        for (_, operation) in registry.manager_operations.drain() { operation.cancel(); }
         registry.connected = 0;
         registry.deadline = registry.exit_with_herdr.then_some(Instant::now() + DISCONNECTION_GRACE);
         registry.endpoints_loaded = false;

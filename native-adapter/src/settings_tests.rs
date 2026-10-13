@@ -153,7 +153,7 @@ fn generic_preference_patch_is_pure_save_first_and_retains_opaque_fields() {
     let mut candidate:Map<String,Value>=serde_json::from_value(json!({"visible":false,"future_top":{"kept":true},"observation":{"host":"auto","local":true,"remote":false,"machines":[],"future_scope":{"token":9}}})).unwrap();
     let original=candidate.clone();
     let patch=serde_json::from_value(json!({"observation_remote":true})).unwrap();
-    let prepared=integration.prepare_preference_patch(&patch).unwrap();
+    let prepared=integration.prepare_preference_patch(&store,&patch).unwrap();
     prepared.apply(&mut candidate).unwrap();
     assert!(!integration.shared.registry.lock().unwrap().preferences.remote,"prepare/apply changed live policy before save");
     assert_eq!(candidate["visible"],original["visible"]); assert_eq!(candidate["future_top"],original["future_top"]);
@@ -163,7 +163,7 @@ fn generic_preference_patch_is_pure_save_first_and_retains_opaque_fields() {
     prepared.committed(&candidate).unwrap();
     assert!(integration.shared.registry.lock().unwrap().preferences.remote);
     let snapshot=integration.preference_snapshot(&candidate).unwrap(); assert_eq!(snapshot["observation_remote"],true);
-    let bad=serde_json::from_value(json!({"observation_remote":"yes"})).unwrap(); assert!(integration.prepare_preference_patch(&bad).is_err());
+    let bad=serde_json::from_value(json!({"observation_remote":"yes"})).unwrap(); assert!(integration.prepare_preference_patch(&store,&bad).is_err());
     assert_eq!(std::fs::read(store.config_dir().join("preferences.json")).unwrap(),bytes);
     drop(prepared); drop(integration); drop(store); std::fs::remove_dir_all(root).unwrap();
 }
@@ -173,8 +173,10 @@ fn legacy_machine_normalization_does_not_loosen_new_patch_validation() {
     let saved=serde_json::from_value(json!({"observation":{"machines":["",opaque,opaque,"invalid\0id"]}})).unwrap();
     assert_eq!(settings::preferences_from_object(&saved).unwrap().machines,vec![opaque.to_owned()]);
     let (integration,_)=harness::integration();
+    let (root,store)=profile("machine-normalization");
     let patch=serde_json::from_value(json!({"observation_machines":[opaque,opaque]})).unwrap();
-    assert!(integration.prepare_preference_patch(&patch).is_err());
+    assert!(integration.prepare_preference_patch(&store,&patch).is_err());
+    drop(integration); drop(store); std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn hidden_local_reselection_keeps_session_key_and_watcher_evidence() {
@@ -182,7 +184,7 @@ fn hidden_local_reselection_keeps_session_key_and_watcher_evidence() {
     let (root,store)=profile("visibility"); integration.configure_profile(store.clone()).unwrap();
     let key=harness::publish(&integration,&runtime,source,1,Route::Local(PathBuf::from(source)),&[harness::record("terminal","pane")]);
     for (local,expected) in [(false,false),(true,true)] {
-        let patch=serde_json::from_value(json!({"observation_local":local})).unwrap(); let prepared=integration.prepare_preference_patch(&patch).unwrap();
+        let patch=serde_json::from_value(json!({"observation_local":local})).unwrap(); let prepared=integration.prepare_preference_patch(&store,&patch).unwrap();
         let mut saved=Map::new(); prepared.apply(&mut saved).unwrap();
         store.with_writer_lock(|| desktop_pet_contracts::profile_store::atomic_write(&store.config_dir().join("preferences.json"),&serde_json::to_vec(&saved).unwrap())).unwrap();
         prepared.committed(&saved).unwrap();
@@ -257,8 +259,8 @@ fn late_preference_commit_cannot_overwrite_newer_applied_owner_policy() {
     let key=harness::publish(&integration,&runtime,source,1,Route::Local(PathBuf::from(source)),&[harness::record("terminal","pane")]);
     let older_patch=serde_json::from_value(json!({"observation_local":false})).unwrap();
     let newer_patch=serde_json::from_value(json!({"observation_local":true})).unwrap();
-    let older=integration.prepare_preference_patch(&older_patch).unwrap();
-    let newer=integration.prepare_preference_patch(&newer_patch).unwrap();
+    let older=integration.prepare_preference_patch(&store,&older_patch).unwrap();
+    let newer=integration.prepare_preference_patch(&store,&newer_patch).unwrap();
     let mut saved_a=Map::new(); older.apply(&mut saved_a).unwrap();
     let mut saved_b=saved_a.clone(); newer.apply(&mut saved_b).unwrap();
     let persist=|saved:&Map<String,Value>| store.with_writer_lock(|| {
@@ -289,6 +291,75 @@ fn selecting_another_provider_hides_herdr_scope_without_changing_policy() {
     let restored = integration.settings(&store, &ObservationSelection::Auto, "ja").unwrap();
     let local = restored.iter().find(|view| view.key == "observation_local").unwrap();
     assert!(local.enabled && !local.value);
+    drop(integration);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn manager_profile(label: &str) -> (PathBuf, ProfileStore) {
+    let (root, store) = profile(label);
+    // Adapter unit fixtures validate their actual owner payload. Composed
+    // production stores use core's full common schema/dialogue validator.
+    let store = store.with_preferences_validator(|object| {
+        settings::manager_installed_from_object(object)?;
+        settings::preferences_from_object(object)?;
+        Ok(())
+    });
+    (root, store)
+}
+
+#[test]
+fn manager_availability_lease_survives_candidate_and_atomic_commit() {
+    let (root, store) = manager_profile("manager-transaction");
+    let integration = HerdrIntegration::new();
+    let patch = serde_json::from_value(json!({"plugin_manager_installed":true})).unwrap();
+    let prepared = integration.prepare_preference_patch(&store,&patch).unwrap();
+    let mut candidate = serde_json::from_value(json!({"future_option":{"keep":7}})).unwrap();
+    prepared.apply(&mut candidate).unwrap();
+    assert!(!settings::read_manager_installed(&store).unwrap(), "candidate escaped before persistence");
+    assert_eq!(candidate["future_option"], json!({"keep":7}));
+    assert!(crate::plugin_manager_backend::availability_admission(&store.paths(), &store, false).is_err());
+    store.with_writer_lock(|| desktop_pet_contracts::profile_store::atomic_write(
+        &store.config_dir().join("preferences.json"), &serde_json::to_vec(&candidate).unwrap(),
+    )).unwrap();
+    prepared.committed(&candidate).unwrap();
+    assert!(settings::read_manager_installed(&store).unwrap());
+    assert!(crate::plugin_manager_backend::availability_admission(&store.paths(), &store, false).is_err());
+    drop(prepared);
+    assert!(crate::plugin_manager_backend::availability_admission(&store.paths(), &store, false).is_ok());
+    drop(store);
+    // A transient offline prepare must not cache its profile lease in the
+    // adapter. Another operation in this process can acquire the real owner.
+    let reacquired = ProfileStore::acquire(&root.join("config"), &root.join("state")).unwrap()
+        .with_preferences_validator(|object| settings::manager_installed_from_object(object).map(|_| ()));
+    assert!(settings::read_manager_installed(&reacquired).unwrap());
+    drop(reacquired);
+    drop(integration);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn manager_offer_is_fenced_by_prepare_and_retired_epoch() {
+    let (root, store) = manager_profile("manager-retire");
+    let (integration, runtime) = harness::integration();
+    integration.configure_profile(store.clone()).unwrap();
+    let before_prepare = crate::manager_mutation_fence(&store).unwrap();
+    runtime.domain.lock().unwrap().gate = false;
+    assert_eq!(before_prepare.offer().unwrap_err(), "Prepare gate closed");
+    runtime.domain.lock().unwrap().gate = true;
+    let before_retire = crate::manager_mutation_fence(&store).unwrap();
+    {
+        let mut domain = runtime.domain.lock().unwrap();
+        integration.retire(&mut *domain);
+        integration.set_enabled(true, &mut *domain);
+    }
+    assert!(before_retire.offer().is_err(), "a reenabled provider accepted work from its retired epoch");
+    let current = crate::manager_mutation_fence(&store).unwrap();
+    current.offer().unwrap();
+    assert!(current.offer().is_err(), "the offered operation was replayed");
+    drop(current);
+    drop(before_retire);
+    drop(before_prepare);
     drop(integration);
     drop(store);
     std::fs::remove_dir_all(root).unwrap();

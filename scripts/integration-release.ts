@@ -76,18 +76,18 @@ async function release(mode: string, tag: string | undefined, ref: string | unde
   if (process.env.GITHUB_REPOSITORY) requireCondition(process.env.GITHUB_REPOSITORY === repository, "Wrong publication repository");
   const notes = file(`docs/releases/${tag}.md`);
   requireCondition(notes.split(/\r?\n/)[0] === `# Desktop Pet — Herdr integration ${tag} release notes` && notes.trim().length > 200, "Missing reviewed integration-only release note/header");
-  requireCondition(notes.includes("integration_api") && notes.includes("https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.0"), "Notes must describe the independent integration_api contract and actual core release authority");
+  requireCondition(notes.includes("integration_api") && notes.includes("https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.1"), "Notes must describe the independent integration_api contract and actual approved core release authority");
   for (const match of notes.matchAll(/!?\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)/g)) requireCondition(/^(https:\/\/|#)/.test(match[1]!), "Reviewed release notes must use absolute HTTPS or in-page links, not repository-relative Release-body links");
   const evidence = "release-evidence";
   const record = file(`${evidence}/release.json`);
   requireCondition(typeof metadata === "object" && metadata !== null && "release_record_sha256" in metadata && metadata.release_record_sha256 === createHash("sha256").update(record).digest("hex"), "Reviewed core metadata does not match retained real release evidence");
-  file(`${evidence}/desktop-pet-install-v0.4.0.sh`);
-  file(`${evidence}/desktop-pet-install-v0.4.0.sh.sha256`);
+  file(`${evidence}/desktop-pet-install-v0.4.1.sh`);
+  file(`${evidence}/desktop-pet-install-v0.4.1.sh.sha256`);
   const scratch = mkdtempSync(path.join(tmpdir(), "herdr-integration-release-"));
   try {
     // Reuse the existing anonymous fixed-authority verifier, including all six
     // actual assets, installer/checksum bytes, release ID and resolved core ref.
-    run("bash", ["scripts/materialize-release.sh", path.join(root, evidence, "desktop-pet-install-v0.4.0.sh"), path.join(root, evidence, "desktop-pet-install-v0.4.0.sh.sha256"), path.join(root, evidence, "release.json"), path.join(scratch, "materialized")]);
+    run("bash", ["scripts/materialize-release.sh", path.join(root, evidence, "desktop-pet-install-v0.4.1.sh"), path.join(root, evidence, "desktop-pet-install-v0.4.1.sh.sha256"), path.join(root, evidence, "release.json"), path.join(scratch, "materialized")]);
     const currentMetadata = object(JSON.parse(readFileSync(path.join(scratch, "materialized/core-release.json"), "utf8")), "authenticated core release metadata");
     // The frozen evidence hash is checked above. Fresh API bytes can differ in
     // download counts/timestamps; compare every materialized authority field,

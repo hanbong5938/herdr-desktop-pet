@@ -12,4 +12,6 @@
 
 アプリは core installer で別途導入するか、実際の formula 公開後に `brew install hanbong5938/tap/desktop-pet` を使ってください。任意の連携は `herdr plugin install hanbong5938/herdr-desktop-pet` と `tern plugin install https://github.com/hanbong5938/tern-desktop-pet` です。Herdr は共有アプリを利用し、Tern はアプリを導入・自動起動しません。実際の config/state 両パスを選択し、移動・統合しません。プラグインの削除はアプリ・プロファイル・キャラクターを残します。
 
+Herdr を選択すると、設定に任意の内蔵プラグインマネージャーの **開く / インストール / 削除** が表示されます。インストールと削除は、このプロファイルの機能の利用可否だけを保存し、Herdr プラグインを導入・削除しません。機能の削除には確認が必要です。明示的に開いた後だけ、選択した実際の Herdr ソケットと認証済みホスト実行ファイルから一覧を取得します。プラグインの変更には別途メタデータの再確認と承認が必要で、保護されたペットのインストールは読み取り専用です。ウィンドウを閉じても送信済みの操作は取り消されません。結果が不明な場合は記録を確認し、自動再試行はしません。設定の応答が失われても元の操作 ID を保持し、変更を再送信せずに保存状態を再確認します。
+
 [公開状態](../readme.ja.md): リンクやコマンドは実際の Release・formula・Pages・Wiki 公開を証明しません。実際の Tern/OMP 受入を主張しません。凍結された [v0.3.6 文書](https://github.com/hanbong5938/herdr-desktop-pet/tree/v0.3.6/docs)と[過去リリース](releases/README.md)は歴史的記録で、現在の導入手順ではありません。
