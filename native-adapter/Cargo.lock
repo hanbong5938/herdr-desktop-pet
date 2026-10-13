@@ -39,7 +39,7 @@ dependencies = [
 [[package]]
 name = "desktop-pet-contracts"
 version = "0.1.0"
-source = "git+https://github.com/hanbong5938/desktop-pet?rev=decec1f07bcc193f7b7cd60bf5dd7693dd697723#decec1f07bcc193f7b7cd60bf5dd7693dd697723"
+source = "git+https://github.com/hanbong5938/desktop-pet?rev=491d223114ee560545edaa54ad0f08dc5016d060#491d223114ee560545edaa54ad0f08dc5016d060"
 dependencies = [
  "libc",
  "serde",

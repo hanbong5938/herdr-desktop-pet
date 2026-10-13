@@ -1,0 +1,14 @@
+/private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/deps/serde-dfa663aef6bfdbd5.d: /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/build/serde-535807d7b0a34c5f/out/private.rs
+
+/private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/deps/libserde-dfa663aef6bfdbd5.rlib: /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/build/serde-535807d7b0a34c5f/out/private.rs
+
+/private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/deps/libserde-dfa663aef6bfdbd5.rmeta: /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/build/serde-535807d7b0a34c5f/out/private.rs
+
+/Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/han/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/build/serde-535807d7b0a34c5f/out/private.rs:
+
+# env-dep:OUT_DIR=/private/tmp/desktop-pet-herdr-adapter.ZZ8dvP/native-adapter/target/debug/build/serde-535807d7b0a34c5f/out

@@ -363,6 +363,12 @@ impl LifecycleExtension for HerdrIntegration {
     fn provider(&self) -> &'static str {
         "herdr"
     }
+    fn initialize_lifecycle(&self, candidate: &mut Map<String, Value>) -> Result<(), String> {
+        candidate
+            .entry("exit_with_herdr".to_owned())
+            .or_insert(Value::Bool(true));
+        Ok(())
+    }
     fn settings(
         &self,
         store: &ProfileStore,

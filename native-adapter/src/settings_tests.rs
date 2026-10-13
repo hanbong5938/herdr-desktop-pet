@@ -17,6 +17,162 @@ fn profile(label: &str) -> (PathBuf, ProfileStore) {
     let store = ProfileStore::acquire(&root.join("config"), &root.join("state")).unwrap();
     (root, store)
 }
+
+#[test]
+fn fresh_common_lifecycle_writes_retain_herdr_default_after_profile_configuration() {
+    for startup in [false, true] {
+        let (root, store) = profile("fresh-common-write");
+        let integration = HerdrIntegration::new();
+        integration.configure_profile(store.clone()).unwrap();
+        let selection = ObservationSelection::Provider("herdr".into());
+        let before = integration.settings(&store, &selection, "en").unwrap();
+        assert!(
+            before
+                .iter()
+                .find(|view| view.key == "exit_with_herdr")
+                .unwrap()
+                .value
+        );
+        assert!(!store.config_dir().join("lifecycle.json").exists());
+
+        store
+            .update(|object, exists| {
+                assert!(!exists);
+                integration.initialize_lifecycle(object)?;
+                object.insert("auto_start".into(), Value::Bool(!startup));
+                if startup {
+                    object.insert("startup".into(), json!({"token": "reserved", "pid": 1}));
+                }
+                object.insert("future_owner".into(), json!({"version": 7}));
+                Ok(())
+            })
+            .unwrap();
+
+        integration.configure_profile(store.clone()).unwrap();
+        assert_eq!(
+            integration.legacy_status_fields().unwrap()["exit_with_herdr"],
+            true
+        );
+        let after = integration.settings(&store, &selection, "en").unwrap();
+        assert!(
+            after
+                .iter()
+                .find(|view| view.key == "exit_with_herdr")
+                .unwrap()
+                .value
+        );
+        let (object, exists) = store.read_object_with_presence().unwrap();
+        assert!(exists);
+        assert_eq!(object["exit_with_herdr"], true);
+        assert_eq!(object["auto_start"], !startup);
+        assert_eq!(object["future_owner"], json!({"version": 7}));
+        if startup {
+            assert_eq!(object["startup"], json!({"token": "reserved", "pid": 1}));
+        }
+        drop(integration);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn existing_missing_or_explicit_exit_policy_survives_common_write_and_readonly_queries() {
+    for explicit in [None, Some(false), Some(true)] {
+        let (root, store) = profile("existing-common-write");
+        store
+            .update(|object, _| {
+                object.insert("auto_start".into(), Value::Bool(false));
+                object.insert("future_owner".into(), json!({"version": 8}));
+                if let Some(value) = explicit {
+                    object.insert("exit_with_herdr".into(), Value::Bool(value));
+                }
+                Ok(())
+            })
+            .unwrap();
+        let path = store.config_dir().join("lifecycle.json");
+        let before = std::fs::read(&path).unwrap();
+        let integration = HerdrIntegration::new();
+        integration.configure_profile(store.clone()).unwrap();
+        let selection = ObservationSelection::Provider("herdr".into());
+        let views = integration.settings(&store, &selection, "en").unwrap();
+        assert_eq!(
+            views
+                .iter()
+                .find(|view| view.key == "exit_with_herdr")
+                .unwrap()
+                .value,
+            explicit.unwrap_or(false),
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        store
+            .update(|object, exists| {
+                if !exists {
+                    integration.initialize_lifecycle(object)?;
+                }
+                object.insert("auto_start".into(), Value::Bool(true));
+                object.insert("startup".into(), json!({"token": "reserved"}));
+                Ok(())
+            })
+            .unwrap();
+        integration.configure_profile(store.clone()).unwrap();
+        assert_eq!(
+            integration.legacy_status_fields().unwrap()["exit_with_herdr"],
+            explicit.unwrap_or(false),
+        );
+        let (object, _) = store.read_object_with_presence().unwrap();
+        assert_eq!(
+            object.get("exit_with_herdr").and_then(Value::as_bool),
+            explicit
+        );
+        assert_eq!(object["auto_start"], true);
+        assert_eq!(object["future_owner"], json!({"version": 8}));
+        drop(integration);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn concurrent_first_common_and_owner_writes_preserve_explicit_policy_and_unknown_data() {
+    let (root, store) = profile("concurrent-first-write");
+    let integration = Arc::new(HerdrIntegration::new());
+    integration.configure_profile(store.clone()).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            barrier.wait();
+            store
+                .update(|object, exists| {
+                    if !exists {
+                        integration.initialize_lifecycle(object)?;
+                    }
+                    object.insert("auto_start".into(), Value::Bool(false));
+                    object.insert("future_owner".into(), json!({"nested": {"kept": 9}}));
+                    Ok(())
+                })
+                .unwrap();
+        });
+        scope.spawn(|| {
+            barrier.wait();
+            integration
+                .apply_setting(&store, "exit_with_herdr", false)
+                .unwrap();
+        });
+    });
+    let (object, _) = store.read_object_with_presence().unwrap();
+    assert_eq!(object["auto_start"], false);
+    assert_eq!(object["exit_with_herdr"], false);
+    assert_eq!(object["future_owner"], json!({"nested": {"kept": 9}}));
+    integration.configure_profile(store.clone()).unwrap();
+    assert_eq!(
+        integration.legacy_status_fields().unwrap()["exit_with_herdr"],
+        false
+    );
+    drop(integration);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
 #[test]
 fn lifecycle_and_endpoint_writes_preserve_common_and_unknown_keys() {
     let (root, store) = profile("lifecycle");
