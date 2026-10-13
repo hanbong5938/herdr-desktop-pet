@@ -8,6 +8,7 @@ use crate::character_service::PackService;
 use crate::character_types::{PackAction, PackListing, PackOperation, PackRequest};
 use crate::herdr::Watchers;
 use crate::lifecycle::{self, LifecycleLock, LifecycleSetting, LifecycleSettings, Paths};
+use crate::preferences::{PreferencePatch, Preferences};
 use crate::session_view::{SessionCursor, SessionFilter, SessionPageCursor, SessionPageRequest};
 use crate::socket;
 use crate::state::AppState;
@@ -940,17 +941,25 @@ fn reject_duplicate_json_keys(bytes: &[u8]) -> Result<(), String> {
 }
 
 fn write_frame(stream: &mut UnixStream, bytes: &[u8], deadline: Instant) -> io::Result<()> {
-    let mut written = 0usize;
-    while written < bytes.len() {
+    write_frame_counted(stream, bytes, deadline, &mut 0)
+}
+
+fn write_frame_counted(
+    stream: &mut UnixStream,
+    bytes: &[u8],
+    deadline: Instant,
+    written: &mut usize,
+) -> io::Result<()> {
+    while *written < bytes.len() {
         stream.set_write_timeout(Some(socket::remaining(deadline)?))?;
-        let count = stream.write(&bytes[written..])?;
+        let count = stream.write(&bytes[*written..])?;
         if count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
                 "control peer closed while writing",
             ));
         }
-        written += count;
+        *written += count;
     }
     Ok(())
 }
@@ -960,13 +969,35 @@ fn read_client_frame(
     deadline: Instant,
     limit: usize,
 ) -> io::Result<Vec<u8>> {
+    read_client_frame_checked(stream, deadline, limit, false)
+}
+
+fn read_client_frame_checked(
+    stream: &mut UnixStream,
+    deadline: Instant,
+    limit: usize,
+    reject_partial: bool,
+) -> io::Result<Vec<u8>> {
     let mut frame = Vec::with_capacity(MAX_FRAME_BYTES);
     let mut chunk = [0u8; 1024];
     loop {
-        let read = socket::read_with_deadline(stream, &mut chunk, deadline)?;
+        let read = socket::read_with_deadline(stream, &mut chunk, deadline).map_err(|error| {
+            if !reject_partial || frame.is_empty() {
+                error
+            } else {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("control peer interrupted a partial frame: {error}"),
+                )
+            }
+        })?;
         if read == 0 {
             return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
+                if !reject_partial || frame.is_empty() {
+                    io::ErrorKind::UnexpectedEof
+                } else {
+                    io::ErrorKind::InvalidData
+                },
                 "control peer closed before frame terminator",
             ));
         }
@@ -2123,6 +2154,655 @@ fn access_lifecycle_settings(
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum PluginManagerAvailabilityCommit {
+    Committed(bool),
+    Uncertain {
+        instance_id: String,
+        operation_id: String,
+        current: Option<bool>,
+    },
+}
+
+fn availability_envelope(
+    command: &str,
+    request: Option<DomainRequest>,
+    identity: Option<(&str, &str)>,
+) -> AutomationRequestEnvelope {
+    AutomationRequestEnvelope {
+        version: PROTOCOL_VERSION,
+        kind: "automation".to_owned(),
+        command: command.to_owned(),
+        request,
+        instance_id: identity.map(|(instance, _)| instance.to_owned()),
+        operation_id: identity.map(|(_, operation)| operation.to_owned()),
+    }
+}
+
+fn availability_operation(
+    reply: AutomationReplyEnvelope,
+    instance: &str,
+    id: &str,
+    kind: &str,
+) -> Result<DomainOperation, String> {
+    if !reply.ok {
+        return Err(reply
+            .error
+            .unwrap_or_else(|| "availability request rejected".to_owned()));
+    }
+    let operation = reply
+        .operation
+        .ok_or("availability operation result is missing")?;
+    if reply.instance_id.as_deref() != Some(instance)
+        || operation.instance_id != instance
+        || operation.operation_id != id
+        || operation.kind != kind
+    {
+        return Err("availability operation identity changed".to_owned());
+    }
+    Ok(operation)
+}
+
+fn await_availability_operation(
+    socket: &Path,
+    instance: &str,
+    id: &str,
+    kind: &str,
+    mut operation: DomainOperation,
+    deadline: Instant,
+) -> Result<DomainOperation, AvailabilityRpcError> {
+    while !operation.state.terminal() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("availability operation is still pending".to_owned().into());
+        }
+        thread::sleep(Duration::from_millis(40).min(remaining));
+        let reply = availability_request_until(
+            socket,
+            &availability_envelope("status", None, Some((instance, id))),
+            deadline.min(Instant::now() + CLIENT_TIMEOUT),
+            MAX_AUTOMATION_REPLY_BYTES,
+            decode_automation_reply,
+        )?;
+        operation = availability_operation(reply, instance, id, kind)?;
+    }
+    Ok(operation)
+}
+
+fn availability_from_result(result: Option<&Value>, field: &str) -> Result<bool, String> {
+    result
+        .and_then(|value| value.get(field))
+        .and_then(|value| value.get("plugin_manager_installed"))
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("availability {field} result is missing or invalid"))
+}
+
+fn availability_timeout(deadline: Instant, cap: Duration) -> Result<Duration, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err("timed out waiting for desktop-pet lifecycle finalization".to_owned());
+    }
+    Ok(remaining.min(cap))
+}
+
+#[derive(Debug)]
+enum AvailabilityRpcError {
+    SocketAbsent(String),
+    Transport(String),
+    Permanent(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AvailabilityPing {
+    Live,
+    Absent,
+}
+
+impl From<String> for AvailabilityRpcError {
+    fn from(error: String) -> Self {
+        Self::Permanent(error)
+    }
+}
+
+impl From<&str> for AvailabilityRpcError {
+    fn from(error: &str) -> Self {
+        Self::Permanent(error.to_owned())
+    }
+}
+
+impl std::fmt::Display for AvailabilityRpcError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SocketAbsent(error) | Self::Transport(error) | Self::Permanent(error) => {
+                formatter.write_str(error)
+            }
+        }
+    }
+}
+
+fn availability_io_error(context: &str, error: io::Error) -> AvailabilityRpcError {
+    let message = format!("{context}: {error}");
+    match error.kind() {
+        io::ErrorKind::NotFound
+        | io::ErrorKind::ConnectionRefused
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe
+        | io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::TimedOut
+        | io::ErrorKind::WouldBlock
+        | io::ErrorKind::WriteZero => AvailabilityRpcError::Transport(message),
+        _ => AvailabilityRpcError::Permanent(message),
+    }
+}
+
+fn availability_connect_error(error: io::Error) -> AvailabilityRpcError {
+    match error.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+            AvailabilityRpcError::SocketAbsent(format!("cannot connect to control socket: {error}"))
+        }
+        _ => availability_io_error("cannot connect to control socket", error),
+    }
+}
+
+fn availability_request_until<T: Serialize, R>(
+    socket: &Path,
+    request: &T,
+    deadline: Instant,
+    reply_limit: usize,
+    decode: impl FnOnce(&[u8], &T) -> Result<R, String>,
+) -> Result<R, AvailabilityRpcError> {
+    availability_send_until(socket, request, deadline, reply_limit, &mut 0, decode)
+}
+
+fn availability_send_until<T: Serialize, R>(
+    socket: &Path,
+    request: &T,
+    deadline: Instant,
+    reply_limit: usize,
+    submitted_bytes: &mut usize,
+    decode: impl FnOnce(&[u8], &T) -> Result<R, String>,
+) -> Result<R, AvailabilityRpcError> {
+    availability_timeout(deadline, CLIENT_TIMEOUT)?;
+    let bytes = bounded_json(request, MAX_FRAME_BYTES)
+        .map_err(|error| AvailabilityRpcError::Permanent(error.to_string()))?;
+    availability_timeout(deadline, CLIENT_TIMEOUT)?;
+    let mut stream =
+        connect_private_socket_io(socket, deadline).map_err(availability_connect_error)?;
+    write_frame_counted(&mut stream, &bytes, deadline, submitted_bytes)
+        .map_err(|error| availability_io_error("cannot send availability request", error))?;
+    let frame = read_client_frame_checked(&mut stream, deadline, reply_limit, true)
+        .map_err(|error| availability_io_error("cannot read availability response", error))?;
+    let reply = decode(&frame, request)?;
+    availability_timeout(deadline, CLIENT_TIMEOUT)?;
+    Ok(reply)
+}
+
+fn availability_ping_until(
+    socket: &Path,
+    deadline: Instant,
+) -> Result<AvailabilityPing, AvailabilityRpcError> {
+    let reply: ControlResponse = match availability_request_until(
+        socket,
+        &serde_json::json!({"version": PROTOCOL_VERSION, "command": "ping"}),
+        deadline,
+        MAX_FRAME_BYTES,
+        |frame, _| {
+            reject_duplicate_json_keys(frame)?;
+            serde_json::from_slice(frame)
+                .map_err(|error| format!("invalid availability ping response: {error}"))
+        },
+    ) {
+        Ok(reply) => reply,
+        Err(AvailabilityRpcError::SocketAbsent(_)) => return Ok(AvailabilityPing::Absent),
+        Err(error) => return Err(error),
+    };
+    let status = reply.r#type == "status" && reply.ok && reply.error.is_none();
+    let stopping = reply.r#type == "error"
+        && !reply.ok
+        && reply.error.as_deref() == Some("desktop pet is stopping");
+    if reply.version != PROTOCOL_VERSION
+        || reply.command != "ping"
+        || !reply.running
+        || reply.pid == 0
+        || reply.instance_id.is_empty()
+        || !(status || stopping)
+    {
+        return Err("invalid live availability ping response".into());
+    }
+    Ok(AvailabilityPing::Live)
+}
+
+fn availability_socket_released(
+    socket: &Path,
+    deadline: Instant,
+) -> Result<bool, AvailabilityRpcError> {
+    availability_timeout(deadline, Duration::from_millis(100))?;
+    availability_ping_until(
+        socket,
+        deadline.min(Instant::now() + Duration::from_millis(100)),
+    )
+    .map(|presence| presence == AvailabilityPing::Absent)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static AVAILABILITY_LOCKED_PROBE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn online_availability_owner(
+    paths: &Paths,
+    deadline: Instant,
+) -> Result<ControlResponse, AvailabilityRpcError> {
+    let reply: ControlResponse = availability_request_until(
+        &paths.control_socket,
+        &serde_json::json!({"version": PROTOCOL_VERSION, "command": "status"}),
+        deadline.min(Instant::now() + CLIENT_TIMEOUT),
+        MAX_FRAME_BYTES,
+        |frame, _| {
+            reject_duplicate_json_keys(frame)?;
+            serde_json::from_slice(frame)
+                .map_err(|error| format!("invalid control response: {error}"))
+        },
+    )?;
+    if !reply.ok
+        || !reply.running
+        || reply.r#type != "status"
+        || reply.command != "status"
+        || reply.version != PROTOCOL_VERSION
+        || reply.pid == 0
+        || reply.instance_id.is_empty()
+    {
+        return Err("invalid live preferences owner status".into());
+    }
+    let config = fs::canonicalize(&paths.config_dir).map_err(|error| error.to_string())?;
+    let state = fs::canonicalize(&paths.state_dir).map_err(|error| error.to_string())?;
+    let owner_config = fs::canonicalize(&reply.config_dir)
+        .map_err(|error| format!("cannot resolve live preferences config owner: {error}"))?;
+    let owner_state = fs::canonicalize(&reply.state_dir)
+        .map_err(|error| format!("cannot resolve live preferences state owner: {error}"))?;
+    availability_timeout(deadline, CLIENT_TIMEOUT)?;
+    if config != owner_config || state != owner_state {
+        return Err("live desktop-pet owns a different config/state profile".into());
+    }
+    Ok(reply)
+}
+
+fn online_availability_instance(
+    socket: &Path,
+    deadline: Instant,
+) -> Result<String, AvailabilityRpcError> {
+    let reply = availability_request_until(
+        socket,
+        &PresentationRequestEnvelope {
+            version: PRESENTATION_PROTOCOL_VERSION,
+            kind: "presentation".to_owned(),
+            command: "get".to_owned(),
+            instance_id: None,
+            operation_id: None,
+            expected_revision: None,
+            patch: None,
+        },
+        deadline.min(Instant::now() + CLIENT_TIMEOUT),
+        MAX_FRAME_BYTES,
+        |frame, request| decode_presentation_reply(frame, &request.command),
+    )?;
+    availability_timeout(deadline, CLIENT_TIMEOUT)?;
+    if !reply.ok {
+        return Err(reply
+            .error
+            .unwrap_or_else(|| "desktop-pet unavailable".to_owned())
+            .into());
+    }
+    let snapshot = reply
+        .snapshot
+        .ok_or_else(|| "desktop-pet instance snapshot is missing".to_owned())?;
+    if reply.instance_id.as_deref() != Some(snapshot.instance_id.as_str()) {
+        return Err("desktop-pet instance changed".into());
+    }
+    Ok(snapshot.instance_id)
+}
+
+fn online_availability_get(
+    socket: &Path,
+    instance: &str,
+    deadline: Instant,
+) -> Result<(bool, u64), AvailabilityRpcError> {
+    let id = crate::new_operation_id();
+    let request = availability_envelope(
+        "request",
+        Some(DomainRequest {
+            instance_id: instance.to_owned(),
+            operation_id: id.clone(),
+            action: DomainAction::PreferencesGet {},
+        }),
+        None,
+    );
+    let reply = availability_request_until(
+        socket,
+        &request,
+        deadline.min(Instant::now() + CLIENT_TIMEOUT),
+        MAX_AUTOMATION_REPLY_BYTES,
+        decode_automation_reply,
+    )?;
+    let operation = availability_operation(reply, instance, &id, "preferences_get")?;
+    let operation = await_availability_operation(
+        socket,
+        instance,
+        &id,
+        "preferences_get",
+        operation,
+        deadline,
+    )?;
+    if operation.state != crate::automation::DomainOperationState::Applied {
+        return Err(operation
+            .error
+            .unwrap_or_else(|| format!("availability read ended in {:?}", operation.state))
+            .into());
+    }
+    let installed = availability_from_result(operation.result.as_ref(), "persisted")?;
+    let revision = operation
+        .result
+        .as_ref()
+        .and_then(|value| value.get("revision"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "availability revision is missing".to_owned())?;
+    Ok((installed, revision))
+}
+
+fn availability_set_outcome(
+    operation: DomainOperation,
+    instance: &str,
+    id: &str,
+) -> Result<PluginManagerAvailabilityCommit, String> {
+    if operation.committed {
+        return Ok(
+            match availability_from_result(operation.result.as_ref(), "persisted") {
+                Ok(installed) => PluginManagerAvailabilityCommit::Committed(installed),
+                Err(_) => PluginManagerAvailabilityCommit::Uncertain {
+                    instance_id: instance.to_owned(),
+                    operation_id: id.to_owned(),
+                    current: None,
+                },
+            },
+        );
+    }
+    Err(operation
+        .error
+        .unwrap_or_else(|| format!("availability change ended in {:?}", operation.state)))
+}
+
+fn recover_availability_set(
+    socket: &Path,
+    instance: &str,
+    id: &str,
+) -> Result<PluginManagerAvailabilityCommit, String> {
+    let status = availability_envelope("status", None, Some((instance, id)));
+    let observation = send_automation_request(socket, &status)
+        .and_then(|reply| availability_operation(reply, instance, id, "preferences_set"))
+        .and_then(|operation| {
+            await_availability_operation(
+                socket,
+                instance,
+                id,
+                "preferences_set",
+                operation,
+                Instant::now() + crate::STARTUP_TIMEOUT,
+            )
+            .map_err(|error| error.to_string())
+        });
+    match observation {
+        Ok(operation) => availability_set_outcome(operation, instance, id),
+        Err(_) => Ok(PluginManagerAvailabilityCommit::Uncertain {
+            instance_id: instance.to_owned(),
+            operation_id: id.to_owned(),
+            current: None,
+        }),
+    }
+}
+
+fn online_availability_set(
+    socket: &Path,
+    instance: &str,
+    revision: u64,
+    installed: bool,
+    pre_submit_deadline: Instant,
+) -> Result<PluginManagerAvailabilityCommit, String> {
+    let id = crate::new_operation_id();
+    let request = availability_envelope(
+        "request",
+        Some(DomainRequest {
+            instance_id: instance.to_owned(),
+            operation_id: id.clone(),
+            action: DomainAction::PreferencesSet {
+                patch: PreferencePatch {
+                    plugin_manager_installed: Some(installed),
+                    ..PreferencePatch::default()
+                },
+                expected_revision: Some(revision),
+            },
+        }),
+        None,
+    );
+    availability_timeout(pre_submit_deadline, CLIENT_TIMEOUT)?;
+    // An uncertain acknowledgement cannot prove non-delivery. Query this exact
+    // identity if possible; never submit the mutation again or save offline.
+    let mut submitted_bytes = 0;
+    let reply = match availability_send_until(
+        socket,
+        &request,
+        pre_submit_deadline,
+        MAX_AUTOMATION_REPLY_BYTES,
+        &mut submitted_bytes,
+        decode_automation_reply,
+    ) {
+        Ok(reply) => reply,
+        Err(error) if submitted_bytes == 0 => return Err(error.to_string()),
+        Err(_) => return recover_availability_set(socket, instance, &id),
+    };
+    let operation = match availability_operation(reply, instance, &id, "preferences_set") {
+        Ok(operation) => operation,
+        Err(error)
+            if error == "availability operation identity changed"
+                || error == "availability operation result is missing" =>
+        {
+            return recover_availability_set(socket, instance, &id);
+        }
+        Err(error) => return Err(error),
+    };
+    let operation = match await_availability_operation(
+        socket,
+        instance,
+        &id,
+        "preferences_set",
+        operation,
+        Instant::now() + crate::STARTUP_TIMEOUT,
+    ) {
+        Ok(operation) => operation,
+        Err(_) => {
+            return Ok(PluginManagerAvailabilityCommit::Uncertain {
+                instance_id: instance.to_owned(),
+                operation_id: id,
+                current: None,
+            });
+        }
+    };
+    availability_set_outcome(operation, instance, &id)
+}
+
+fn access_plugin_manager_availability(
+    paths: &Paths,
+    change: Option<bool>,
+) -> Result<PluginManagerAvailabilityCommit, String> {
+    access_plugin_manager_availability_until(paths, change, Instant::now() + crate::STARTUP_TIMEOUT)
+}
+
+fn access_plugin_manager_availability_until(
+    paths: &Paths,
+    change: Option<bool>,
+    deadline: Instant,
+) -> Result<PluginManagerAvailabilityCommit, String> {
+    let offline_origin = InstallOrigin::Unknown {
+        reason: "offline plugin manager availability admission".into(),
+    };
+    let mut expected_instance: Option<String> = None;
+    loop {
+        // No manager gate is held over control-socket RPCs.
+        availability_timeout(deadline, Duration::from_millis(150))?;
+        match availability_ping_until(
+            &paths.control_socket,
+            deadline.min(Instant::now() + Duration::from_millis(150)),
+        ) {
+            Ok(AvailabilityPing::Live) => {
+                let online = (|| -> Result<Option<(String, bool, u64)>, AvailabilityRpcError> {
+                    let owner = online_availability_owner(paths, deadline)?;
+                    if expected_instance
+                        .as_ref()
+                        .is_some_and(|id| id != &owner.instance_id)
+                    {
+                        return Err(
+                            "live preferences owner changed before availability read".into()
+                        );
+                    }
+                    expected_instance = Some(owner.instance_id.clone());
+                    // Preferences do not depend on renderer assets, host registration
+                    // or data connectivity. Only UI admission and shutdown can wait.
+                    if !owner.ui_ready || owner.shutdown {
+                        return Ok(None);
+                    }
+                    let instance = online_availability_instance(&paths.control_socket, deadline)?;
+                    if owner.instance_id != instance {
+                        return Err(
+                            "live preferences owner changed before availability read".into()
+                        );
+                    }
+                    let (current, revision) =
+                        online_availability_get(&paths.control_socket, &instance, deadline)?;
+                    if change.is_some() {
+                        let owner = online_availability_owner(paths, deadline)?;
+                        if owner.instance_id != instance {
+                            return Err(
+                                "live preferences owner changed before availability write".into()
+                            );
+                        }
+                        if !owner.ui_ready || owner.shutdown {
+                            return Ok(None);
+                        }
+                    }
+                    availability_timeout(deadline, CLIENT_TIMEOUT)?;
+                    Ok(Some((instance, current, revision)))
+                })();
+                match online {
+                    Ok(Some((instance, current, revision))) => {
+                        // The next call can submit a mutation. Never enter the offline
+                        // branch after it, even if its ACK or status is lost.
+                        return match change {
+                            Some(installed) => {
+                                availability_timeout(deadline, CLIENT_TIMEOUT)?;
+                                online_availability_set(
+                                    &paths.control_socket,
+                                    &instance,
+                                    revision,
+                                    installed,
+                                    deadline,
+                                )
+                            }
+                            None => Ok(PluginManagerAvailabilityCommit::Committed(current)),
+                        };
+                    }
+                    Ok(None) => {}
+                    Err(AvailabilityRpcError::Permanent(error))
+                        if error == "desktop pet UI is not ready"
+                            || error == "desktop pet is stopping" => {}
+                    Err(
+                        error @ (AvailabilityRpcError::Transport(_)
+                        | AvailabilityRpcError::SocketAbsent(_)),
+                    ) => match availability_socket_released(&paths.control_socket, deadline) {
+                        Ok(true) => {}
+                        Ok(false) => return Err(error.to_string()),
+                        Err(AvailabilityRpcError::Transport(_)) => {}
+                        Err(probe_error) => return Err(probe_error.to_string()),
+                    },
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            Ok(AvailabilityPing::Absent) => {
+                if let Some(state_lease) = LifecycleLock::try_acquire(&paths.state_dir)? {
+                    #[cfg(test)]
+                    AVAILABILITY_LOCKED_PROBE_HOOK.with(|slot| {
+                        let hook = slot.borrow_mut().take();
+                        if let Some(hook) = hook {
+                            hook();
+                        }
+                    });
+                    availability_timeout(deadline, Duration::from_millis(150))?;
+                    match availability_ping_until(
+                        &paths.control_socket,
+                        deadline.min(Instant::now() + Duration::from_millis(150)),
+                    ) {
+                        Ok(AvailabilityPing::Absent) => {
+                            if !lifecycle::startup_pending(&paths.config_dir)? {
+                                if change.is_some() {
+                                    start_allowed(&offline_origin, &paths.state_dir, None, None)?;
+                                }
+                                let owner = lifecycle::PreferencesOwner::acquire(paths)?;
+                                owner.verify(paths)?;
+                                let mut prefs = Preferences::load_committed(&paths.config_dir)?;
+                                let installed =
+                                    match change {
+                                        Some(value) => {
+                                            let gate =
+                            crate::plugin_manager_backend::availability_admission(paths, value)?;
+                                            owner.verify(paths)?;
+                                            availability_timeout(deadline, CLIENT_TIMEOUT)?;
+                                            if prefs.plugin_manager_installed() != value {
+                                                prefs.apply_patch(
+                                                    PreferencePatch {
+                                                        plugin_manager_installed: Some(value),
+                                                        ..PreferencePatch::default()
+                                                    },
+                                                    &paths.config_dir,
+                                                )?;
+                                            }
+                                            drop(gate);
+                                            value
+                                        }
+                                        None => prefs.plugin_manager_installed(),
+                                    };
+                                drop(owner);
+                                drop(state_lease);
+                                return Ok(PluginManagerAvailabilityCommit::Committed(installed));
+                            }
+                        }
+                        Ok(AvailabilityPing::Live) | Err(AvailabilityRpcError::Transport(_)) => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+            }
+            Err(AvailabilityRpcError::Transport(_)) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        thread::sleep(availability_timeout(deadline, Duration::from_millis(50))?);
+    }
+}
+
+pub(crate) fn get_plugin_manager_availability(paths: &Paths) -> Result<bool, String> {
+    match access_plugin_manager_availability(paths, None)? {
+        PluginManagerAvailabilityCommit::Committed(installed) => Ok(installed),
+        PluginManagerAvailabilityCommit::Uncertain { .. } => {
+            Err("availability read unexpectedly uncertain".to_owned())
+        }
+    }
+}
+
+pub(crate) fn set_plugin_manager_availability(
+    paths: &Paths,
+    installed: bool,
+) -> Result<PluginManagerAvailabilityCommit, String> {
+    access_plugin_manager_availability(paths, Some(installed))
+}
+
 pub(crate) fn get_lifecycle_settings(paths: &Paths) -> Result<LifecycleSettings, String> {
     access_lifecycle_settings(paths, None)
 }
@@ -2253,14 +2933,20 @@ pub(crate) fn send_automation_request_until(
     let frame = read_client_frame(&mut stream, deadline, MAX_AUTOMATION_REPLY_BYTES)
         .map_err(|error| client_io_error("cannot read automation response", error, deadline))?;
     client_deadline(deadline)?;
-    reject_duplicate_json_keys(&frame).map_err(|error| {
-        ClientDeadlineError::Other(format!("invalid automation response: {error}"))
-    })?;
-    let reply: AutomationReplyEnvelope = serde_json::from_slice(&frame).map_err(|error| {
-        ClientDeadlineError::Other(format!("invalid automation response: {error}"))
-    })?;
-    validate_automation_reply(&reply, request).map_err(ClientDeadlineError::Other)?;
+    let reply = decode_automation_reply(&frame, request).map_err(ClientDeadlineError::Other)?;
     client_deadline(deadline)?;
+    Ok(reply)
+}
+
+fn decode_automation_reply(
+    frame: &[u8],
+    request: &AutomationRequestEnvelope,
+) -> Result<AutomationReplyEnvelope, String> {
+    reject_duplicate_json_keys(frame)
+        .map_err(|error| format!("invalid automation response: {error}"))?;
+    let reply: AutomationReplyEnvelope = serde_json::from_slice(frame)
+        .map_err(|error| format!("invalid automation response: {error}"))?;
+    validate_automation_reply(&reply, request)?;
     Ok(reply)
 }
 
@@ -2874,6 +3560,1640 @@ fn lock_unpoisoned<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
 mod tests {
     use super::*;
     use crate::character_types::{CharacterRef, PackRecord};
+    use std::os::unix::fs::PermissionsExt;
+
+    struct AvailabilityFixture {
+        root: PathBuf,
+        paths: Paths,
+    }
+
+    impl AvailabilityFixture {
+        fn new() -> Self {
+            let root = Path::new("/tmp").join(format!("av{}", crate::new_operation_id()));
+            let config_dir = root.join("config");
+            let state_dir = root.join("state");
+            for directory in [&root, &config_dir, &state_dir] {
+                fs::create_dir(directory).unwrap();
+                fs::set_permissions(directory, Permissions::from_mode(0o700)).unwrap();
+            }
+            let paths = Paths {
+                config_dir,
+                control_socket: state_dir.join(lifecycle::CONTROL_SOCKET_FILE),
+                log_file: state_dir.join(lifecycle::LOG_FILE),
+                state_dir,
+            };
+            Preferences::default()
+                .apply_patch(
+                    crate::preferences::PreferencePatch {
+                        show_status_indicators: Some(false),
+                        ..Default::default()
+                    },
+                    &paths.config_dir,
+                )
+                .unwrap();
+            Self { root, paths }
+        }
+
+        fn serve(
+            &self,
+            mut hook: impl FnMut(&Value, &mut Value) + Send + 'static,
+        ) -> AvailabilityServer {
+            self.serve_frames(move |request, reply| {
+                hook(request, reply);
+                None
+            })
+        }
+
+        fn serve_frames(
+            &self,
+            mut hook: impl FnMut(&Value, &mut Value) -> Option<Vec<u8>> + Send + 'static,
+        ) -> AvailabilityServer {
+            self.serve_frames_with_release(move |request, reply, _| {
+                hook(request, reply).map(|bytes| (bytes, true))
+            })
+        }
+
+        fn serve_frames_with_release(
+            &self,
+            mut hook: impl FnMut(&Value, &mut Value, &mut UnixStream) -> Option<(Vec<u8>, bool)>
+                + Send
+                + 'static,
+        ) -> AvailabilityServer {
+            use crate::automation::{new_automation, DomainOperationState, PresentationTarget};
+            use std::io::BufRead;
+            let listener = UnixListener::bind(&self.paths.control_socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            fs::set_permissions(
+                &self.paths.control_socket,
+                Permissions::from_mode(SOCKET_MODE),
+            )
+            .unwrap();
+            let paths = self.paths.clone();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopping = Arc::clone(&stop);
+            let thread = thread::spawn(move || {
+                let automation = new_automation(
+                    PresentationTarget::from_scene(&AppState::new().scene()),
+                    None,
+                )
+                .unwrap();
+                let ledger = lock_automation(&automation);
+                let instance = ledger.instance().to_owned();
+                let presentation =
+                    presentation_success(instance.clone(), Some(ledger.snapshot()), None);
+                drop(ledger);
+                let mut revision = 7;
+                let mut operations = Vec::<DomainOperation>::new();
+                let mut requests = Vec::new();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !stopping.load(Ordering::Acquire) && Instant::now() < deadline {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(peer) => peer,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        Err(error) => panic!("fixture accept failed: {error}"),
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .unwrap();
+                    let mut bytes = Vec::new();
+                    std::io::BufReader::new(&stream)
+                        .read_until(b'\n', &mut bytes)
+                        .unwrap();
+                    if bytes.is_empty() {
+                        // An expired probe may close while queued behind a
+                        // silent peer. It is not a new request.
+                        continue;
+                    }
+                    let request: Value = serde_json::from_slice(&bytes).unwrap();
+                    let mut reply = match request["kind"].as_str() {
+                        Some("presentation") => serde_json::to_value(&presentation).unwrap(),
+                        Some("automation") => {
+                            let envelope: AutomationRequestEnvelope =
+                                serde_json::from_value(request.clone()).unwrap();
+                            let operation = if let Some(domain) = envelope.request {
+                                assert_eq!(domain.instance_id, instance);
+                                let committed = match domain.action {
+                                    DomainAction::PreferencesGet {} => false,
+                                    DomainAction::PreferencesSet {
+                                        patch,
+                                        expected_revision,
+                                    } => {
+                                        assert_eq!(expected_revision, Some(revision));
+                                        let mut prefs =
+                                            Preferences::load_committed(&paths.config_dir).unwrap();
+                                        prefs.apply_patch(patch, &paths.config_dir).unwrap();
+                                        revision += 1;
+                                        true
+                                    }
+                                    _ => panic!("unexpected availability action"),
+                                };
+                                let operation = DomainOperation {
+                                    instance_id: instance.clone(),
+                                    operation_id: domain.operation_id,
+                                    kind: if committed {
+                                        "preferences_set"
+                                    } else {
+                                        "preferences_get"
+                                    }
+                                    .to_owned(),
+                                    state: DomainOperationState::Applied,
+                                    committed,
+                                    native_applied: committed,
+                                    result: Some(serde_json::json!({
+                                        "revision":revision,
+                                        "persisted":{"plugin_manager_installed":
+                                            Preferences::plugin_manager_installed_at(&paths.config_dir)
+                                                .unwrap()}
+                                    })),
+                                    error_code: None,
+                                    error: None,
+                                };
+                                operations.push(operation.clone());
+                                operation
+                            } else {
+                                assert_eq!(
+                                    envelope.instance_id.as_deref(),
+                                    Some(instance.as_str())
+                                );
+                                operations
+                                    .iter()
+                                    .find(|op| {
+                                        Some(op.operation_id.as_str())
+                                            == envelope.operation_id.as_deref()
+                                    })
+                                    .expect("status must retain the original operation ID")
+                                    .clone()
+                            };
+                            serde_json::to_value(AutomationReplyEnvelope {
+                                version: PROTOCOL_VERSION,
+                                kind: "automation".to_owned(),
+                                ok: true,
+                                error: None,
+                                instance_id: Some(instance.clone()),
+                                operation: Some(operation),
+                            })
+                            .unwrap()
+                        }
+                        None => serde_json::json!({
+                            "type":"status","version":PROTOCOL_VERSION,"app_version":"test",
+                            "ok":true,"command":request["command"],"error":null,"ready":false,
+                            "running":true,"phase":"loading","ui_ready":true,"control_ready":true,
+                            "registration_accepted":false,"data_connected":false,
+                            "connected_sources":0,"disconnected_sources":0,"sessions":0,
+                            "working":0,"blocked":0,"done":0,"unknown":0,
+                            "visible":true,"passthrough":false,"scale":1.0,"shutdown":false,
+                            "auto_start":false,"exit_with_herdr":false,
+                            "pid":std::process::id(),"instance_id":instance,
+                            "executable_path":"/bin/echo","config_dir":paths.config_dir,
+                            "state_dir":paths.state_dir,"herdr_socket":""
+                        }),
+                        _ => panic!("unexpected availability protocol"),
+                    };
+                    let final_frame = hook(&request, &mut reply, &mut stream);
+                    requests.push(request);
+                    let release = final_frame.as_ref().is_some_and(|(_, release)| *release);
+                    let bytes = final_frame.map(|(bytes, _)| bytes).unwrap_or_else(|| {
+                        bounded_json(&reply, MAX_AUTOMATION_REPLY_BYTES).unwrap()
+                    });
+                    if release {
+                        // Delete the socket before EOF/error reaches the client.
+                        // Permanent errors must still prohibit an offline save.
+                        fs::remove_file(&paths.control_socket).unwrap();
+                    }
+                    let _ =
+                        write_frame(&mut stream, &bytes, Instant::now() + Duration::from_secs(1));
+                    if release {
+                        break;
+                    }
+                }
+                drop(listener);
+                if paths.control_socket.exists() {
+                    fs::remove_file(&paths.control_socket).unwrap();
+                }
+                requests
+            });
+            AvailabilityServer { stop, thread }
+        }
+    }
+
+    impl Drop for AvailabilityFixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.root).unwrap();
+        }
+    }
+
+    struct AvailabilityServer {
+        stop: Arc<AtomicBool>,
+        thread: thread::JoinHandle<Vec<Value>>,
+    }
+
+    impl AvailabilityServer {
+        fn finish(self) -> Vec<Value> {
+            self.stop.store(true, Ordering::Release);
+            self.thread.join().unwrap()
+        }
+    }
+
+    fn availability_set_count(requests: &[Value]) -> usize {
+        requests
+            .iter()
+            .filter(|request| request["request"]["action"]["action"] == "preferences_set")
+            .count()
+    }
+
+    fn prepare_availability_change(fixture: &AvailabilityFixture, installed: bool) -> Vec<u8> {
+        Preferences::load_committed(&fixture.paths.config_dir)
+            .unwrap()
+            .apply_patch(
+                PreferencePatch {
+                    plugin_manager_installed: Some(!installed),
+                    ..Default::default()
+                },
+                &fixture.paths.config_dir,
+            )
+            .unwrap();
+        fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap()
+    }
+
+    fn atomic_stopping_ping(fixture: &AvailabilityFixture) -> Value {
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let executable = fixture.root.join("desktop-pet");
+        lock_unpoisoned(&shared).set_update_context(UpdateContext {
+            executable: executable.clone(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            instance_id: "atomic-stopping-owner".into(),
+            config_dir: fixture.paths.config_dir.clone(),
+            host_plugin_config_dir: None,
+            state_dir: fixture.paths.state_dir.clone(),
+            herdr_socket: fixture.root.join("herdr.sock"),
+            running: herdr_update_coordinator::ExecutableIdentity {
+                path: executable.clone(),
+                sha256: "a".repeat(64),
+            },
+            running_origin: None,
+            assets_override: None,
+            environment: Default::default(),
+            locale: "en".into(),
+        });
+        let inner = ControlInner {
+            stopping: AtomicBool::new(true),
+            watchers: Arc::new(Mutex::new(Watchers::new(Arc::clone(&shared)))),
+            shared,
+            packs: PackService::new(
+                fixture.paths.config_dir.clone(),
+                fixture.root.join("assets"),
+                None,
+            ),
+            paths: fixture.paths.clone(),
+            endpoint: None,
+            registered: Mutex::new(HashSet::new()),
+            lifecycle_writes: Mutex::new(()),
+            executable_path: executable,
+            pid: std::process::id(),
+            clients: Mutex::new(Vec::new()),
+            active_clients: Mutex::new(0),
+        };
+        let reply = dispatch(&inner, "ping", None);
+        assert_eq!(reply.r#type, "error");
+        assert!(!reply.ok && !reply.ui_ready && !reply.shutdown);
+        assert_eq!(reply.error.as_deref(), Some("desktop pet is stopping"));
+        serde_json::to_value(reply).unwrap()
+    }
+
+    fn with_availability_locked_probe_hook<R>(
+        hook: impl FnOnce() + 'static,
+        run: impl FnOnce() -> R,
+    ) -> R {
+        struct ResetHook;
+        impl Drop for ResetHook {
+            fn drop(&mut self) {
+                AVAILABILITY_LOCKED_PROBE_HOOK.with(|slot| {
+                    slot.borrow_mut().take();
+                });
+            }
+        }
+        AVAILABILITY_LOCKED_PROBE_HOOK.with(|slot| {
+            assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
+        });
+        let _reset = ResetHook;
+        run()
+    }
+
+    #[test]
+    fn malformed_initial_availability_ping_never_saves_install_or_remove_offline() {
+        for installed in [true, false] {
+            let fixture = AvailabilityFixture::new();
+            let before = prepare_availability_change(&fixture, installed);
+            let server = fixture.serve_frames(|request, _| {
+                assert_eq!(request["command"], "ping");
+                Some(b"not-json\n".to_vec())
+            });
+            let error = access_plugin_manager_availability_until(
+                &fixture.paths,
+                Some(installed),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap_err();
+            assert!(error.contains("expected"));
+            let requests = server.finish();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(availability_set_count(&requests), 0);
+            assert_eq!(
+                fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+                before,
+            );
+            assert!(!fixture.paths.control_socket.exists());
+            assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        }
+    }
+
+    #[test]
+    fn malformed_locked_second_availability_ping_never_saves_install_or_remove_offline() {
+        for installed in [true, false] {
+            let fixture = Arc::new(AvailabilityFixture::new());
+            let before = prepare_availability_change(&fixture, installed);
+            let locked_fixture = Arc::clone(&fixture);
+            let (sender, receiver) = mpsc::channel();
+            let error = with_availability_locked_probe_hook(
+                move || {
+                    assert!(LifecycleLock::try_acquire(&locked_fixture.paths.state_dir)
+                        .unwrap()
+                        .is_none());
+                    sender
+                        .send(locked_fixture.serve_frames(|request, _| {
+                            assert_eq!(request["command"], "ping");
+                            Some(b"not-json\n".to_vec())
+                        }))
+                        .unwrap();
+                },
+                || {
+                    access_plugin_manager_availability_until(
+                        &fixture.paths,
+                        Some(installed),
+                        Instant::now() + Duration::from_secs(2),
+                    )
+                    .unwrap_err()
+                },
+            );
+            assert!(error.contains("expected"));
+            let requests = receiver.recv().unwrap().finish();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(availability_set_count(&requests), 0);
+            assert_eq!(
+                fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+                before,
+            );
+            assert!(!fixture.paths.control_socket.exists());
+            assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        }
+    }
+
+    #[test]
+    fn malformed_release_availability_ping_replaces_transport_error_without_offline_save() {
+        for installed in [true, false] {
+            let fixture = AvailabilityFixture::new();
+            let before = prepare_availability_change(&fixture, installed);
+            let mut owner_failed = false;
+            let server = fixture.serve_frames_with_release(move |request, _, _| {
+                if request["command"] == "status" {
+                    owner_failed = true;
+                    Some((Vec::new(), false))
+                } else if owner_failed {
+                    assert_eq!(request["command"], "ping");
+                    Some((b"not-json\n".to_vec(), true))
+                } else {
+                    None
+                }
+            });
+            let error = access_plugin_manager_availability_until(
+                &fixture.paths,
+                Some(installed),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap_err();
+            assert!(error.contains("expected"));
+            assert!(!error.contains("closed before frame terminator"));
+            let requests = server.finish();
+            assert_eq!(
+                requests
+                    .iter()
+                    .map(|request| request["command"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["ping", "status", "ping"],
+            );
+            assert_eq!(availability_set_count(&requests), 0);
+            assert_eq!(
+                fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+                before,
+            );
+            assert!(!fixture.paths.control_socket.exists());
+            assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        }
+    }
+
+    #[test]
+    fn transient_release_availability_ping_waits_for_genuine_absence_before_offline_save() {
+        for installed in [true, false] {
+            let fixture = AvailabilityFixture::new();
+            let before = prepare_availability_change(&fixture, installed);
+            let config = fixture.paths.config_dir.clone();
+            let mut owner_failed = false;
+            let server = fixture.serve_frames_with_release(move |request, _, _| {
+                if request["command"] == "status" {
+                    owner_failed = true;
+                    Some((Vec::new(), false))
+                } else if owner_failed {
+                    assert_eq!(fs::read(config.join("preferences.json")).unwrap(), before);
+                    Some((Vec::new(), true))
+                } else {
+                    None
+                }
+            });
+            assert_eq!(
+                access_plugin_manager_availability_until(
+                    &fixture.paths,
+                    Some(installed),
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .unwrap(),
+                PluginManagerAvailabilityCommit::Committed(installed),
+            );
+            let requests = server.finish();
+            assert_eq!(requests.len(), 3);
+            assert_eq!(availability_set_count(&requests), 0);
+            assert_eq!(
+                Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap(),
+                installed
+            );
+            lifecycle::PreferencesOwner::acquire(&fixture.paths)
+                .unwrap()
+                .verify(&fixture.paths)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn availability_ping_parser_identity_and_frame_boundaries_are_permanent() {
+        for (case, live) in [
+            ("starting", true),
+            ("shutdown", true),
+            ("stopping", true),
+            ("version", false),
+            ("command", false),
+            ("running", false),
+            ("pid", false),
+            ("instance", false),
+            ("status-error", false),
+            ("stopping-ok", false),
+            ("stopping-message", false),
+            ("duplicate", false),
+            ("truncated", false),
+            ("frame-limit", true),
+            ("over-frame-limit", false),
+        ] {
+            let fixture = AvailabilityFixture::new();
+            let server = fixture.serve_frames(move |_, reply| {
+                match case {
+                    "starting" => reply["ui_ready"] = false.into(),
+                    "shutdown" => reply["shutdown"] = true.into(),
+                    "stopping" | "stopping-ok" | "stopping-message" => {
+                        reply["type"] = "error".into();
+                        reply["ok"] = (case == "stopping-ok").into();
+                        reply["error"] = if case == "stopping-message" {
+                            "not desktop pet is stopping"
+                        } else {
+                            "desktop pet is stopping"
+                        }
+                        .into();
+                    }
+                    "version" => reply["version"] = 999.into(),
+                    "command" => reply["command"] = "status".into(),
+                    "running" => reply["running"] = false.into(),
+                    "pid" => reply["pid"] = 0.into(),
+                    "instance" => reply["instance_id"] = "".into(),
+                    "status-error" => reply["error"] = "desktop pet is stopping".into(),
+                    "truncated" => return Some(b"{\"ok\":true".to_vec()),
+                    "frame-limit" | "over-frame-limit" => {
+                        reply["app_version"] = "".into();
+                        let length = serde_json::to_vec(reply).unwrap().len() + 1;
+                        reply["app_version"] = "x"
+                            .repeat(
+                                MAX_FRAME_BYTES - length + usize::from(case == "over-frame-limit"),
+                            )
+                            .into();
+                    }
+                    "duplicate" => {}
+                    _ => unreachable!(),
+                }
+                let mut bytes = serde_json::to_vec(reply).unwrap();
+                if case == "duplicate" {
+                    bytes.splice(1..1, b"\"ok\":true,".iter().copied());
+                }
+                bytes.push(b'\n');
+                Some(bytes)
+            });
+            let result = availability_ping_until(
+                &fixture.paths.control_socket,
+                Instant::now() + Duration::from_secs(2),
+            );
+            if live {
+                assert_eq!(result.unwrap(), AvailabilityPing::Live, "{case}");
+            } else {
+                assert!(
+                    matches!(result, Err(AvailabilityRpcError::Permanent(_))),
+                    "{case}: {result:?}"
+                );
+            }
+            assert_eq!(server.finish().len(), 1, "{case}");
+        }
+
+        let fixture = AvailabilityFixture::new();
+        assert_eq!(
+            availability_ping_until(
+                &fixture.paths.control_socket,
+                Instant::now() + Duration::from_secs(1)
+            )
+            .unwrap(),
+            AvailabilityPing::Absent,
+        );
+        let listener = UnixListener::bind(&fixture.paths.control_socket).unwrap();
+        fs::set_permissions(
+            &fixture.paths.control_socket,
+            Permissions::from_mode(SOCKET_MODE),
+        )
+        .unwrap();
+        drop(listener);
+        assert_eq!(
+            availability_ping_until(
+                &fixture.paths.control_socket,
+                Instant::now() + Duration::from_secs(1)
+            )
+            .unwrap(),
+            AvailabilityPing::Absent,
+        );
+        fs::set_permissions(&fixture.paths.control_socket, Permissions::from_mode(0o666)).unwrap();
+        assert!(matches!(
+            availability_ping_until(
+                &fixture.paths.control_socket,
+                Instant::now() + Duration::from_secs(1)
+            ),
+            Err(AvailabilityRpcError::Permanent(_)),
+        ));
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {
+            assert!(matches!(
+                availability_connect_error(io::Error::from(kind)),
+                AvailabilityRpcError::SocketAbsent(_),
+            ));
+            assert!(matches!(
+                availability_io_error("read", io::Error::from(kind)),
+                AvailabilityRpcError::Transport(_),
+            ));
+        }
+        for kind in [
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::UnexpectedEof,
+        ] {
+            assert!(matches!(
+                availability_connect_error(io::Error::from(kind)),
+                AvailabilityRpcError::Transport(_),
+            ));
+        }
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::InvalidData] {
+            assert!(matches!(
+                availability_connect_error(io::Error::from(kind)),
+                AvailabilityRpcError::Permanent(_),
+            ));
+        }
+    }
+
+    #[test]
+    fn invalid_availability_socket_addresses_cannot_write_preferences() {
+        for socket in [
+            PathBuf::new(),
+            PathBuf::from("/tmp/availability\0.sock"),
+            PathBuf::from(format!("/tmp/{}.sock", "x".repeat(256))),
+        ] {
+            let mut fixture = AvailabilityFixture::new();
+            fixture.paths.control_socket = socket;
+            let before = fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap();
+            assert_eq!(
+                connect_private_socket_io(
+                    &fixture.paths.control_socket,
+                    Instant::now() + Duration::from_secs(1),
+                )
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::InvalidInput,
+            );
+            assert!(matches!(
+                availability_ping_until(
+                    &fixture.paths.control_socket,
+                    Instant::now() + Duration::from_secs(1),
+                ),
+                Err(AvailabilityRpcError::Permanent(_)),
+            ));
+            assert!(access_plugin_manager_availability(&fixture.paths, Some(true)).is_err());
+            assert_eq!(
+                fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+                before,
+            );
+            assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        }
+    }
+
+    #[test]
+    fn availability_partial_frame_timeout_remains_permanent() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        writer.write_all(b"{\"ok\":true").unwrap();
+        let error = read_client_frame_checked(
+            &mut reader,
+            Instant::now() + Duration::from_millis(100),
+            MAX_FRAME_BYTES,
+            true,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            availability_io_error("read", error),
+            AvailabilityRpcError::Permanent(_),
+        ));
+    }
+
+    #[test]
+    fn connected_transient_availability_peers_never_authorize_offline_save() {
+        for mode in ["silent", "empty", "reset"] {
+            let fixture = AvailabilityFixture::new();
+            let before = prepare_availability_change(&fixture, true);
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let server = fixture.serve_frames_with_release(move |request, _, stream| {
+                assert_eq!(request["command"], "ping");
+                if mode == "silent" {
+                    thread::sleep(
+                        deadline.saturating_duration_since(Instant::now())
+                            + Duration::from_millis(20),
+                    );
+                } else if mode == "reset" {
+                    // Abort the accepted stream; some Unix kernels report an
+                    // abort as empty EOF rather than ConnectionReset.
+                    let linger = libc::linger {
+                        l_onoff: 1,
+                        l_linger: 0,
+                    };
+                    assert_eq!(
+                        unsafe {
+                            libc::setsockopt(
+                                stream.as_raw_fd(),
+                                libc::SOL_SOCKET,
+                                libc::SO_LINGER,
+                                (&linger as *const libc::linger).cast(),
+                                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+                            )
+                        },
+                        0
+                    );
+                }
+                Some((Vec::new(), false))
+            });
+            assert!(
+                access_plugin_manager_availability_until(&fixture.paths, Some(true), deadline)
+                    .is_err(),
+                "{mode}"
+            );
+            assert!(fixture.paths.control_socket.exists(), "{mode}");
+            let requests = server.finish();
+            assert!(!requests.is_empty(), "{mode}");
+            assert_eq!(availability_set_count(&requests), 0, "{mode}");
+            assert_eq!(
+                fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+                before,
+                "{mode}",
+            );
+            assert!(
+                !fixture.paths.config_dir.join("plugin-manager").exists(),
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_release_availability_ping_retains_original_transport_error() {
+        let fixture = AvailabilityFixture::new();
+        let before = prepare_availability_change(&fixture, false);
+        let server = fixture.serve_frames_with_release(|request, _, _| {
+            (request["command"] == "status").then(|| (Vec::new(), false))
+        });
+        let error = access_plugin_manager_availability_until(
+            &fixture.paths,
+            Some(false),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert!(error.contains("closed before frame terminator"));
+        assert!(fixture.paths.control_socket.exists());
+        let requests = server.finish();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(availability_set_count(&requests), 0);
+        assert_eq!(
+            fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn relative_and_absolute_config_alias_availability_writers_share_preferences_exclusion() {
+        use std::os::unix::fs::symlink;
+        let root = PathBuf::from(format!("availability-alias-{}", crate::new_operation_id()));
+        let config = root.join("physical/config");
+        let state = root.join("state");
+        for directory in [&config, &state] {
+            fs::create_dir_all(directory).unwrap();
+            fs::set_permissions(directory, Permissions::from_mode(0o700)).unwrap();
+        }
+        let relative = Paths {
+            config_dir: config.clone(),
+            state_dir: fs::canonicalize(&state).unwrap(),
+            control_socket: state.join(lifecycle::CONTROL_SOCKET_FILE),
+            log_file: state.join(lifecycle::LOG_FILE),
+        };
+        let absolute = Paths {
+            config_dir: fs::canonicalize(&config).unwrap(),
+            ..relative.clone()
+        };
+        symlink(
+            fs::canonicalize(root.join("physical")).unwrap(),
+            root.join("alias"),
+        )
+        .unwrap();
+        let alias = Paths {
+            config_dir: std::path::absolute(root.join("alias/config")).unwrap(),
+            ..relative.clone()
+        };
+        let owner = lifecycle::PreferencesOwner::acquire(&relative).unwrap();
+        for contender in [&absolute, &alias] {
+            assert!(set_plugin_manager_availability(contender, true).is_err());
+            assert!(!Preferences::plugin_manager_installed_at(&config).unwrap());
+            assert!(!config.join("plugin-manager").exists());
+        }
+        drop(owner);
+        assert_eq!(
+            set_plugin_manager_availability(&alias, true).unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true)
+        );
+        assert!(Preferences::plugin_manager_installed_at(&absolute.config_dir).unwrap());
+        assert_eq!(
+            set_plugin_manager_availability(&relative, false).unwrap(),
+            PluginManagerAvailabilityCommit::Committed(false)
+        );
+        assert!(!Preferences::plugin_manager_installed_at(&alias.config_dir).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unavailable_or_malformed_presentation_does_not_retry_or_save_offline() {
+        for malformed in [false, true] {
+            let fixture = AvailabilityFixture::new();
+            let server = fixture.serve(move |request, reply| {
+                if request["kind"] == "presentation" {
+                    if malformed {
+                        reply["version"] = 999.into();
+                    } else {
+                        *reply = serde_json::to_value(presentation_error(
+                            "presentation automation is unavailable".to_owned(),
+                        ))
+                        .unwrap();
+                    }
+                }
+            });
+            assert!(access_plugin_manager_availability_until(
+                &fixture.paths,
+                Some(true),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .is_err());
+            let requests = server.finish();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request["kind"] == "presentation")
+                    .count(),
+                1
+            );
+            assert!(!requests
+                .iter()
+                .any(|request| request["kind"] == "automation"));
+            assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+            assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        }
+    }
+
+    #[test]
+    fn relative_offline_install_and_remove_preserve_latest_preferences_and_lazy_reads() {
+        let root = PathBuf::from(format!(
+            "availability-relative-{}",
+            crate::new_operation_id()
+        ));
+        let config = root.join("config");
+        let state = root.join("state");
+        for directory in [&config, &state] {
+            fs::create_dir_all(directory).unwrap();
+            fs::set_permissions(directory, Permissions::from_mode(0o700)).unwrap();
+        }
+        let paths = Paths {
+            config_dir: config.clone(),
+            state_dir: fs::canonicalize(&state).unwrap(),
+            control_socket: state.join(lifecycle::CONTROL_SOCKET_FILE),
+            log_file: state.join(lifecycle::LOG_FILE),
+        };
+        assert!(!get_plugin_manager_availability(&paths).unwrap());
+        assert!(!config.join("plugin-manager").exists());
+        let preferences = config.join("preferences.json");
+        Preferences::default()
+            .save_candidate(Preferences::default(), &config)
+            .unwrap();
+        for (installed, indicators) in [(true, false), (false, true)] {
+            // Availability must use the latest file, not an old settings snapshot.
+            let mut latest: Value =
+                serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+            latest["plugin_manager_installed"] = (!installed).into();
+            latest["show_status_indicators"] = indicators.into();
+            latest["language"] = "ko".into();
+            fs::write(&preferences, serde_json::to_vec(&latest).unwrap()).unwrap();
+            assert_eq!(
+                set_plugin_manager_availability(&paths, installed).unwrap(),
+                PluginManagerAvailabilityCommit::Committed(installed)
+            );
+            let saved: Value = serde_json::from_slice(&fs::read(&preferences).unwrap()).unwrap();
+            assert_eq!(saved["plugin_manager_installed"], installed);
+            assert_eq!(saved["show_status_indicators"], indicators);
+            assert_eq!(saved["language"], "ko");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn paused_availability_startup_waits_for_ui_and_sends_one_set_without_data_readiness() {
+        let fixture = AvailabilityFixture::new();
+        let _lease = LifecycleLock::try_acquire(&fixture.paths.state_dir)
+            .unwrap()
+            .unwrap();
+        let _owner = lifecycle::PreferencesOwner::acquire(&fixture.paths).unwrap();
+        let ready = Arc::new(AtomicBool::new(false));
+        let resumed = Arc::clone(&ready);
+        let (seen, status) = std::sync::mpsc::channel();
+        let server = fixture.serve(move |request, reply| {
+            if request["kind"].is_null() && request["command"] == "status" {
+                reply["ui_ready"] = resumed.load(Ordering::Acquire).into();
+                let _ = seen.send(());
+            }
+        });
+        let paths = fixture.paths.clone();
+        let client = thread::spawn(move || {
+            access_plugin_manager_availability_until(
+                &paths,
+                Some(true),
+                Instant::now() + Duration::from_secs(3),
+            )
+        });
+        for _ in 0..2 {
+            status.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
+        assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        ready.store(true, Ordering::Release);
+        assert_eq!(
+            client.join().unwrap().unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true)
+        );
+        let requests = server.finish();
+        assert_eq!(availability_set_count(&requests), 1);
+        assert!(Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        let saved: Value = serde_json::from_slice(
+            &fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["show_status_indicators"], false);
+    }
+
+    #[test]
+    fn pre_submit_ui_and_stopping_races_retry_only_before_one_set() {
+        for (kind, error) in [
+            ("presentation", "desktop pet UI is not ready"),
+            ("automation", "desktop pet is stopping"),
+        ] {
+            let fixture = AvailabilityFixture::new();
+            let mut rejected = false;
+            let server = fixture.serve(move |request, reply| {
+                if !rejected && request["kind"] == kind {
+                    rejected = true;
+                    *reply = if kind == "presentation" {
+                        serde_json::to_value(presentation_error(error.to_owned())).unwrap()
+                    } else {
+                        serde_json::to_value(automation_error(error.to_owned())).unwrap()
+                    };
+                }
+            });
+            assert_eq!(
+                access_plugin_manager_availability_until(
+                    &fixture.paths,
+                    Some(true),
+                    Instant::now() + Duration::from_secs(2),
+                )
+                .unwrap(),
+                PluginManagerAvailabilityCommit::Committed(true)
+            );
+            let requests = server.finish();
+            assert_eq!(availability_set_count(&requests), 1);
+            assert!(
+                requests
+                    .iter()
+                    .filter(|request| request["kind"] == kind)
+                    .count()
+                    >= 2
+            );
+            assert!(Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        }
+    }
+
+    #[test]
+    fn stopping_availability_waits_for_owner_release_before_exclusive_offline_save() {
+        let fixture = AvailabilityFixture::new();
+        let lease = LifecycleLock::try_acquire(&fixture.paths.state_dir)
+            .unwrap()
+            .unwrap();
+        let owner = lifecycle::PreferencesOwner::acquire(&fixture.paths).unwrap();
+        let (seen, status) = std::sync::mpsc::channel();
+        let stopping = atomic_stopping_ping(&fixture);
+        let server = fixture.serve(move |request, reply| {
+            if request["kind"].is_null() && request["command"] == "ping" {
+                *reply = stopping.clone();
+            }
+            if request["kind"].is_null() && request["command"] == "status" {
+                reply["shutdown"] = true.into();
+                let _ = seen.send(());
+            }
+        });
+        let paths = fixture.paths.clone();
+        let client = thread::spawn(move || {
+            access_plugin_manager_availability_until(
+                &paths,
+                Some(true),
+                Instant::now() + Duration::from_secs(3),
+            )
+        });
+        status.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        owner.verify(&fixture.paths).unwrap();
+        let requests = server.finish();
+        assert_eq!(availability_set_count(&requests), 0);
+        assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        drop(owner);
+        drop(lease);
+        assert_eq!(
+            client.join().unwrap().unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true)
+        );
+        assert!(Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+    }
+
+    #[test]
+    fn stopping_availability_deadline_preserves_preferences_and_owner_exclusion() {
+        let fixture = AvailabilityFixture::new();
+        let _lease = LifecycleLock::try_acquire(&fixture.paths.state_dir)
+            .unwrap()
+            .unwrap();
+        let owner = lifecycle::PreferencesOwner::acquire(&fixture.paths).unwrap();
+        let server = fixture.serve(|_, reply| {
+            if reply["type"] == "status" {
+                reply["shutdown"] = true.into();
+            }
+        });
+        assert!(access_plugin_manager_availability_until(
+            &fixture.paths,
+            Some(true),
+            Instant::now() + Duration::from_millis(200),
+        )
+        .is_err());
+        let requests = server.finish();
+        assert_eq!(availability_set_count(&requests), 0);
+        assert!(requests
+            .iter()
+            .any(|request| request["command"] == "status"));
+        owner.verify(&fixture.paths).unwrap();
+        assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+    }
+
+    #[test]
+    fn mismatched_availability_instance_fails_before_reads_or_writes() {
+        let fixture = AvailabilityFixture::new();
+        let server = fixture.serve(|request, reply| {
+            if request["kind"] == "presentation" {
+                reply["instance_id"] = "another-owner".into();
+                reply["snapshot"]["instance_id"] = "another-owner".into();
+            }
+        });
+        assert!(access_plugin_manager_availability_until(
+            &fixture.paths,
+            Some(true),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .is_err());
+        let requests = server.finish();
+        assert_eq!(requests.len(), 3);
+        assert!(!requests
+            .iter()
+            .any(|request| request["kind"] == "automation"));
+        assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+    }
+
+    #[test]
+    fn changing_availability_owner_while_waiting_is_not_retried() {
+        let fixture = AvailabilityFixture::new();
+        let mut statuses = 0;
+        let server = fixture.serve(move |request, reply| {
+            if request["kind"].is_null() && request["command"] == "status" {
+                statuses += 1;
+                reply["ui_ready"] = false.into();
+                if statuses > 1 {
+                    reply["instance_id"] = "replacement-owner".into();
+                }
+            }
+        });
+        assert!(access_plugin_manager_availability_until(
+            &fixture.paths,
+            Some(true),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .is_err());
+        let requests = server.finish();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request["command"] == "status")
+                .count(),
+            2
+        );
+        assert!(!requests
+            .iter()
+            .any(|request| request["kind"] == "automation"));
+        assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+    }
+
+    #[test]
+    fn slow_pre_submit_read_and_poll_share_deadline_and_never_send_a_late_set() {
+        for poll in [false, true] {
+            let fixture = AvailabilityFixture::new();
+            let deadline = Instant::now() + Duration::from_millis(500);
+            let server = fixture.serve(move |request, reply| {
+                if request["kind"] == "automation" {
+                    if poll && request["command"] == "request" {
+                        reply["operation"]["state"] = "accepted".into();
+                        reply["operation"]["result"] = Value::Null;
+                    } else {
+                        thread::sleep(
+                            deadline.saturating_duration_since(Instant::now())
+                                + Duration::from_millis(50),
+                        );
+                    }
+                }
+            });
+            assert!(
+                access_plugin_manager_availability_until(&fixture.paths, Some(true), deadline,)
+                    .is_err()
+            );
+            let requests = server.finish();
+            assert_eq!(availability_set_count(&requests), 0);
+            assert!(requests
+                .iter()
+                .any(|request| request["request"]["action"]["action"] == "preferences_get"));
+            if poll {
+                assert!(requests.iter().any(
+                    |request| request["kind"] == "automation" && request["command"] == "status"
+                ));
+            }
+            assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+            assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+        }
+    }
+
+    #[test]
+    fn expired_pre_submit_deadline_does_not_send_preferences_set() {
+        let fixture = AvailabilityFixture::new();
+        let server = fixture.serve(|_, _| {});
+        assert!(online_availability_set(
+            &fixture.paths.control_socket,
+            "unused-instance",
+            7,
+            true,
+            Instant::now(),
+        )
+        .is_err());
+        assert!(server.finish().is_empty());
+        assert!(!Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+    }
+
+    #[test]
+    fn invalid_pre_submit_replies_remain_closed_after_socket_disappears() {
+        for stage in ["owner", "presentation", "get", "poll"] {
+            for malformed in ["json", "truncated", "oversized", "protocol"] {
+                let fixture = AvailabilityFixture::new();
+                let before = fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap();
+                let server = fixture.serve_frames(move |request, reply| {
+                    let target = match stage {
+                        "owner" => request["kind"].is_null() && request["command"] == "status",
+                        "presentation" => request["kind"] == "presentation",
+                        "get" => request["request"]["action"]["action"] == "preferences_get",
+                        "poll" => request["kind"] == "automation" && request["command"] == "status",
+                        _ => unreachable!(),
+                    };
+                    if stage == "poll"
+                        && request["request"]["action"]["action"] == "preferences_get"
+                    {
+                        reply["operation"]["state"] = "accepted".into();
+                        reply["operation"]["result"] = Value::Null;
+                    }
+                    target.then(|| match malformed {
+                        "json" => b"not-json\n".to_vec(),
+                        "truncated" => b"{\"ok\":true".to_vec(),
+                        "oversized" => vec![b'x'; MAX_AUTOMATION_REPLY_BYTES + 1],
+                        "protocol" => {
+                            reply["version"] = 999.into();
+                            bounded_json(reply, MAX_AUTOMATION_REPLY_BYTES).unwrap()
+                        }
+                        _ => unreachable!(),
+                    })
+                });
+                assert!(
+                    access_plugin_manager_availability_until(
+                        &fixture.paths,
+                        Some(true),
+                        Instant::now() + Duration::from_secs(2),
+                    )
+                    .is_err(),
+                    "{stage}/{malformed}"
+                );
+                let requests = server.finish();
+                assert_eq!(availability_set_count(&requests), 0, "{stage}/{malformed}");
+                assert_eq!(
+                    fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+                    before,
+                    "{stage}/{malformed}",
+                );
+                assert!(!fixture.paths.config_dir.join("plugin-manager").exists());
+                assert!(!fixture.paths.control_socket.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn empty_reply_then_owner_disappearance_can_save_exclusively_offline() {
+        let fixture = AvailabilityFixture::new();
+        let server =
+            fixture.serve_frames(|request, _| (request["command"] == "status").then(Vec::new));
+        assert_eq!(
+            access_plugin_manager_availability_until(
+                &fixture.paths,
+                Some(true),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true),
+        );
+        assert_eq!(availability_set_count(&server.finish()), 0);
+        assert!(Preferences::plugin_manager_installed_at(&fixture.paths.config_dir).unwrap());
+        let owner = lifecycle::PreferencesOwner::acquire(&fixture.paths).unwrap();
+        owner.verify(&fixture.paths).unwrap();
+    }
+
+    #[test]
+    fn deadline_expiring_during_set_encoding_sends_no_bytes() {
+        struct DelayedSet {
+            request: AutomationRequestEnvelope,
+            deadline: Instant,
+        }
+        impl Serialize for DelayedSet {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                thread::sleep(
+                    self.deadline.saturating_duration_since(Instant::now())
+                        + Duration::from_millis(10),
+                );
+                self.request.serialize(serializer)
+            }
+        }
+        let fixture = AvailabilityFixture::new();
+        let before = fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap();
+        let server = fixture.serve(|_, _| {});
+        let deadline = Instant::now() + Duration::from_millis(50);
+        availability_timeout(deadline, CLIENT_TIMEOUT).unwrap();
+        let request = DelayedSet {
+            request: availability_envelope(
+                "request",
+                Some(DomainRequest {
+                    instance_id: "admitted-instance".into(),
+                    operation_id: crate::new_operation_id(),
+                    action: DomainAction::PreferencesSet {
+                        patch: PreferencePatch {
+                            plugin_manager_installed: Some(true),
+                            ..Default::default()
+                        },
+                        expected_revision: Some(7),
+                    },
+                }),
+                None,
+            ),
+            deadline,
+        };
+        let mut submitted_bytes = 0;
+        let result = availability_send_until(
+            &fixture.paths.control_socket,
+            &request,
+            deadline,
+            MAX_AUTOMATION_REPLY_BYTES,
+            &mut submitted_bytes,
+            |frame, request| decode_automation_reply(frame, &request.request),
+        );
+        assert!(result.is_err());
+        assert_eq!(submitted_bytes, 0);
+        assert!(server.finish().is_empty());
+        assert_eq!(
+            fs::read(fixture.paths.config_dir.join("preferences.json")).unwrap(),
+            before,
+        );
+    }
+
+    #[test]
+    fn offline_availability_cannot_claim_live_configs_other_state() {
+        let root = Path::new("/tmp").join(format!("ao{}", crate::new_operation_id()));
+        let config = root.join("config");
+        let state_a = root.join("state-a");
+        let state_b = root.join("state-b");
+        for directory in [&root, &config, &state_a, &state_b] {
+            fs::create_dir(directory).unwrap();
+            fs::set_permissions(directory, Permissions::from_mode(0o700)).unwrap();
+        }
+        let paths = |state: &Path| Paths {
+            config_dir: config.clone(),
+            state_dir: state.to_path_buf(),
+            control_socket: state.join(lifecycle::CONTROL_SOCKET_FILE),
+            log_file: state.join(lifecycle::LOG_FILE),
+        };
+        let owner = lifecycle::PreferencesOwner::acquire(&paths(&state_a)).unwrap();
+        assert!(!config.join("plugin-manager").exists());
+        assert!(access_plugin_manager_availability(&paths(&state_b), Some(true)).is_err());
+        assert!(!Preferences::plugin_manager_installed_at(&config).unwrap());
+        assert!(!config.join("plugin-manager").exists());
+        drop(owner);
+        assert!(matches!(
+            access_plugin_manager_availability(&paths(&state_b), Some(true)).unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true)
+        ));
+        assert!(Preferences::plugin_manager_installed_at(&config).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn live_availability_rejects_other_config_before_preference_requests() {
+        use std::io::BufRead;
+        let root =
+            PathBuf::from("/tmp").join(format!("availability-live-{}", crate::new_operation_id()));
+        let config_a = root.join("config-a");
+        let config_b = root.join("config-b");
+        let state = root.join("state");
+        for directory in [&config_a, &config_b, &state] {
+            fs::create_dir_all(directory).unwrap();
+            fs::set_permissions(directory, Permissions::from_mode(0o700)).unwrap();
+        }
+        let socket = state.join(lifecycle::CONTROL_SOCKET_FILE);
+        let listener = UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        let owner_config = config_a.clone();
+        let owner_state = state.clone();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = Vec::new();
+                std::io::BufReader::new(&stream)
+                    .read_until(b'\n', &mut bytes)
+                    .unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let command = request
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let reply = serde_json::json!({
+                    "type":"status","version":PROTOCOL_VERSION,"app_version":"test",
+                    "ok":true,"command":command,"error":null,"ready":true,
+                    "running":true,"phase":"idle","ui_ready":true,"control_ready":true,
+                    "registration_accepted":true,"data_connected":false,
+                    "connected_sources":0,"disconnected_sources":0,"sessions":0,
+                    "working":0,"blocked":0,"done":0,"unknown":0,
+                    "visible":true,"passthrough":false,"scale":1.0,"shutdown":false,
+                    "auto_start":false,"exit_with_herdr":false,
+                    "pid":std::process::id(),"instance_id":"live-owner",
+                    "executable_path":"/bin/echo","config_dir":owner_config,
+                    "state_dir":owner_state,"herdr_socket":""
+                });
+                let _: ControlResponse = serde_json::from_value(reply.clone()).unwrap();
+                writeln!(stream, "{reply}").unwrap();
+            }
+        });
+        let selected = Paths {
+            config_dir: config_b.clone(),
+            state_dir: state,
+            control_socket: socket,
+            log_file: root.join("pet.log"),
+        };
+        assert!(access_plugin_manager_availability(&selected, Some(true)).is_err());
+        server.join().unwrap();
+        assert!(!Preferences::plugin_manager_installed_at(&config_a).unwrap());
+        assert!(!Preferences::plugin_manager_installed_at(&config_b).unwrap());
+        assert!(!config_a.join("plugin-manager").exists());
+        assert!(!config_b.join("plugin-manager").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn lost_availability_ack_retains_identity_without_resending_mutation() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let directory = Path::new("/tmp").join(format!("ha{}", crate::new_operation_id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut bytes = Vec::new();
+            std::io::BufReader::new(stream)
+                .read_until(b'\n', &mut bytes)
+                .unwrap();
+            let envelope: AutomationRequestEnvelope = serde_json::from_slice(&bytes).unwrap();
+            let request = envelope.request.unwrap();
+            assert_eq!(request.instance_id, "running_instance");
+            assert!(matches!(
+                request.action,
+                DomainAction::PreferencesSet {
+                    patch: PreferencePatch {
+                        plugin_manager_installed: Some(false),
+                        ..
+                    },
+                    expected_revision: Some(7),
+                }
+            ));
+            // The socket accepted the mutation but closed before replying.
+            // A status lookup is safe; a second PreferencesSet is not.
+            let (mut stream, _) = listener.accept().unwrap();
+            bytes.clear();
+            std::io::BufReader::new(&mut stream)
+                .read_until(b'\n', &mut bytes)
+                .unwrap();
+            let status: AutomationRequestEnvelope = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status.command, "status");
+            assert!(status.request.is_none());
+            assert_eq!(status.instance_id.as_deref(), Some("running_instance"));
+            assert_eq!(
+                status.operation_id.as_deref(),
+                Some(request.operation_id.as_str())
+            );
+            let reply = AutomationReplyEnvelope {
+                version: PROTOCOL_VERSION,
+                kind: "automation".to_owned(),
+                ok: false,
+                error: Some("operation status unavailable".to_owned()),
+                instance_id: None,
+                operation: None,
+            };
+            stream
+                .write_all(&serde_json::to_vec(&reply).unwrap())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+            request.operation_id
+        });
+        let outcome = online_availability_set(
+            &path,
+            "running_instance",
+            7,
+            false,
+            Instant::now() + crate::STARTUP_TIMEOUT,
+        )
+        .unwrap();
+        let sent_id = server.join().unwrap();
+        assert_eq!(
+            outcome,
+            PluginManagerAvailabilityCommit::Uncertain {
+                instance_id: "running_instance".to_owned(),
+                operation_id: sent_id,
+                current: None,
+            }
+        );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn lost_availability_ack_can_recover_persisted_result_by_original_identity() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let directory = Path::new("/tmp").join(format!("hr{}", crate::new_operation_id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut bytes = Vec::new();
+            std::io::BufReader::new(stream)
+                .read_until(b'\n', &mut bytes)
+                .unwrap();
+            let sent: AutomationRequestEnvelope = serde_json::from_slice(&bytes).unwrap();
+            let original_id = sent.request.unwrap().operation_id;
+            let (mut stream, _) = listener.accept().unwrap();
+            bytes.clear();
+            std::io::BufReader::new(&mut stream)
+                .read_until(b'\n', &mut bytes)
+                .unwrap();
+            let status: AutomationRequestEnvelope = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(status.command, "status");
+            assert!(status.request.is_none());
+            assert_eq!(status.instance_id.as_deref(), Some("running_instance"));
+            assert_eq!(status.operation_id.as_deref(), Some(original_id.as_str()));
+            let reply = AutomationReplyEnvelope {
+                version: PROTOCOL_VERSION,
+                kind: "automation".to_owned(),
+                ok: true,
+                error: None,
+                instance_id: Some("running_instance".to_owned()),
+                operation: Some(DomainOperation {
+                    instance_id: "running_instance".to_owned(),
+                    operation_id: original_id,
+                    kind: "preferences_set".to_owned(),
+                    state: crate::automation::DomainOperationState::Applied,
+                    committed: true,
+                    native_applied: true,
+                    result: Some(serde_json::json!({
+                        "revision": 8,
+                        "persisted": {"plugin_manager_installed": true}
+                    })),
+                    error_code: None,
+                    error: None,
+                }),
+            };
+            stream
+                .write_all(&serde_json::to_vec(&reply).unwrap())
+                .unwrap();
+            stream.write_all(b"\n").unwrap();
+        });
+        assert_eq!(
+            online_availability_set(
+                &path,
+                "running_instance",
+                7,
+                true,
+                Instant::now() + crate::STARTUP_TIMEOUT,
+            )
+            .unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true)
+        );
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn accepted_availability_ack_is_not_a_persisted_commit() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let directory = Path::new("/tmp").join(format!("hc{}", crate::new_operation_id()));
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("control.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(SOCKET_MODE)).unwrap();
+        let server = thread::spawn(move || {
+            for (state, committed) in [
+                (crate::automation::DomainOperationState::Accepted, false),
+                (crate::automation::DomainOperationState::Failed, false),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = Vec::new();
+                std::io::BufReader::new(&mut stream)
+                    .read_until(b'\n', &mut bytes)
+                    .unwrap();
+                let envelope: AutomationRequestEnvelope = serde_json::from_slice(&bytes).unwrap();
+                let id = envelope
+                    .request
+                    .as_ref()
+                    .map(|request| request.operation_id.as_str())
+                    .or(envelope.operation_id.as_deref())
+                    .unwrap();
+                let reply = AutomationReplyEnvelope {
+                    version: PROTOCOL_VERSION,
+                    kind: "automation".to_owned(),
+                    ok: true,
+                    error: None,
+                    instance_id: Some("running_instance".to_owned()),
+                    operation: Some(DomainOperation {
+                        instance_id: "running_instance".to_owned(),
+                        operation_id: id.to_owned(),
+                        kind: "preferences_set".to_owned(),
+                        state,
+                        committed,
+                        native_applied: false,
+                        result: None,
+                        error_code: (state == crate::automation::DomainOperationState::Failed)
+                            .then(|| "persist_failed".to_owned()),
+                        error: (state == crate::automation::DomainOperationState::Failed)
+                            .then(|| "preferences could not be saved".to_owned()),
+                    }),
+                };
+                stream
+                    .write_all(&serde_json::to_vec(&reply).unwrap())
+                    .unwrap();
+                stream.write_all(b"\n").unwrap();
+            }
+        });
+        assert_eq!(
+            online_availability_set(
+                &path,
+                "running_instance",
+                7,
+                true,
+                Instant::now() + crate::STARTUP_TIMEOUT,
+            )
+            .unwrap_err(),
+            "preferences could not be saved"
+        );
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn offline_availability_uses_latest_selected_profile_and_rejects_invalid_disk() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = Path::new("/tmp").join(format!("ap{}", crate::new_operation_id()));
+        let config = root.join("selected-config");
+        let state = root.join("selected-state");
+        let other = root.join("other-config");
+        for directory in [&root, &config, &state, &other] {
+            fs::create_dir(directory).unwrap();
+            fs::set_permissions(directory, Permissions::from_mode(0o700)).unwrap();
+        }
+        let paths = Paths {
+            config_dir: config.clone(),
+            state_dir: state.clone(),
+            control_socket: state.join("control.sock"),
+            log_file: state.join("pet.log"),
+        };
+        let other_bytes =
+            br#"{"visible":false,"passthrough":false,"scale":0.75,"plugin_manager_installed":false}"#;
+        fs::write(other.join("preferences.json"), other_bytes).unwrap();
+        fs::write(
+            config.join("preferences.json"),
+            br#"{"visible":true,"passthrough":false,"scale":1,"language":"en","future_option":{"value":"first"}}"#,
+        )
+        .unwrap();
+        assert!(!get_plugin_manager_availability(&paths).unwrap());
+        assert_eq!(
+            set_plugin_manager_availability(&paths, true).unwrap(),
+            PluginManagerAvailabilityCommit::Committed(true)
+        );
+        let installed: Value =
+            serde_json::from_slice(&fs::read(config.join("preferences.json")).unwrap()).unwrap();
+        assert_eq!(installed["future_option"]["value"], "first");
+        assert_eq!(installed["language"], "en");
+        // A later writer can change unrelated fields: never use an old startup
+        // snapshot for this second availability-only transaction.
+        let mut latest = installed;
+        latest["future_option"]["value"] = Value::String("second".to_owned());
+        latest["language"] = Value::String("ko".to_owned());
+        fs::write(
+            config.join("preferences.json"),
+            serde_json::to_vec(&latest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            set_plugin_manager_availability(&paths, false).unwrap(),
+            PluginManagerAvailabilityCommit::Committed(false)
+        );
+        let removed: Value =
+            serde_json::from_slice(&fs::read(config.join("preferences.json")).unwrap()).unwrap();
+        assert_eq!(removed["future_option"]["value"], "second");
+        assert_eq!(removed["language"], "ko");
+        assert_eq!(
+            fs::read(other.join("preferences.json")).unwrap(),
+            other_bytes
+        );
+        let invalid = b"{malformed disk";
+        fs::write(config.join("preferences.json"), invalid).unwrap();
+        assert!(set_plugin_manager_availability(&paths, true).is_err());
+        assert_eq!(fs::read(config.join("preferences.json")).unwrap(), invalid);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn ready_reports_requested_registered_endpoint_not_primary_display() {
         let primary = socket::canonical_endpoint(Path::new("/tmp/herdr-primary.sock")).unwrap();

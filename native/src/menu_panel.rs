@@ -2,6 +2,7 @@ use crate::bubble::BubblePlacement;
 use crate::i18n::{text, LanguagePreference, Message, UiLocale};
 use crate::lifecycle::LifecycleSettings;
 use crate::lifecycle_settings_ui::{LifecycleSettingsCard, CARD_HEIGHT};
+use crate::plugin_manager::{PluginManagerCard, CARD_HEIGHT as PLUGIN_MANAGER_HEIGHT};
 use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, BubbleTheme, MenuBarMode};
 use crate::sources::{MachineStatus, ObservationPreferences, SourceCatalog};
 use crate::state::Scene;
@@ -34,7 +35,7 @@ const FOOTER_HEIGHT: f64 = 50.0;
 const CHARACTER_VIEW_TOP: f64 = 106.0;
 const INITIAL_CHARACTER_HEIGHT: f64 = 72.0;
 const BUBBLE_CONTENT_HEIGHT: f64 = 578.0;
-const SETTINGS_BASE_HEIGHT: f64 = 308.0 + CARD_HEIGHT + 14.0;
+const SETTINGS_BASE_HEIGHT: f64 = 308.0 + CARD_HEIGHT + PLUGIN_MANAGER_HEIGHT + 14.0;
 const MENU_BAR_CARD_TOP: f64 = 300.0;
 const MENU_BAR_CARD_GAP: f64 = 8.0;
 const MENU_BAR_CARD_BOTTOM: f64 = 14.0;
@@ -444,6 +445,7 @@ pub(crate) struct MenuPanel {
     menu_bar_icon_custom: bool,
     menu_bar_icon_busy: Cell<bool>,
     lifecycle_card: LifecycleSettingsCard,
+    plugin_manager_card: PluginManagerCard,
     frozen_controls: Vec<(Retained<NSControl>, bool)>,
     update_card: AppUpdateCard,
     observation_card: Retained<MenuPanelCard>,
@@ -1191,6 +1193,8 @@ impl MenuPanel {
         settings_tab.addSubview(&observation_card);
         let lifecycle_card = LifecycleSettingsCard::new(locale, target, mtm);
         settings_tab.addSubview(lifecycle_card.view());
+        let plugin_manager_card = PluginManagerCard::new(locale, target, mtm);
+        settings_tab.addSubview(plugin_manager_card.view());
         let update_card = AppUpdateCard::new(locale, target, mtm);
         settings_tab.addSubview(update_card.view());
 
@@ -1282,6 +1286,7 @@ impl MenuPanel {
             menu_bar_icon_custom: false,
             menu_bar_icon_busy: Cell::new(false),
             lifecycle_card,
+            plugin_manager_card,
             frozen_controls: Vec::new(),
             update_card,
             observation_card,
@@ -1314,6 +1319,13 @@ impl MenuPanel {
         panel.set_locale(locale);
         panel.layout_root();
         panel
+    }
+
+    pub(crate) fn plugin_manager_card(&mut self) -> &mut PluginManagerCard {
+        &mut self.plugin_manager_card
+    }
+    pub(crate) fn plugin_manager_installed(&self) -> bool {
+        self.plugin_manager_card.installed()
     }
 
     pub(crate) fn show(&self) {
@@ -2356,6 +2368,7 @@ impl MenuPanel {
         );
         set_accessibility_label(&*self.reset, text(locale, Message::ResetPosition));
         set_accessibility_label(&*self.quit, text(locale, Message::MenuQuit));
+        self.plugin_manager_card.set_locale(locale);
         self.layout_root();
     }
 
@@ -3060,8 +3073,7 @@ impl MenuPanel {
             ),
             NSSize::new(card_width, CARD_HEIGHT),
         ));
-        let update_height = self.update_card.height(card_width);
-        self.update_card.layout(NSRect::new(
+        self.plugin_manager_card.layout(NSRect::new(
             NSPoint::new(
                 8.0,
                 MENU_BAR_CARD_TOP
@@ -3069,6 +3081,19 @@ impl MenuPanel {
                     + MENU_BAR_CARD_GAP * 3.0
                     + observation_height
                     + CARD_HEIGHT,
+            ),
+            NSSize::new(card_width, PLUGIN_MANAGER_HEIGHT),
+        ));
+        let update_height = self.update_card.height(card_width);
+        self.update_card.layout(NSRect::new(
+            NSPoint::new(
+                8.0,
+                MENU_BAR_CARD_TOP
+                    + menu_bar_height
+                    + MENU_BAR_CARD_GAP * 4.0
+                    + observation_height
+                    + CARD_HEIGHT
+                    + PLUGIN_MANAGER_HEIGHT,
             ),
             NSSize::new(card_width, update_height),
         ));
@@ -3239,7 +3264,7 @@ fn settings_content_height(
     update_height: f64,
 ) -> f64 {
     SETTINGS_BASE_HEIGHT
-        + MENU_BAR_CARD_GAP * 2.0
+        + MENU_BAR_CARD_GAP * 3.0
         + menu_bar_height
         + observation_height
         + update_height

@@ -146,6 +146,7 @@ pub(crate) struct PreferencePatch {
     #[serde(default, deserialize_with = "deserialize_patch_appearance")]
     pub(crate) bubble_appearance: Option<BubbleAppearance>,
     pub(crate) show_status_indicators: Option<bool>,
+    pub(crate) plugin_manager_installed: Option<bool>,
     pub(crate) menu_bar_mode: Option<MenuBarMode>,
     pub(crate) observation_local: Option<bool>,
     pub(crate) observation_remote: Option<bool>,
@@ -215,6 +216,7 @@ pub(crate) struct PreferenceSnapshot {
     pub(crate) language: LanguagePreference,
     pub(crate) bubble_appearance: BubbleAppearance,
     pub(crate) show_status_indicators: bool,
+    pub(crate) plugin_manager_installed: bool,
     pub(crate) menu_bar_mode: MenuBarMode,
     pub(crate) observation_local: bool,
     pub(crate) observation_remote: bool,
@@ -463,6 +465,7 @@ pub struct Preferences {
     alpha_passthrough: bool,
     bubble_visible: bool,
     show_status_indicators: bool,
+    plugin_manager_installed: bool,
     auto_update_check: bool,
     last_update_check: Option<u64>,
     menu_bar_mode: MenuBarMode,
@@ -493,6 +496,8 @@ struct DiskPreferences {
     bubble_visible: bool,
     #[serde(default = "default_show_status_indicators")]
     show_status_indicators: bool,
+    #[serde(default)]
+    plugin_manager_installed: bool,
     #[serde(default = "default_auto_update_check")]
     auto_update_check: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -544,6 +549,7 @@ impl Default for Preferences {
             passthrough: false,
             alpha_passthrough: false,
             bubble_visible: true,
+            plugin_manager_installed: false,
             show_status_indicators: true,
             auto_update_check: true,
             last_update_check: None,
@@ -570,6 +576,18 @@ impl Preferences {
     /// error and left untouched.
     pub fn load(directory: &Path) -> Result<Self, String> {
         Self::load_in_directory(directory, legacy_preferences_path().as_deref(), false)
+    }
+
+    /// Read only this profile's committed preferences. Unlike the normal load,
+    /// never import legacy state or quarantine malformed data at admission time.
+    pub(crate) fn plugin_manager_installed_at(directory: &Path) -> Result<bool, String> {
+        Ok(Self::load_committed(directory)?.plugin_manager_installed())
+    }
+
+    /// Reload only this profile's committed file; unlike `load`, never import
+    /// legacy state or change an invalid file during an offline transaction.
+    pub(crate) fn load_committed(directory: &Path) -> Result<Self, String> {
+        Ok(Self::load_existing_path(&directory.join(PREFERENCES_FILE))?.unwrap_or_default())
     }
 
     /// Daemon startup load: an unusable file is moved aside to
@@ -643,6 +661,7 @@ impl Preferences {
             passthrough: disk.passthrough,
             alpha_passthrough: disk.alpha_passthrough,
             bubble_visible: disk.bubble_visible,
+            plugin_manager_installed: disk.plugin_manager_installed,
             show_status_indicators: disk.show_status_indicators,
             auto_update_check: disk.auto_update_check,
             last_update_check: disk.last_update_check,
@@ -705,6 +724,7 @@ impl Preferences {
             language: self.language,
             bubble_appearance: self.bubble_appearance,
             show_status_indicators: self.show_status_indicators,
+            plugin_manager_installed: self.plugin_manager_installed,
             menu_bar_mode: self.menu_bar_mode,
             observation_local: self.observation.local,
             observation_remote: self.observation.remote,
@@ -732,6 +752,7 @@ impl Preferences {
             language,
             bubble_appearance,
             show_status_indicators,
+            plugin_manager_installed,
             menu_bar_mode,
             observation_local,
             observation_remote,
@@ -741,6 +762,7 @@ impl Preferences {
             && bubble_appearance.is_none()
             && show_status_indicators.is_none()
             && menu_bar_mode.is_none()
+            && plugin_manager_installed.is_none()
             && observation_local.is_none()
             && observation_remote.is_none()
             && observation_machines.is_none()
@@ -756,6 +778,9 @@ impl Preferences {
         }
         if let Some(enabled) = show_status_indicators {
             candidate.show_status_indicators = enabled;
+        }
+        if let Some(installed) = plugin_manager_installed {
+            candidate.plugin_manager_installed = installed;
         }
         if let Some(mode) = menu_bar_mode {
             candidate.menu_bar_mode = mode;
@@ -912,6 +937,7 @@ impl Preferences {
             alpha_passthrough: self.alpha_passthrough,
             bubble_visible: self.bubble_visible,
             show_status_indicators: self.show_status_indicators,
+            plugin_manager_installed: self.plugin_manager_installed,
             auto_update_check: self.auto_update_check,
             last_update_check: self.last_update_check,
             menu_bar_mode: self.menu_bar_mode,
@@ -988,6 +1014,9 @@ impl Preferences {
 
     pub fn show_status_indicators(&self) -> bool {
         self.show_status_indicators
+    }
+    pub(crate) fn plugin_manager_installed(&self) -> bool {
+        self.plugin_manager_installed
     }
 
     pub fn auto_update_check(&self) -> bool {
@@ -1172,6 +1201,108 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn manager_availability_is_opt_in_strict_and_profile_scoped() {
+        let root = isolated_preferences_directory();
+        let selected = root.join("selected");
+        let other = root.join("other");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&other).unwrap();
+        assert!(!Preferences::default().plugin_manager_installed());
+        assert!(!Preferences::plugin_manager_installed_at(&selected).unwrap());
+        fs::write(
+            selected.join(PREFERENCES_FILE),
+            br#"{"visible":true,"passthrough":false,"scale":1,"future_option":{"keep":true}}"#,
+        )
+        .unwrap();
+        let mut owner = Preferences::load_committed(&selected).unwrap();
+        assert!(!owner.plugin_manager_installed());
+        assert!(!Preferences::plugin_manager_installed_at(&selected).unwrap());
+        assert!(serde_json::from_value::<PreferencePatch>(
+            serde_json::json!({"plugin_manager_installed":"true"})
+        )
+        .is_err());
+        let other_bytes =
+            br#"{"visible":true,"passthrough":false,"scale":1,"plugin_manager_installed":false}"#;
+        fs::write(other.join(PREFERENCES_FILE), other_bytes).unwrap();
+        let snapshot = owner
+            .apply_patch(
+                PreferencePatch {
+                    plugin_manager_installed: Some(true),
+                    ..Default::default()
+                },
+                &selected,
+            )
+            .unwrap();
+        assert!(snapshot.plugin_manager_installed);
+        assert!(owner.plugin_manager_installed());
+        assert!(Preferences::plugin_manager_installed_at(&selected).unwrap());
+        assert!(!Preferences::plugin_manager_installed_at(&other).unwrap());
+        assert_eq!(fs::read(other.join(PREFERENCES_FILE)).unwrap(), other_bytes);
+        let stored: Value =
+            serde_json::from_slice(&fs::read(selected.join(PREFERENCES_FILE)).unwrap()).unwrap();
+        assert_eq!(stored["future_option"], serde_json::json!({"keep":true}));
+        assert_eq!(stored["plugin_manager_installed"], true);
+        for invalid in [
+            br#"{"visible":true,"passthrough":false,"scale":1,"plugin_manager_installed":null}"#
+                .as_slice(),
+            br#"{"visible":true,"passthrough":false,"scale":1,"plugin_manager_installed":"true"}"#
+                .as_slice(),
+            br#"{"visible":true,"passthrough":false,"scale":1,"plugin_manager_installed":true,"plugin_manager_installed":false}"#
+                .as_slice(),
+            b"invalid json".as_slice(),
+        ] {
+            fs::write(selected.join(PREFERENCES_FILE), invalid).unwrap();
+            assert!(Preferences::plugin_manager_installed_at(&selected).is_err());
+            assert!(Preferences::load_committed(&selected).is_err());
+            assert_eq!(fs::read(selected.join(PREFERENCES_FILE)).unwrap(), invalid);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_manager_availability_save_does_not_change_owner_or_another_profile() {
+        let root = isolated_preferences_directory();
+        let selected = root.join("selected");
+        let blocked = root.join("blocked");
+        let other = root.join("other");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&other).unwrap();
+        fs::write(&blocked, b"not a directory").unwrap();
+        let mut owner = Preferences::default();
+        owner
+            .apply_patch(
+                PreferencePatch {
+                    language: Some(LanguagePreference::En),
+                    ..Default::default()
+                },
+                &selected,
+            )
+            .unwrap();
+        let selected_bytes = fs::read(selected.join(PREFERENCES_FILE)).unwrap();
+        fs::write(other.join(PREFERENCES_FILE), b"other profile").unwrap();
+        owner
+            .apply_patch(
+                PreferencePatch {
+                    plugin_manager_installed: Some(true),
+                    ..Default::default()
+                },
+                &blocked,
+            )
+            .unwrap_err();
+        assert!(!owner.plugin_manager_installed());
+        assert_eq!(owner.language(), LanguagePreference::En);
+        assert_eq!(
+            fs::read(selected.join(PREFERENCES_FILE)).unwrap(),
+            selected_bytes
+        );
+        assert_eq!(
+            fs::read(other.join(PREFERENCES_FILE)).unwrap(),
+            b"other profile"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn explicit_profile_load_writes_and_failed_candidate_preserve_other_profile() {
@@ -1731,6 +1862,7 @@ mod tests {
             alpha_passthrough: false,
             bubble_visible: true,
             show_status_indicators: true,
+            plugin_manager_installed: false,
             auto_update_check: true,
             last_update_check: None,
             menu_bar_mode: MenuBarMode::default(),
@@ -2006,6 +2138,7 @@ mod tests {
                     observation_local: Some(false),
                     observation_remote: Some(true),
                     observation_machines: Some(vec![" machine:/🌲 ".to_owned()]),
+                    ..PreferencePatch::default()
                 },
                 &directory,
             )
@@ -2837,6 +2970,7 @@ mod tests {
             alpha_passthrough: valid.alpha_passthrough,
             bubble_visible: valid.bubble_visible,
             show_status_indicators: valid.show_status_indicators,
+            plugin_manager_installed: false,
             auto_update_check: valid.auto_update_check,
             last_update_check: valid.last_update_check,
             menu_bar_mode: valid.menu_bar_mode,

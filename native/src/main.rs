@@ -39,6 +39,8 @@ mod menu_panel;
 mod official_catalog;
 mod official_characters;
 mod pack_authoring;
+mod plugin_manager;
+mod plugin_manager_backend;
 mod pointer_capture;
 mod pose;
 mod preferences;
@@ -485,7 +487,7 @@ fn execute_command(
         ),
         CommandKind::UpdateCapabilities | CommandKind::UpdateStatus => unreachable!(),
         CommandKind::Status => status(paths, herdr_socket),
-        CommandKind::Settings => lifecycle_settings_ui::run(paths),
+        CommandKind::Settings => lifecycle_settings_ui::run(paths, herdr_socket),
         CommandKind::SettingsGet | CommandKind::SettingsSet => {
             let settings = match settings.ok_or_else(|| "settings operation missing".to_owned())? {
                 SettingsCommand::Get => control::get_lifecycle_settings(&paths)?,
