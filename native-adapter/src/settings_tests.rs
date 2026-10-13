@@ -355,3 +355,38 @@ fn late_preference_commit_cannot_overwrite_newer_applied_owner_policy() {
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn selecting_another_provider_hides_herdr_scope_without_changing_policy() {
+    let (root, store) = profile("provider-scope");
+    let integration = HerdrIntegration::new();
+    integration.configure_profile(store.clone()).unwrap();
+    integration
+        .apply_setting(&store, "exit_with_herdr", true)
+        .unwrap();
+    integration
+        .apply_setting(&store, "observation_local", false)
+        .unwrap();
+    let hidden = integration
+        .settings(&store, &ObservationSelection::Provider("tern".into()), "ja")
+        .unwrap();
+    assert!(hidden
+        .iter()
+        .all(|view| !view.key.starts_with("observation_")));
+    let exit = hidden
+        .iter()
+        .find(|view| view.key == "exit_with_herdr")
+        .unwrap();
+    assert!(exit.value && !exit.enabled);
+    let restored = integration
+        .settings(&store, &ObservationSelection::Auto, "ja")
+        .unwrap();
+    let local = restored
+        .iter()
+        .find(|view| view.key == "observation_local")
+        .unwrap();
+    assert!(local.enabled && !local.value);
+    drop(integration);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}

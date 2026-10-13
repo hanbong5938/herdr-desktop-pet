@@ -2,6 +2,7 @@
 //! Construction is inert; composition explicitly selects and starts this integration.
 mod endpoint;
 mod extensions;
+mod i18n;
 mod operations;
 mod outcome;
 mod protocol;

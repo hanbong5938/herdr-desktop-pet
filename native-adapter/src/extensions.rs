@@ -369,6 +369,8 @@ impl LifecycleExtension for HerdrIntegration {
         selection: &ObservationSelection,
         locale: &str,
     ) -> Result<Vec<LifecycleSettingView>, String> {
+        use crate::i18n::{text, Message};
+        let t = |message| text(locale, message);
         let (object, exists) = store.read_object_with_presence()?;
         let exit = desktop_pet_contracts::profile_store::setting_bool(
             store.config_dir(),
@@ -376,35 +378,85 @@ impl LifecycleExtension for HerdrIntegration {
             "exit_with_herdr",
         )?
         .unwrap_or(!exists);
+        let mut views = vec![LifecycleSettingView {
+            key: "exit_with_herdr".to_owned(),
+            label: t(Message::Exit).to_owned(),
+            help: t(Message::ExitHelp).to_owned(),
+            value: exit,
+            enabled: matches!(selection, ObservationSelection::Provider(id) if id == "herdr"),
+        }];
+        if !selection.includes_provider("herdr") {
+            return Ok(views);
+        }
         let preferences = settings::read_preferences(store)?;
         let registry = self
             .shared
             .registry
             .lock()
             .map_err(|_| "Herdr registry is poisoned")?;
-        let enabled = selection.includes_provider("herdr");
-        let ko = locale.starts_with("ko");
-        let mut views = vec![
-            LifecycleSettingView { key:"exit_with_herdr".to_owned(), label:if ko {"Herdr와 함께 종료"} else {"Exit with Herdr"}.to_owned(), help:if ko {"Herdr만 선택했을 때 연결 해제 30초 후 종료합니다. Auto에서는 다른 호스트와 pet을 유지합니다."} else {"Exit after 30 seconds without Herdr only when Herdr is selected. Auto keeps the pet and other hosts alive."}.to_owned(), value:exit, enabled: matches!(selection, ObservationSelection::Provider(id) if id == "herdr") },
-            LifecycleSettingView { key:"observation_local".to_owned(), label:if ko {"로컬 Herdr 세션"} else {"Local Herdr sessions"}.to_owned(), help:"Observe this machine's Herdr sessions".to_owned(), value:preferences.local, enabled },
-            LifecycleSettingView { key:"observation_remote".to_owned(), label:if ko {"저장된 Herdr 머신"} else {"Saved Herdr machines"}.to_owned(), help:registry.catalog.error.clone().unwrap_or_else(|| if registry.catalog.initialized { "Remote observations are read-only".to_owned() } else { "Discovering saved Herdr machines…".to_owned() }), value:preferences.remote, enabled },
-        ];
+        let local_help = if !preferences.local && !preferences.remote {
+            Message::NoSources
+        } else {
+            Message::LocalHelp
+        };
+        views.push(LifecycleSettingView {
+            key: "observation_local".to_owned(),
+            label: t(Message::Local).to_owned(),
+            help: t(local_help).to_owned(),
+            value: preferences.local,
+            enabled: true,
+        });
+        let remote_state = registry.catalog.error.as_deref().unwrap_or_else(|| {
+            if !registry.catalog.initialized {
+                t(Message::Loading)
+            } else if registry.catalog.machines.is_empty() {
+                t(Message::Empty)
+            } else {
+                ""
+            }
+        });
+        views.push(LifecycleSettingView {
+            key: "observation_remote".to_owned(),
+            label: t(Message::Remote).to_owned(),
+            help: if remote_state.is_empty() {
+                t(Message::RemoteHelp).to_owned()
+            } else {
+                format!("{}\n{remote_state}", t(Message::RemoteHelp))
+            },
+            value: preferences.remote,
+            enabled: true,
+        });
         for machine in &registry.catalog.machines {
+            let selected = preferences.machines.contains(&machine.id);
+            let status = if !machine.enabled {
+                Message::Disabled
+            } else if !preferences.remote {
+                Message::Paused
+            } else if !selected {
+                Message::NotSelected
+            } else {
+                match machine.status {
+                    settings::MachineStatus::NotSelected => Message::NotSelected,
+                    settings::MachineStatus::Connecting => Message::Connecting,
+                    settings::MachineStatus::Online => Message::Online,
+                    settings::MachineStatus::Offline => Message::Offline,
+                }
+            };
             views.push(LifecycleSettingView {
                 key: format!("observation_machine:{}", machine.id),
                 label: machine.label.clone(),
                 help: format!(
-                    "{} · {:?}{}",
+                    "{} · {}{}",
                     machine.remote_session,
-                    machine.status,
+                    t(status),
                     machine
                         .error
                         .as_ref()
                         .map(|error| format!(" · {error}"))
                         .unwrap_or_default()
                 ),
-                value: preferences.machines.contains(&machine.id),
-                enabled: enabled && preferences.remote && machine.enabled,
+                value: selected,
+                enabled: preferences.remote && machine.enabled,
             });
         }
         Ok(views)
@@ -493,8 +545,9 @@ impl LifecycleExtension for HerdrIntegration {
         &self,
         _store: &ProfileStore,
         selection: &ObservationSelection,
-        _locale: &str,
+        locale: &str,
     ) -> Result<Vec<LifecycleActionView>, String> {
+        use crate::i18n::{text, Message};
         let registry = self
             .shared
             .registry
@@ -513,9 +566,12 @@ impl LifecycleExtension for HerdrIntegration {
             })
             .map(|machine| LifecycleActionView {
                 key: format!("reconnect:{}", machine.id),
-                label: format!("Copy reconnect command · {}", machine.label),
-                help: "Run this command in your terminal to reconnect the saved Herdr machine"
-                    .to_owned(),
+                label: format!(
+                    "{} · {}",
+                    text(locale, Message::CopyReconnect),
+                    machine.label
+                ),
+                help: text(locale, Message::ReconnectHelp).to_owned(),
                 enabled: true,
                 copy_text: Some(format!(
                     "herdr machine reconnect '{}'",
