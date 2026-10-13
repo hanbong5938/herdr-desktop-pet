@@ -145,7 +145,15 @@ fn update_context(
 /// clients never mutate AppState while doing disk I/O, and all worker shutdown
 /// joins happen after AppKit has returned.
 pub fn run(config: DaemonConfig) -> Result<(), String> {
+    let mut config = config;
+    if config.paths.config_dir.is_relative() {
+        config.paths.config_dir =
+            std::path::absolute(&config.paths.config_dir).map_err(|error| error.to_string())?;
+    }
     let _lock = crate::acquire_lock_until(&config.paths, Instant::now() + crate::STARTUP_TIMEOUT)?;
+    // Preferences belong to the config profile, even when another daemon uses
+    // a different state directory. Retain this FD through UI/control shutdown.
+    let _preferences_owner = lifecycle::PreferencesOwner::acquire(&config.paths)?;
     let settings = lifecycle::read_settings(&config.paths.config_dir)?;
     let updater_generation = env::var("HERDR_DESKTOP_PET_UPDATER_GENERATION")
         .ok()

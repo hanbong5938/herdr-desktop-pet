@@ -61,6 +61,7 @@ use crate::lifecycle::{LifecycleSetting, Paths};
 use crate::menu_bar_icon;
 use crate::menu_panel::MenuPanel;
 use crate::official_characters::OfficialCharacters;
+use crate::plugin_manager;
 use crate::pointer_capture::{CaptureId, CaptureState, DownDecision, EventIdentity, PointerSource};
 use crate::preferences::{
     BubbleAppearance, BubbleColor, BubblePalette, BubbleSizes, BubbleTheme, MenuBarIconPreference,
@@ -2301,6 +2302,39 @@ define_class!(
         #[unsafe(method(toggleLifecycleExit:))]
         fn toggle_lifecycle_exit(&self, _sender: Option<&AnyObject>) {
             with_ui_mut(|ui| ui.save_lifecycle_setting(LifecycleSetting::ExitWithHerdr));
+        }
+        #[unsafe(method(openPluginManager:))]
+        fn open_plugin_manager(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| {
+                if !ui.menu_panel.plugin_manager_installed() { return; }
+                let socket = ui.shared.lock().ok()
+                    .and_then(|state| state.update_context().map(|context| context.herdr_socket.clone()));
+                let result = socket.ok_or_else(|| match ui.locale {
+                    UiLocale::Ko => "실행 중인 Herdr 소켓을 사용할 수 없습니다".to_owned(),
+                    UiLocale::En => "Running Herdr socket unavailable".to_owned(),
+                    UiLocale::ZhHans => "无法使用运行中的 Herdr 套接字".to_owned(),
+                    UiLocale::Ja => "実行中の Herdr ソケットを利用できません".to_owned(),
+                })
+                    .and_then(|socket| plugin_manager::open(ui.lifecycle_paths.clone(), socket, ui.locale, self.mtm()));
+                ui.menu_panel.plugin_manager_card().report_error(result.err());
+            });
+        }
+        #[unsafe(method(installPluginManager:))]
+        fn install_plugin_manager(&self, _sender: Option<&AnyObject>) {
+            with_ui_mut(|ui| ui.set_plugin_manager_availability(true));
+        }
+        #[unsafe(method(removePluginManager:))]
+        fn remove_plugin_manager(&self, _sender: Option<&AnyObject>) {
+            let locale = with_ui_read(|ui| ui.locale);
+            let Some(locale) = locale else { return; };
+            let alert = NSAlert::new(self.mtm());
+            alert.setMessageText(&NSString::from_str(text(locale, Message::PluginManagerRemove)));
+            alert.setInformativeText(&NSString::from_str(text(locale, Message::PluginManagerRemoveConfirmation)));
+            alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::Cancel)));
+            alert.addButtonWithTitle(&NSString::from_str(text(locale, Message::PluginManagerRemove)));
+            if alert.runModal() == NSAlertSecondButtonReturn {
+                with_ui_mut(|ui| ui.set_plugin_manager_availability(false));
+            }
         }
 
         #[unsafe(method(setLanguage:))]
@@ -5324,6 +5358,9 @@ impl Ui {
 
         let dialogue_editor = DialogueEditor::new(&menu_target, locale, mtm);
         let mut menu_panel = MenuPanel::new(&menu_target, character_menu.view(), locale, mtm);
+        menu_panel
+            .plugin_manager_card()
+            .sync(prefs.plugin_manager_installed());
         menu_panel.set_bubble_appearance(bubble_appearance);
         menu_panel.set_show_status_indicators(prefs.show_status_indicators());
         menu_panel.set_menu_bar_mode(prefs.menu_bar_mode());
@@ -5672,6 +5709,39 @@ impl Ui {
                 .expect("preference revision exhausted");
         }
         self.apply_menu_bar_icon(image);
+        self.settle_preference_operations();
+    }
+
+    pub(crate) fn reconcile_plugin_manager_availability(&mut self) {
+        let installed = self.prefs.plugin_manager_installed();
+        self.menu_panel.plugin_manager_card().sync(installed);
+        if !installed {
+            plugin_manager::close();
+        }
+    }
+
+    fn set_plugin_manager_availability(&mut self, installed: bool) {
+        self.menu_panel.plugin_manager_card().set_busy(true);
+        let result = self.commit_preference_patch(
+            crate::preferences::PreferencePatch {
+                plugin_manager_installed: Some(installed),
+                ..Default::default()
+            },
+            None,
+        );
+        self.menu_panel.plugin_manager_card().set_busy(false);
+        match result {
+            Ok(_) => self.menu_panel.plugin_manager_card().report_error(None),
+            Err(error) => {
+                self.menu_panel
+                    .plugin_manager_card()
+                    .report_error(Some(format!(
+                        "{}: {}",
+                        text(self.locale, Message::PluginManagerSaveFailure),
+                        error.detail
+                    )));
+            }
+        }
         self.settle_preference_operations();
     }
 

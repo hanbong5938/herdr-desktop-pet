@@ -40,6 +40,9 @@ fn preference_target_state(
             .show_status_indicators
             .is_some_and(|_| target.show_status_indicators != desired.show_status_indicators)
         || patch
+            .plugin_manager_installed
+            .is_some_and(|_| target.plugin_manager_installed != desired.plugin_manager_installed)
+        || patch
             .menu_bar_mode
             .is_some_and(|_| target.menu_bar_mode != desired.menu_bar_mode)
         || patch
@@ -66,6 +69,7 @@ fn patch_changes(patch: &PreferencePatch, snapshot: &PreferenceSnapshot) -> Resu
         && patch.bubble_appearance.is_none()
         && patch.show_status_indicators.is_none()
         && patch.menu_bar_mode.is_none()
+        && patch.plugin_manager_installed.is_none()
         && patch.observation_local.is_none()
         && patch.observation_remote.is_none()
         && patch.observation_machines.is_none()
@@ -81,6 +85,9 @@ fn patch_changes(patch: &PreferencePatch, snapshot: &PreferenceSnapshot) -> Resu
         || patch
             .show_status_indicators
             .is_some_and(|value| value != snapshot.show_status_indicators)
+        || patch
+            .plugin_manager_installed
+            .is_some_and(|value| value != snapshot.plugin_manager_installed)
         || patch
             .menu_bar_mode
             .is_some_and(|value| value != snapshot.menu_bar_mode)
@@ -207,6 +214,7 @@ impl Ui {
             effective.observation_machines = state.observation_preferences().machines.clone();
         }
         effective.show_status_indicators = self.native_show_status_indicators;
+        effective.plugin_manager_installed = self.menu_panel.plugin_manager_installed();
         effective.menu_bar_mode = self.native_menu_bar_mode;
         let mut pending_reasons = Vec::new();
         if self.pending_language.is_some() {
@@ -322,16 +330,30 @@ impl Ui {
             ));
         }
         self.validate_observation_machines(&patch, policy)?;
+        // Even a redundant explicit removal must check the cross-process gate.
+        // Do not hold this short gate while touching AppKit or shared UI state.
+        let availability = patch
+            .plugin_manager_installed
+            .map(|installed| {
+                crate::plugin_manager_backend::availability_admission(
+                    &self.lifecycle_paths,
+                    installed,
+                )
+                .map_err(|error| PreferenceMutationError::new("plugin_manager_unavailable", error))
+            })
+            .transpose()?;
         let previous = self.prefs.snapshot();
         if !patch_changes(&patch, &previous)
             .map_err(|error| PreferenceMutationError::new("invalid_preferences", error))?
         {
+            drop(availability);
             return Ok(previous);
         }
         let target = self
             .prefs
             .apply_patch(patch, &self.lifecycle_paths.config_dir)
             .map_err(|error| PreferenceMutationError::new("persist_failed", error))?;
+        drop(availability);
         self.preference_revision = self
             .preference_revision
             .checked_add(1)
@@ -347,6 +369,9 @@ impl Ui {
     ) {
         if target.language != previous.language || self.pending_language.is_some() {
             self.schedule_committed_language(target.language);
+        }
+        if target.plugin_manager_installed != previous.plugin_manager_installed {
+            self.reconcile_plugin_manager_availability();
         }
         if target.bubble_appearance != previous.bubble_appearance {
             self.apply_bubble_appearance(target.bubble_appearance);
@@ -438,6 +463,9 @@ impl Ui {
             && patch
                 .show_status_indicators
                 .is_none_or(|_| target.show_status_indicators == self.native_show_status_indicators)
+            && patch.plugin_manager_installed.is_none_or(|_| {
+                target.plugin_manager_installed == self.menu_panel.plugin_manager_installed()
+            })
             && patch.menu_bar_mode.is_none_or(|_| {
                 target.menu_bar_mode == self.native_menu_bar_mode
                     && self._status_item.isVisible()
@@ -467,6 +495,7 @@ impl Ui {
         if desired.language != self.effective_language
             || desired.bubble_appearance != self.native_bubble_appearance
             || desired.show_status_indicators != self.native_show_status_indicators
+            || desired.plugin_manager_installed != self.menu_panel.plugin_manager_installed()
             || desired.menu_bar_mode != self.native_menu_bar_mode
         {
             return true;
@@ -663,6 +692,43 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_availability_only_patch_tracks_noop_and_supersession() {
+        let mut target = Preferences::default().snapshot();
+        let install = PreferencePatch {
+            plugin_manager_installed: Some(true),
+            ..Default::default()
+        };
+        let remove = PreferencePatch {
+            plugin_manager_installed: Some(false),
+            ..Default::default()
+        };
+        assert!(patch_changes(&install, &target).unwrap());
+        assert!(!patch_changes(&remove, &target).unwrap());
+        target.plugin_manager_installed = true;
+        assert!(!patch_changes(&install, &target).unwrap());
+        assert!(patch_changes(&remove, &target).unwrap());
+        assert_eq!(
+            preference_target_state(&target, &target, &install, false),
+            DomainOperationState::Pending
+        );
+        assert_eq!(
+            preference_target_state(&target, &target, &install, true),
+            DomainOperationState::Applied
+        );
+        let mut unrelated = target.clone();
+        unrelated.language = LanguagePreference::En;
+        assert_eq!(
+            preference_target_state(&target, &unrelated, &install, true),
+            DomainOperationState::Applied
+        );
+        unrelated.plugin_manager_installed = false;
+        assert_eq!(
+            preference_target_state(&target, &unrelated, &install, true),
+            DomainOperationState::Superseded
+        );
+    }
 
     #[test]
     fn pending_settings_track_only_requested_fields() {
