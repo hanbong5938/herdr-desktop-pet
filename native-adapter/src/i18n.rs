@@ -1,9 +1,23 @@
 //! Herdr-owned connection copy, kept out of the host-neutral UI.
 #[derive(Clone, Copy)]
 pub(crate) enum Message {
-    Exit, ExitHelp, Local, LocalHelp, Remote, RemoteHelp, Loading, Empty,
-    NoSources, NotSelected, Paused, Disabled, Connecting, Online, Offline,
-    CopyReconnect, ReconnectHelp,
+    Exit,
+    ExitHelp,
+    Local,
+    LocalHelp,
+    Remote,
+    RemoteHelp,
+    Loading,
+    Empty,
+    NoSources,
+    NotSelected,
+    Paused,
+    Disabled,
+    Connecting,
+    Online,
+    Offline,
+    CopyReconnect,
+    ReconnectHelp,
 }
 
 pub(crate) fn text(locale: &str, message: Message) -> &'static str {

@@ -7,7 +7,10 @@ use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSBackingStoreType, NSWindow, NSWindowDelegate, NSWindowStyleMask};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAppearance, NSAppearanceNameDarkAqua, NSBackingStoreType,
+    NSFloatingWindowLevel, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -92,9 +95,11 @@ define_class!(
 );
 impl SettingsTarget {
     fn is_current(&self) -> bool {
-        WINDOW.with(|slot| slot.borrow().as_ref().is_some_and(|window| {
-            window.id == *self.ivars() && window.window.isVisible()
-        }))
+        WINDOW.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|window| window.id == *self.ivars() && window.window.isVisible())
+        })
     }
 }
 
@@ -106,7 +111,11 @@ fn confirm_remove_plugin_manager(mtm: MainThreadMarker) {
             return None;
         }
         window.confirming_removal = true;
-        Some((window.id, window.presentation_generation, window.plugin_manager_card.locale()))
+        Some((
+            window.id,
+            window.presentation_generation,
+            window.plugin_manager_card.locale(),
+        ))
     }) else {
         return;
     };
@@ -168,24 +177,36 @@ fn request_availability(action: AvailabilityAction) {
             window.plugin_manager_card.report_error(None);
         }
         window.plugin_manager_card.set_busy(true);
-        Some((Arc::clone(&window.preferences), request_id, window.presentation_generation))
+        Some((
+            Arc::clone(&window.preferences),
+            request_id,
+            window.presentation_generation,
+        ))
     }) else {
         return;
     };
     thread::spawn(move || {
         let reply = match action {
             AvailabilityAction::Refresh { .. } | AvailabilityAction::Open => {
-                AvailabilityReply::Current(control::get_plugin_manager_availability(preferences.as_ref()))
+                AvailabilityReply::Current(control::get_plugin_manager_availability(
+                    preferences.as_ref(),
+                ))
             }
             AvailabilityAction::Set(installed) => AvailabilityReply::Commit(
                 control::set_plugin_manager_availability(preferences.as_ref(), installed),
             ),
         };
-        DispatchQueue::main().exec_async(move || complete_availability(request_id, generation, action, reply));
+        DispatchQueue::main()
+            .exec_async(move || complete_availability(request_id, generation, action, reply));
     });
 }
 
-fn complete_availability(request_id: u64, generation: u64, action: AvailabilityAction, reply: AvailabilityReply) {
+fn complete_availability(
+    request_id: u64,
+    generation: u64,
+    action: AvailabilityAction,
+    reply: AvailabilityReply,
+) {
     let mut open = None;
     let mut refresh_conflict = false;
     let mut close_manager = false;
@@ -223,7 +244,10 @@ fn complete_availability(request_id: u64, generation: u64, action: AvailabilityA
             (AvailabilityAction::Open, AvailabilityReply::Current(Ok(installed))) => {
                 window.plugin_manager_card.sync(installed);
                 close_manager = !installed;
-                if installed && window.window.isVisible() && window.presentation_generation == generation {
+                if installed
+                    && window.window.isVisible()
+                    && window.presentation_generation == generation
+                {
                     open = Some((
                         window.id,
                         window.paths.clone(),
@@ -326,8 +350,11 @@ fn complete_availability(request_id: u64, generation: u64, action: AvailabilityA
 }
 
 pub(crate) fn activate(
-    paths: ProfilePaths, profile: ProfileStore, socket: PathBuf,
-    locale: UiLocale, key: &str,
+    paths: ProfilePaths,
+    profile: ProfileStore,
+    socket: PathBuf,
+    locale: UiLocale,
+    key: &str,
     preferences: Arc<dyn PreferenceAccess>,
 ) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("manager actions require the AppKit main thread")?;
@@ -339,15 +366,21 @@ pub(crate) fn activate(
     };
     profile.verify_owner()?;
     let installed = crate::settings::read_manager_installed(&profile)?;
-    if matches!(action, AvailabilityAction::Open | AvailabilityAction::Set(false)) && !installed {
+    if matches!(
+        action,
+        AvailabilityAction::Open | AvailabilityAction::Set(false)
+    ) && !installed
+    {
         return Err("manager feature is not installed".to_owned());
     }
     if matches!(action, AvailabilityAction::Set(true)) && installed {
         return Err("manager feature is already installed".to_owned());
     }
-    let same = WINDOW.with(|slot| slot.borrow().as_ref().is_some_and(|window| {
-        window.paths == paths && window.socket == socket
-    }));
+    let same = WINDOW.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|window| window.paths == paths && window.socket == socket)
+    });
     if !same {
         WINDOW.with(|slot| {
             if let Some(old) = slot.borrow_mut().take() {
@@ -356,42 +389,73 @@ pub(crate) fn activate(
             }
         });
         let id = NEXT_AVAILABILITY_REQUEST.fetch_add(1, Ordering::Relaxed);
-        let target: Retained<SettingsTarget> = unsafe {
-            msg_send![super(SettingsTarget::alloc(mtm).set_ivars(id)), init]
-        };
+        let target: Retained<SettingsTarget> =
+            unsafe { msg_send![super(SettingsTarget::alloc(mtm).set_ivars(id)), init] };
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, CARD_HEIGHT + 24.0)),
+                NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(400.0, CARD_HEIGHT + 24.0),
+                ),
                 NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
-                NSBackingStoreType::Buffered, false,
+                NSBackingStoreType::Buffered,
+                false,
             )
         };
         unsafe { window.setReleasedWhenClosed(false) };
-        window.setTitle(&NSString::from_str(text(locale, Message::PluginManagerTitle)));
+        window.setLevel(NSFloatingWindowLevel);
+        if let Some(appearance) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua })
+        {
+            let _: () = unsafe { msg_send![&*window, setAppearance: Some(&*appearance)] };
+        }
+        window.setTitle(&NSString::from_str(text(
+            locale,
+            Message::PluginManagerTitle,
+        )));
         window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         let mut plugin_manager_card = PluginManagerCard::new(locale, &target, mtm);
         plugin_manager_card.sync(installed);
-        plugin_manager_card.layout(NSRect::new(NSPoint::new(0.0, 12.0), NSSize::new(400.0, CARD_HEIGHT)));
-        window.contentView().ok_or("manager availability window has no content view")?
+        plugin_manager_card.layout(NSRect::new(
+            NSPoint::new(0.0, 12.0),
+            NSSize::new(400.0, CARD_HEIGHT),
+        ));
+        window
+            .contentView()
+            .ok_or("manager availability window has no content view")?
             .addSubview(plugin_manager_card.view());
         window.center();
-        WINDOW.with(|slot| *slot.borrow_mut() = Some(Standalone {
-            window, _target: target, plugin_manager_card, socket, paths, profile, preferences,
-            presentation_generation: 0,
-            availability_request: None, id, uncertain: None,
-            confirming_removal: false, availability_error: None,
-        }));
+        WINDOW.with(|slot| {
+            *slot.borrow_mut() = Some(Standalone {
+                window,
+                _target: target,
+                plugin_manager_card,
+                socket,
+                paths,
+                profile,
+                preferences,
+                presentation_generation: 0,
+                availability_request: None,
+                id,
+                uncertain: None,
+                confirming_removal: false,
+                availability_error: None,
+            })
+        });
     }
     let busy = WINDOW.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let window = slot.as_mut().expect("manager availability window initialized");
+        let window = slot
+            .as_mut()
+            .expect("manager availability window initialized");
         window.plugin_manager_card.set_locale(locale);
         window.plugin_manager_card.sync(installed);
         window.window.makeKeyAndOrderFront(None);
         window.availability_request.is_some() || window.confirming_removal
     });
-    if busy { return Err("manager availability request is already pending".to_owned()); }
+    if busy {
+        return Err("manager availability request is already pending".to_owned());
+    }
     if matches!(action, AvailabilityAction::Set(false)) {
         confirm_remove_plugin_manager(mtm);
     } else {

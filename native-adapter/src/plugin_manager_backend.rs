@@ -240,7 +240,10 @@ fn current_image() -> Result<PathBuf, String> {
 fn current_image_roots() -> Result<Vec<PathBuf>, String> {
     let image = current_image()?;
     let parent = image.parent().ok_or("Pet executable has no parent")?;
-    let root = match parent.parent().filter(|path| path.file_name() == Some(OsStr::new("Contents"))) {
+    let root = match parent
+        .parent()
+        .filter(|path| path.file_name() == Some(OsStr::new("Contents")))
+    {
         Some(contents) => contents.parent().ok_or("Pet bundle has no root")?,
         None => parent,
     };
@@ -1233,6 +1236,14 @@ pub(crate) struct ProfileOperationStore {
 pub(crate) struct AvailabilityAdmission {
     _file: File,
 }
+impl Drop for AvailabilityAdmission {
+    fn drop(&mut self) {
+        // This short parent-owned admission is never handed to the manager CLI.
+        // Explicit release prevents an unrelated fork from retaining its lock
+        // until exec. The operation lifetime FD intentionally has no such drop.
+        unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
 impl ProfileOperationStore {
     pub fn new(paths: &ProfilePaths, profile: &ProfileStore) -> Result<Self, String> {
         profile.verify_owner()?;
@@ -1241,8 +1252,8 @@ impl ProfileOperationStore {
         let state = validate_profile(&paths.state_dir)?;
         // The common owner supplies this exact guard; never reacquire a separate
         // lifecycle lease or read another profile's committed preferences.
-        let profile_config = std::path::absolute(profile.config_dir())
-            .map_err(|error| error.to_string())?;
+        let profile_config =
+            std::path::absolute(profile.config_dir()).map_err(|error| error.to_string())?;
         if validate_profile(&profile_config)? != config
             || validate_profile(profile.lifecycle_lock().state_dir())? != state
         {
@@ -1820,7 +1831,8 @@ mod tests {
             crate::settings::manager_installed_from_object(object).map(|_| ())
         }
         fn profile(&self, paths: &ProfilePaths) -> ProfileStore {
-            ProfileStore::acquire(&paths.config_dir, &paths.state_dir).unwrap()
+            ProfileStore::acquire(&paths.config_dir, &paths.state_dir)
+                .unwrap()
                 .with_preferences_validator(Self::validate_preferences)
         }
         fn operation_store(&self) -> ProfileOperationStore {
@@ -2131,7 +2143,9 @@ mod tests {
         let profile = ProfileStore::acquire(
             &fs::canonicalize(&config).unwrap(),
             &fs::canonicalize(&state).unwrap(),
-        ).unwrap().with_preferences_validator(Fixture::validate_preferences);
+        )
+        .unwrap()
+        .with_preferences_validator(Fixture::validate_preferences);
         let relative = ProfileOperationStore::new(&paths, &profile).unwrap();
         let absolute = ProfilePaths {
             config_dir: fs::canonicalize(&config).unwrap(),
@@ -2184,7 +2198,9 @@ mod tests {
         let profile = ProfileStore::acquire(
             &fs::canonicalize(&config).unwrap(),
             &fs::canonicalize(&state).unwrap(),
-        ).unwrap().with_preferences_validator(Fixture::validate_preferences);
+        )
+        .unwrap()
+        .with_preferences_validator(Fixture::validate_preferences);
         assert!(ProfileOperationStore::new(&paths, &profile).is_err());
         assert!(!config.join(MANAGER_DIR).exists());
         paths.state_dir = fs::canonicalize(&state).unwrap();
@@ -2443,7 +2459,8 @@ mod tests {
         fs::set_permissions(
             store.config.join("preferences.json"),
             fs::Permissions::from_mode(0o600),
-        ).unwrap();
+        )
+        .unwrap();
         let (id, lifetime) = active_without_result(&store);
         let dir = directory_at(&store.operations().unwrap(), &id, false).unwrap();
         let result = json!({"protocol":2,"operation_id":id,"action":"unlink",
@@ -2780,7 +2797,8 @@ mod tests {
         fs::set_permissions(&second, fs::Permissions::from_mode(0o700)).unwrap();
         let mut altered = paths.clone();
         altered.state_dir = second;
-        let altered_profile = ProfileStore::acquire(&altered.config_dir, &altered.state_dir).unwrap()
+        let altered_profile = ProfileStore::acquire(&altered.config_dir, &altered.state_dir)
+            .unwrap()
             .with_preferences_validator(Fixture::validate_preferences);
         assert!(ProfileOperationStore::new(&altered, &altered_profile).is_err());
     }

@@ -1,8 +1,18 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum UiLocale { En, Ko, ZhHans, Ja }
+pub(crate) enum UiLocale {
+    En,
+    Ko,
+    ZhHans,
+    Ja,
+}
 impl UiLocale {
     pub(crate) fn from_tag(tag: &str) -> Self {
-        match tag { "ko" => Self::Ko, "zh-Hans" => Self::ZhHans, "ja" => Self::Ja, _ => Self::En }
+        match tag {
+            "ko" => Self::Ko,
+            "zh-Hans" => Self::ZhHans,
+            "ja" => Self::Ja,
+            _ => Self::En,
+        }
     }
 }
 #[derive(Clone, Copy)]

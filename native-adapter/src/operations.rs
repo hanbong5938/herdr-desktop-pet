@@ -1,22 +1,31 @@
-use crate::{Route, Shared};
 use crate::protocol::{self, ProtocolError};
+use crate::{Route, Shared};
 use desktop_pet_contracts::*;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(650);
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const WORKTREE_REMOVE_TIMEOUT: Duration = Duration::from_secs(30);
 static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 fn request_id(kind: &str) -> String {
-    format!("desktop-pet-{kind}-{}-{}", std::process::id(), REQUEST_ID.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "desktop-pet-{kind}-{}-{}",
+        std::process::id(),
+        REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    )
 }
 pub(crate) fn serialized_len(value: &impl serde::Serialize) -> Result<usize, serde_json::Error> {
     struct Counter(usize);
     impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0 = self.0.saturating_add(bytes.len()); Ok(bytes.len()) }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     let mut counter = Counter(0);
     serde_json::to_writer(&mut counter, value)?;
@@ -26,14 +35,33 @@ pub(crate) fn prompt_frame_fits(pane: &str, text_bytes: usize) -> Result<bool, s
     // Longest possible actual request ID, without copying the submitted text.
     let overhead = br#"{"id":"desktop-pet-prompt-4294967295-18446744073709551615","method":"agent.prompt","params":{"target":"#.len()
         + br#","text":"#.len() + b"}}\n".len();
-    Ok(overhead.saturating_add(serialized_len(&pane)?).saturating_add(text_bytes) <= protocol::MAX_FRAME_BYTES)
+    Ok(overhead
+        .saturating_add(serialized_len(&pane)?)
+        .saturating_add(text_bytes)
+        <= protocol::MAX_FRAME_BYTES)
 }
 #[derive(serde::Serialize)]
-struct PromptParams<'a> { target: &'a str, text: &'a str }
+struct PromptParams<'a> {
+    target: &'a str,
+    text: &'a str,
+}
 #[derive(serde::Serialize)]
-struct RemoveParams<'a> { workspace_id: &'a str, force: bool }
-pub(crate) fn send_prompt(shared: &Arc<Shared>, operation: u64, key: &SessionKey, target: &PromptTarget, path: &Path, text: &str, cancelled: &AtomicBool) -> Result<PromptReceipt, PromptError> {
-    if cancelled.load(Ordering::Acquire) { return Err(PromptError::StaleTarget); }
+struct RemoveParams<'a> {
+    workspace_id: &'a str,
+    force: bool,
+}
+pub(crate) fn send_prompt(
+    shared: &Arc<Shared>,
+    operation: u64,
+    key: &SessionKey,
+    target: &PromptTarget,
+    path: &Path,
+    text: &str,
+    cancelled: &AtomicBool,
+) -> Result<PromptReceipt, PromptError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(PromptError::StaleTarget);
+    }
     // Watchers register canonical local endpoint identities. Never reinterpret
     // a synthetic or aliased source as a different socket; filesystem
     // resolution happens after releasing the application mutex.
@@ -76,26 +104,55 @@ pub(crate) fn send_prompt(shared: &Arc<Shared>, operation: u64, key: &SessionKey
         return Err(PromptError::StaleTarget);
     }
     let mut admitted = Err(PromptError::StaleTarget);
-    shared.transaction(&mut |domain, registry| {
-        admitted = (|| {
-            domain.mutation_allowed().map_err(PromptError::Other)?;
-            let (current, provider) = domain.prompt_route(key)?;
-            if current != *target || provider != "herdr" { return Err(PromptError::StaleTarget); }
-            let binding = registry.bindings.get(&target.source).ok_or(PromptError::Offline)?;
-            if binding.generation != key.generation || !binding.connected || binding.disabled || !matches!(&binding.route, Route::Local(current) if current.as_path() == path) { return Err(PromptError::StaleTarget); }
-            let pending = registry.operations.get_mut(&operation).ok_or(PromptError::StaleTarget)?;
-            if !registry.enabled || registry.finalized || registry.epoch != pending.epoch || domain.instance_id() != pending.instance || pending.generation != key.generation || cancelled.load(Ordering::Acquire) { return Err(PromptError::StaleTarget); }
-            pending.offered = true;
-            Ok(())
-        })();
-    }).map_err(PromptError::Other)?;
+    shared
+        .transaction(&mut |domain, registry| {
+            admitted = (|| {
+                domain.mutation_allowed().map_err(PromptError::Other)?;
+                let (current, provider) = domain.prompt_route(key)?;
+                if current != *target || provider != "herdr" {
+                    return Err(PromptError::StaleTarget);
+                }
+                let binding = registry
+                    .bindings
+                    .get(&target.source)
+                    .ok_or(PromptError::Offline)?;
+                if binding.generation != key.generation
+                    || !binding.connected
+                    || binding.disabled
+                    || !matches!(&binding.route, Route::Local(current) if current.as_path() == path)
+                {
+                    return Err(PromptError::StaleTarget);
+                }
+                let pending = registry
+                    .operations
+                    .get_mut(&operation)
+                    .ok_or(PromptError::StaleTarget)?;
+                if !registry.enabled
+                    || registry.finalized
+                    || registry.epoch != pending.epoch
+                    || domain.instance_id() != pending.instance
+                    || pending.generation != key.generation
+                    || cancelled.load(Ordering::Acquire)
+                {
+                    return Err(PromptError::StaleTarget);
+                }
+                pending.offered = true;
+                Ok(())
+            })();
+        })
+        .map_err(PromptError::Other)?;
     admitted?;
-    if cancelled.load(Ordering::Acquire) { return Err(PromptError::UnknownDelivery); }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(PromptError::UnknownDelivery);
+    }
     let response = protocol::request_with_delivery(
         path,
         &request_id("prompt"),
         "agent.prompt",
-        PromptParams { target: &target.pane_id, text },
+        PromptParams {
+            target: &target.pane_id,
+            text,
+        },
         PROMPT_TIMEOUT,
     )
     .map_err(|(error, attempted)| {
@@ -137,8 +194,16 @@ pub(crate) fn send_prompt(shared: &Arc<Shared>, operation: u64, key: &SessionKey
         }
     }
 }
-pub(crate) fn send_worktree_remove(shared: &Arc<Shared>, operation: u64, target: &WorktreeRemoveTarget, path: &Path, cancelled: &AtomicBool) -> Result<(), WorktreeRemoveError> {
-    if cancelled.load(Ordering::Acquire) { return Err(WorktreeRemoveError::StaleTarget); }
+pub(crate) fn send_worktree_remove(
+    shared: &Arc<Shared>,
+    operation: u64,
+    target: &WorktreeRemoveTarget,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(), WorktreeRemoveError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(WorktreeRemoveError::StaleTarget);
+    }
     if crate::socket::canonical_endpoint(path).map_err(|_| WorktreeRemoveError::StaleTarget)?
         != path
     {
@@ -182,20 +247,48 @@ pub(crate) fn send_worktree_remove(shared: &Arc<Shared>, operation: u64, target:
         return Err(WorktreeRemoveError::StaleTarget);
     }
     let mut admitted = Err(WorktreeRemoveError::StaleTarget);
-    shared.transaction(&mut |domain, registry| {
-        admitted = (|| {
-            domain.mutation_allowed().map_err(WorktreeRemoveError::Other)?;
-            if domain.worktree_remove_target(&target.key)? != *target { return Err(WorktreeRemoveError::StaleTarget); }
-            let binding = registry.bindings.get(&target.source).ok_or(WorktreeRemoveError::Offline)?;
-            if binding.generation != target.key.generation || !binding.connected || binding.disabled || !matches!(&binding.route, Route::Local(current) if current.as_path() == path) { return Err(WorktreeRemoveError::StaleTarget); }
-            let pending = registry.operations.get_mut(&operation).ok_or(WorktreeRemoveError::StaleTarget)?;
-            if !registry.enabled || registry.finalized || registry.epoch != pending.epoch || domain.instance_id() != pending.instance || pending.generation != target.key.generation || cancelled.load(Ordering::Acquire) { return Err(WorktreeRemoveError::StaleTarget); }
-            pending.offered = true;
-            Ok(())
-        })();
-    }).map_err(WorktreeRemoveError::Other)?;
+    shared
+        .transaction(&mut |domain, registry| {
+            admitted = (|| {
+                domain
+                    .mutation_allowed()
+                    .map_err(WorktreeRemoveError::Other)?;
+                if domain.worktree_remove_target(&target.key)? != *target {
+                    return Err(WorktreeRemoveError::StaleTarget);
+                }
+                let binding = registry
+                    .bindings
+                    .get(&target.source)
+                    .ok_or(WorktreeRemoveError::Offline)?;
+                if binding.generation != target.key.generation
+                    || !binding.connected
+                    || binding.disabled
+                    || !matches!(&binding.route, Route::Local(current) if current.as_path() == path)
+                {
+                    return Err(WorktreeRemoveError::StaleTarget);
+                }
+                let pending = registry
+                    .operations
+                    .get_mut(&operation)
+                    .ok_or(WorktreeRemoveError::StaleTarget)?;
+                if !registry.enabled
+                    || registry.finalized
+                    || registry.epoch != pending.epoch
+                    || domain.instance_id() != pending.instance
+                    || pending.generation != target.key.generation
+                    || cancelled.load(Ordering::Acquire)
+                {
+                    return Err(WorktreeRemoveError::StaleTarget);
+                }
+                pending.offered = true;
+                Ok(())
+            })();
+        })
+        .map_err(WorktreeRemoveError::Other)?;
     admitted?;
-    if cancelled.load(Ordering::Acquire) { return Err(WorktreeRemoveError::UnknownDelivery); }
+    if cancelled.load(Ordering::Acquire) {
+        return Err(WorktreeRemoveError::UnknownDelivery);
+    }
     // Snapshot equality does not close the race before worktree.remove. Keep
     // force:false so Herdr performs its own dirty-worktree safety check; even
     // a subsequent watcher disappearance certifies neither disk nor pixels.
@@ -203,7 +296,10 @@ pub(crate) fn send_worktree_remove(shared: &Arc<Shared>, operation: u64, target:
         path,
         &request_id("worktree-remove"),
         "worktree.remove",
-        RemoveParams { workspace_id: &target.workspace_id, force: false },
+        RemoveParams {
+            workspace_id: &target.workspace_id,
+            force: false,
+        },
         WORKTREE_REMOVE_TIMEOUT,
     )
     .map_err(|(error, attempted)| {

@@ -10,56 +10,56 @@ const TERMINAL_MAX_AGE_MS: u64 = 30_000;
 const TERMINAL_MAX_FUTURE_SKEW_MS: u64 = 5_000;
 const OUTCOME_AUTHORITY: &str = "omp:v1";
 
-    fn parse_outcome(value: &str) -> Option<AgentOutcome> {
-        Some(match value {
-            "running" => AgentOutcome::Running,
-            "succeeded" => AgentOutcome::Succeeded,
-            "failed" => AgentOutcome::Failed,
-            "cancelled" => AgentOutcome::Cancelled,
-            _ => return None,
-        })
+fn parse_outcome(value: &str) -> Option<AgentOutcome> {
+    Some(match value {
+        "running" => AgentOutcome::Running,
+        "succeeded" => AgentOutcome::Succeeded,
+        "failed" => AgentOutcome::Failed,
+        "cancelled" => AgentOutcome::Cancelled,
+        _ => return None,
+    })
+}
+/// Parse the flat `AgentInfo.tokens` object without inspecting unrelated
+/// metadata values. Herdr bounds the map at 32 entries and token names at
+/// 32 ASCII bytes; repeat those limits here before reading our fields.
+pub(crate) fn parse_tokens(tokens: &Value) -> Option<OutcomeReport> {
+    let object = tokens.as_object()?;
+    if object.len() > MAX_TOKEN_COUNT {
+        return None;
     }
-    /// Parse the flat `AgentInfo.tokens` object without inspecting unrelated
-    /// metadata values. Herdr bounds the map at 32 entries and token names at
-    /// 32 ASCII bytes; repeat those limits here before reading our fields.
-    pub(crate) fn parse_tokens(tokens: &Value) -> Option<OutcomeReport> {
-        let object = tokens.as_object()?;
-        if object.len() > MAX_TOKEN_COUNT {
-            return None;
-        }
-        if object.keys().any(|name| !valid_token_name(name)) {
-            return None;
-        }
-
-        let authority = owned_string(object, "pet_outcome_authority", OUTCOME_AUTHORITY.len())?;
-        if authority != OUTCOME_AUTHORITY {
-            return None;
-        }
-
-        let session = owned_string(object, "pet_outcome_session", MAX_SESSION_BYTES)?;
-        if !valid_session_token(session) {
-            return None;
-        }
-        let turn = owned_string(object, "pet_outcome_turn", MAX_TURN_BYTES)?;
-        let outcome_text = owned_string(object, "pet_outcome", 9)?;
-        let at_text = owned_string(object, "pet_outcome_at", MAX_TIMESTAMP_BYTES)?;
-        let outcome = parse_outcome(outcome_text)?;
-        if outcome.is_terminal() && at_text.is_empty() {
-            return None;
-        }
-        // Parse and canonicalize-check the owned numeric strings. Keeping the
-        // original bounded strings in the report lets the caller compare the
-        // opaque wire identity while the tracker compares its numeric order.
-        parse_decimal(turn, false)?;
-        let at_unix_ms = parse_decimal(at_text, true)?;
-
-        Some(OutcomeReport {
-            session: session.to_owned(),
-            turn: turn.to_owned(),
-            outcome,
-            at_unix_ms,
-        })
+    if object.keys().any(|name| !valid_token_name(name)) {
+        return None;
     }
+
+    let authority = owned_string(object, "pet_outcome_authority", OUTCOME_AUTHORITY.len())?;
+    if authority != OUTCOME_AUTHORITY {
+        return None;
+    }
+
+    let session = owned_string(object, "pet_outcome_session", MAX_SESSION_BYTES)?;
+    if !valid_session_token(session) {
+        return None;
+    }
+    let turn = owned_string(object, "pet_outcome_turn", MAX_TURN_BYTES)?;
+    let outcome_text = owned_string(object, "pet_outcome", 9)?;
+    let at_text = owned_string(object, "pet_outcome_at", MAX_TIMESTAMP_BYTES)?;
+    let outcome = parse_outcome(outcome_text)?;
+    if outcome.is_terminal() && at_text.is_empty() {
+        return None;
+    }
+    // Parse and canonicalize-check the owned numeric strings. Keeping the
+    // original bounded strings in the report lets the caller compare the
+    // opaque wire identity while the tracker compares its numeric order.
+    parse_decimal(turn, false)?;
+    let at_unix_ms = parse_decimal(at_text, true)?;
+
+    Some(OutcomeReport {
+        session: session.to_owned(),
+        turn: turn.to_owned(),
+        outcome,
+        at_unix_ms,
+    })
+}
 /// Reject malformed keys even when they belong to another metadata producer.
 fn valid_token_name(name: &str) -> bool {
     let bytes = name.as_bytes();
@@ -282,12 +282,9 @@ mod tests {
     #[test]
     fn primes_startup_then_accepts_same_turn_terminal_once() {
         let session = "a".repeat(64);
-        let startup =
-            parse_tokens(&tokens(&session, "7", "succeeded", "1000")).unwrap();
-        let running =
-            parse_tokens(&tokens(&session, "8", "running", "1001")).unwrap();
-        let terminal =
-            parse_tokens(&tokens(&session, "8", "failed", "10000")).unwrap();
+        let startup = parse_tokens(&tokens(&session, "7", "succeeded", "1000")).unwrap();
+        let running = parse_tokens(&tokens(&session, "8", "running", "1001")).unwrap();
+        let terminal = parse_tokens(&tokens(&session, "8", "failed", "10000")).unwrap();
         let mut tracker = OutcomeTracker::new(None);
 
         assert_eq!(tracker.observe(&startup, 10_000), None);
@@ -302,14 +299,10 @@ mod tests {
     #[test]
     fn accepts_terminal_for_running_turn_and_rejects_older_running_turn() {
         let session = "b".repeat(64);
-        let running =
-            parse_tokens(&tokens(&session, "10", "running", "10000")).unwrap();
-        let terminal =
-            parse_tokens(&tokens(&session, "10", "succeeded", "10000")).unwrap();
-        let newer_running =
-            parse_tokens(&tokens(&session, "12", "running", "10000")).unwrap();
-        let older_terminal =
-            parse_tokens(&tokens(&session, "11", "failed", "10000")).unwrap();
+        let running = parse_tokens(&tokens(&session, "10", "running", "10000")).unwrap();
+        let terminal = parse_tokens(&tokens(&session, "10", "succeeded", "10000")).unwrap();
+        let newer_running = parse_tokens(&tokens(&session, "12", "running", "10000")).unwrap();
+        let older_terminal = parse_tokens(&tokens(&session, "11", "failed", "10000")).unwrap();
         let mut tracker = OutcomeTracker::new(None);
 
         assert_eq!(tracker.observe(&running, 10_000), None);
@@ -324,10 +317,8 @@ mod tests {
     #[test]
     fn ambiguous_terminal_stays_consumed_after_same_turn_running() {
         let session = "a".repeat(64);
-        let terminal =
-            parse_tokens(&tokens(&session, "7", "succeeded", "14000")).unwrap();
-        let running =
-            parse_tokens(&tokens(&session, "7", "running", "14000")).unwrap();
+        let terminal = parse_tokens(&tokens(&session, "7", "succeeded", "14000")).unwrap();
+        let running = parse_tokens(&tokens(&session, "7", "running", "14000")).unwrap();
         let next = parse_tokens(&tokens(&session, "8", "failed", "14000")).unwrap();
         let mut tracker = OutcomeTracker::new(Some(10_000));
         tracker.observe_ambiguous(&terminal);
@@ -348,13 +339,10 @@ mod tests {
     fn rejects_stale_future_and_other_session_terminal_reports() {
         let session = "c".repeat(64);
         let other_session = "d".repeat(64);
-        let startup =
-            parse_tokens(&tokens(&session, "1", "succeeded", "100")).unwrap();
+        let startup = parse_tokens(&tokens(&session, "1", "succeeded", "100")).unwrap();
         let stale = parse_tokens(&tokens(&session, "2", "failed", "100")).unwrap();
-        let future =
-            parse_tokens(&tokens(&session, "3", "cancelled", "45001")).unwrap();
-        let other =
-            parse_tokens(&tokens(&other_session, "4", "failed", "10000")).unwrap();
+        let future = parse_tokens(&tokens(&session, "3", "cancelled", "45001")).unwrap();
+        let other = parse_tokens(&tokens(&other_session, "4", "failed", "10000")).unwrap();
         let mut tracker = OutcomeTracker::new(None);
 
         assert_eq!(tracker.observe(&startup, 10_000), None);

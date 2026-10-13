@@ -1,6 +1,9 @@
-use crate::{Route, Shared};
 use crate::outcome::OutcomeTracker;
-use crate::protocol::{self, PluginAvailability, ProtocolError, SubscriptionEvent, SubscriptionEventRead, SubscriptionReader};
+use crate::protocol::{
+    self, PluginAvailability, ProtocolError, SubscriptionEvent, SubscriptionEventRead,
+    SubscriptionReader,
+};
+use crate::{Route, Shared};
 use desktop_pet_contracts::*;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -68,14 +71,21 @@ struct EventPublication<'a> {
 }
 
 fn publish_event(shared: &Arc<Shared>, publication: EventPublication<'_>) {
-    let _ = shared.with_epoch(publication.observation_epoch.unwrap_or(0), &mut |domain, _| {
-        domain.update_session_status(SessionStatusUpdate {
-            source: publication.source, generation: publication.generation,
-            terminal_id: publication.terminal_id, pane_id: publication.pane_id,
-            status: publication.status, counts: publication.counts,
-            completion: publication.completion, observed_at: publication.observed_at,
-        });
-    });
+    let _ = shared.with_epoch(
+        publication.observation_epoch.unwrap_or(0),
+        &mut |domain, _| {
+            domain.update_session_status(SessionStatusUpdate {
+                source: publication.source,
+                generation: publication.generation,
+                terminal_id: publication.terminal_id,
+                pane_id: publication.pane_id,
+                status: publication.status,
+                counts: publication.counts,
+                completion: publication.completion,
+                observed_at: publication.observed_at,
+            });
+        },
+    );
     shared.wake();
 }
 fn source_counts(counts: SnapshotCounts) -> SourceCounts {
@@ -200,56 +210,115 @@ impl Endpoint {
         self.mark_retry(shared, Instant::now());
     }
     fn reconcile_observation(&mut self, shared: &Arc<Shared>, now: Instant) -> bool {
-        let Some(epoch) = shared.epoch() else { self.stream = None; return false; };
+        let Some(epoch) = shared.epoch() else {
+            self.stream = None;
+            return false;
+        };
         if self.observation_epoch != Some(epoch) {
             self.observation_epoch = Some(epoch);
             self.generation = 0;
             self.source_admission_pending = false;
             self.stream = None;
-            self.agents.clear(); self.duplicate_agents.clear(); self.pending_prime.clear();
-            self.outcomes.clear(); self.outcome_snapshot_unix_ms = None;
-            self.ambiguous_terminal_ids.clear(); self.last_sessions = 0; self.pane_ids = Arc::from([]);
-            self.next_attempt = now; self.next_reconcile = now; self.backoff = INITIAL_BACKOFF;
-            self.disabled = false; self.seen_plugin_present = false;
+            self.agents.clear();
+            self.duplicate_agents.clear();
+            self.pending_prime.clear();
+            self.outcomes.clear();
+            self.outcome_snapshot_unix_ms = None;
+            self.ambiguous_terminal_ids.clear();
+            self.last_sessions = 0;
+            self.pane_ids = Arc::from([]);
+            self.next_attempt = now;
+            self.next_reconcile = now;
+            self.backoff = INITIAL_BACKOFF;
+            self.disabled = false;
+            self.seen_plugin_present = false;
             self.set_registration_disabled(false);
         }
         true
     }
     fn check_observation(&self, shared: &Arc<Shared>) -> Result<(), ProtocolError> {
-        if self.observation_epoch.is_some_and(|epoch| shared.current(epoch)) { Ok(()) }
-        else { Err(ProtocolError::InvalidResponse("Herdr observation epoch retired".to_owned())) }
+        if self
+            .observation_epoch
+            .is_some_and(|epoch| shared.current(epoch))
+        {
+            Ok(())
+        } else {
+            Err(ProtocolError::InvalidResponse(
+                "Herdr observation epoch retired".to_owned(),
+            ))
+        }
     }
     fn set_registration_disabled(&self, disabled: bool) {
         if let Ok(mut registry) = self.registry.registry.lock() {
-            if let Some(binding) = registry.bindings.get_mut(&self.source) { binding.disabled = disabled; }
+            if let Some(binding) = registry.bindings.get_mut(&self.source) {
+                binding.disabled = disabled;
+            }
         }
     }
     fn descriptor(&self) -> SourceDescriptor {
         let remote = self.path.as_os_str().is_empty();
         SourceDescriptor {
-            id: self.source.clone(), provider: "herdr".to_owned(), label: self.source.clone(),
-            locality: if remote { SourceLocality::Remote } else { SourceLocality::Local },
-            capabilities: SourceCapabilities { prompt: !remote, remove_worktree: !remote },
+            id: self.source.clone(),
+            provider: "herdr".to_owned(),
+            label: self.source.clone(),
+            locality: if remote {
+                SourceLocality::Remote
+            } else {
+                SourceLocality::Local
+            },
+            capabilities: SourceCapabilities {
+                prompt: !remote,
+                remove_worktree: !remote,
+            },
         }
     }
     fn route(&self) -> Route {
-        if self.path.as_os_str().is_empty() { Route::Remote(self.source.clone()) } else { Route::Local(self.path.clone()) }
+        if self.path.as_os_str().is_empty() {
+            Route::Remote(self.source.clone())
+        } else {
+            Route::Local(self.path.clone())
+        }
     }
     fn begin_generation(&mut self, shared: &Arc<Shared>) -> bool {
         let epoch = self.observation_epoch.unwrap_or(0);
         let mut started = false;
         let source = self.source.clone();
-        let Some(minimum_generation) = self.next_generation.checked_add(1) else { return false; };
-        let result = shared.admission_transaction(epoch, &source, minimum_generation, &mut |domain, registry, generation| {
-            self.next_generation = generation; self.generation = generation;
-            self.source_admission_pending = !shared.begin(domain, registry, self.descriptor(), generation, self.route());
-            started = true;
-        });
-        if result.is_err() || !started { return false; }
-        if !self.agents.is_empty() { self.last_sessions = self.agents.len(); }
-        self.stream = None; self.agents.clear(); self.duplicate_agents.clear(); self.pending_prime.clear();
-        self.outcomes.clear(); self.outcome_snapshot_unix_ms = None; self.ambiguous_terminal_ids.clear(); self.pane_ids = Arc::from([]);
-        shared.wake(); true
+        let Some(minimum_generation) = self.next_generation.checked_add(1) else {
+            return false;
+        };
+        let result = shared.admission_transaction(
+            epoch,
+            &source,
+            minimum_generation,
+            &mut |domain, registry, generation| {
+                self.next_generation = generation;
+                self.generation = generation;
+                self.source_admission_pending = !shared.begin(
+                    domain,
+                    registry,
+                    self.descriptor(),
+                    generation,
+                    self.route(),
+                );
+                started = true;
+            },
+        );
+        if result.is_err() || !started {
+            return false;
+        }
+        if !self.agents.is_empty() {
+            self.last_sessions = self.agents.len();
+        }
+        self.stream = None;
+        self.agents.clear();
+        self.duplicate_agents.clear();
+        self.pending_prime.clear();
+        self.outcomes.clear();
+        self.outcome_snapshot_unix_ms = None;
+        self.ambiguous_terminal_ids.clear();
+        self.pane_ids = Arc::from([]);
+        shared.wake();
+        true
     }
     fn counts(&self) -> SnapshotCounts {
         let mut counts = SnapshotCounts {
@@ -268,13 +337,25 @@ impl Endpoint {
         counts
     }
     fn publish(&self, shared: &Arc<Shared>, connected: bool) {
-        let _ = shared.with_epoch(self.observation_epoch.unwrap_or(0), &mut |domain, registry| {
-            if !connected { domain.mark_source_offline(&self.source, self.generation); }
-            if let Some(binding) = registry.bindings.get_mut(&self.source).filter(|binding| binding.generation == self.generation) {
-                if !connected { binding.connected = false; binding.offline_since.get_or_insert(Instant::now()); }
-            }
-            Shared::observe_connections(registry, Instant::now());
-        });
+        let _ = shared.with_epoch(
+            self.observation_epoch.unwrap_or(0),
+            &mut |domain, registry| {
+                if !connected {
+                    domain.mark_source_offline(&self.source, self.generation);
+                }
+                if let Some(binding) = registry
+                    .bindings
+                    .get_mut(&self.source)
+                    .filter(|binding| binding.generation == self.generation)
+                {
+                    if !connected {
+                        binding.connected = false;
+                        binding.offline_since.get_or_insert(Instant::now());
+                    }
+                }
+                Shared::observe_connections(registry, Instant::now());
+            },
+        );
         shared.wake();
     }
     fn publish_snapshot(
@@ -300,198 +381,215 @@ impl Endpoint {
     ) {
         let counts = self.counts();
         let source = self.source.clone();
-        let _ = shared.capacity_transaction(self.observation_epoch.unwrap_or(0), &source, self.generation, &mut |state, registry| {
-            let baseline = self.source_admission_pending;
-            if baseline {
-                match state.source_generation(&self.source) {
-                    Some(generation) if generation == self.generation => {}
-                    Some(_) => {
-                        // A different registered generation owns this source.
-                        // Never let a later removal revive this stale endpoint.
-                        self.source_admission_pending = false;
-                        return;
-                    }
-                    None => {
-                        if !shared.begin(state, registry, self.descriptor(), self.generation, self.route()) {
+        let _ = shared.capacity_transaction(
+            self.observation_epoch.unwrap_or(0),
+            &source,
+            self.generation,
+            &mut |state, registry| {
+                let baseline = self.source_admission_pending;
+                if baseline {
+                    match state.source_generation(&self.source) {
+                        Some(generation) if generation == self.generation => {}
+                        Some(_) => {
+                            // A different registered generation owns this source.
+                            // Never let a later removal revive this stale endpoint.
+                            self.source_admission_pending = false;
                             return;
                         }
+                        None => {
+                            if !shared.begin(
+                                state,
+                                registry,
+                                self.descriptor(),
+                                self.generation,
+                                self.route(),
+                            ) {
+                                return;
+                            }
+                        }
                     }
+                    self.source_admission_pending = false;
+                    // Observations made while admission was denied are a baseline,
+                    // not completion transitions or fresh outcome reports.
+                    self.outcomes.clear();
+                    self.pending_prime.clear();
+                    self.outcome_snapshot_unix_ms = None;
                 }
-                self.source_admission_pending = false;
-                // Observations made while admission was denied are a baseline,
-                // not completion transitions or fresh outcome reports.
-                self.outcomes.clear();
-                self.pending_prime.clear();
-                self.outcome_snapshot_unix_ms = None;
-            }
-            if !state.publish_source_snapshot(
-                &self.source,
-                self.generation,
-                &mut self.agents.values(),
-                SourceCounts {
-                    sessions: counts.sessions,
-                    working: counts.working,
-                    blocked: counts.blocked,
-                    done: counts.done,
-                    unknown: counts.unknown,
-                },
-                Arc::clone(&self.pane_ids),
-                if baseline { &[] } else { completions },
-                observed_at,
-            ) {
-                return;
-            }
-            if let Some(binding) = registry.bindings.get_mut(&self.source).filter(|binding| binding.generation == self.generation) {
-                binding.connected = true; binding.offline_since = None;
-            }
-            Shared::observe_connections(registry, observed_at);
-            let mut pane_counts = HashMap::<&str, usize>::new();
-            for agent in self.agents.values().chain(self.duplicate_agents.iter()) {
-                *pane_counts.entry(agent.pane_id.as_str()).or_default() += 1;
-            }
-            // Index only multi-candidate terminals; ordinary unique reports
-            // continue through their single short tracker vector.
-            let mut candidate_slots = HashMap::<
-                &str,
-                (
-                    HashMap<(&str, &str), Option<usize>>,
-                    HashSet<&str>,
-                    HashSet<&str>,
-                ),
-            >::new();
-            for agent in self.agents.values().chain(self.duplicate_agents.iter()) {
-                if !self
-                    .ambiguous_terminal_ids
-                    .contains(agent.terminal_id.as_str())
+                if !state.publish_source_snapshot(
+                    &self.source,
+                    self.generation,
+                    &mut self.agents.values(),
+                    SourceCounts {
+                        sessions: counts.sessions,
+                        working: counts.working,
+                        blocked: counts.blocked,
+                        done: counts.done,
+                        unknown: counts.unknown,
+                    },
+                    Arc::clone(&self.pane_ids),
+                    if baseline { &[] } else { completions },
+                    observed_at,
+                ) {
+                    return;
+                }
+                if let Some(binding) = registry
+                    .bindings
+                    .get_mut(&self.source)
+                    .filter(|binding| binding.generation == self.generation)
                 {
-                    continue;
+                    binding.connected = true;
+                    binding.offline_since = None;
                 }
-                let index = candidate_slots
-                    .entry(agent.terminal_id.as_str())
-                    .or_default();
-                index.1.insert(agent.pane_id.as_str());
-                if let Some(report) = &agent.outcome {
-                    index
-                        .0
-                        .insert((agent.pane_id.as_str(), report.session.as_str()), None);
+                Shared::observe_connections(registry, observed_at);
+                let mut pane_counts = HashMap::<&str, usize>::new();
+                for agent in self.agents.values().chain(self.duplicate_agents.iter()) {
+                    *pane_counts.entry(agent.pane_id.as_str()).or_default() += 1;
                 }
-            }
-            for (terminal, index) in &mut candidate_slots {
-                if let Some(slots) = self.outcomes.get(*terminal) {
-                    // The temporary lookup borrows existing trackers only in
-                    // this scope. The long-lived index keeps incoming-record
-                    // keys, so the tracker vector may be extended below.
-                    let old_slots: HashMap<(&str, &str), usize> = slots
-                        .iter()
-                        .enumerate()
-                        .map(|(position, tracked)| {
-                            (
-                                (tracked.pane_id.as_str(), tracked.session.as_str()),
-                                position,
-                            )
-                        })
-                        .collect();
-                    let old_panes: HashSet<&str> = slots
-                        .iter()
-                        .map(|tracked| tracked.pane_id.as_str())
-                        .collect();
-                    for (identity, position) in &mut index.0 {
-                        *position = old_slots.get(identity).copied();
+                // Index only multi-candidate terminals; ordinary unique reports
+                // continue through their single short tracker vector.
+                let mut candidate_slots = HashMap::<
+                    &str,
+                    (
+                        HashMap<(&str, &str), Option<usize>>,
+                        HashSet<&str>,
+                        HashSet<&str>,
+                    ),
+                >::new();
+                for agent in self.agents.values().chain(self.duplicate_agents.iter()) {
+                    if !self
+                        .ambiguous_terminal_ids
+                        .contains(agent.terminal_id.as_str())
+                    {
+                        continue;
                     }
-                    for pane in &index.1 {
-                        if old_panes.contains(*pane) {
-                            index.2.insert(*pane);
+                    let index = candidate_slots
+                        .entry(agent.terminal_id.as_str())
+                        .or_default();
+                    index.1.insert(agent.pane_id.as_str());
+                    if let Some(report) = &agent.outcome {
+                        index
+                            .0
+                            .insert((agent.pane_id.as_str(), report.session.as_str()), None);
+                    }
+                }
+                for (terminal, index) in &mut candidate_slots {
+                    if let Some(slots) = self.outcomes.get(*terminal) {
+                        // The temporary lookup borrows existing trackers only in
+                        // this scope. The long-lived index keeps incoming-record
+                        // keys, so the tracker vector may be extended below.
+                        let old_slots: HashMap<(&str, &str), usize> = slots
+                            .iter()
+                            .enumerate()
+                            .map(|(position, tracked)| {
+                                (
+                                    (tracked.pane_id.as_str(), tracked.session.as_str()),
+                                    position,
+                                )
+                            })
+                            .collect();
+                        let old_panes: HashSet<&str> = slots
+                            .iter()
+                            .map(|tracked| tracked.pane_id.as_str())
+                            .collect();
+                        for (identity, position) in &mut index.0 {
+                            *position = old_slots.get(identity).copied();
+                        }
+                        for pane in &index.1 {
+                            if old_panes.contains(*pane) {
+                                index.2.insert(*pane);
+                            }
                         }
                     }
                 }
-            }
-            for agent in self.agents.values().chain(self.duplicate_agents.iter()) {
-                let ambiguous = self.ambiguous_terminal_ids.contains(&agent.terminal_id)
-                    || pane_counts.get(agent.pane_id.as_str()) != Some(&1);
-                if ambiguous || !agent.outcome_authoritative || agent.outcome.is_none() {
-                    state.invalidate_session_outcome(
-                        &self.source,
-                        self.generation,
-                        &agent.terminal_id,
-                        &agent.pane_id,
-                    );
-                }
-                if !agent.outcome_authoritative {
-                    continue;
-                }
-                let Some(report) = &agent.outcome else {
-                    continue;
-                };
-                if !self.outcomes.contains_key(agent.terminal_id.as_str()) {
-                    self.outcomes.insert(agent.terminal_id.clone(), Vec::new());
-                }
-                let slots = self.outcomes.get_mut(agent.terminal_id.as_str()).unwrap();
-                let slot = if let Some(index) = candidate_slots.get(agent.terminal_id.as_str()) {
-                    index
-                        .0
-                        .get(&(agent.pane_id.as_str(), report.session.as_str()))
-                        .copied()
-                        .flatten()
-                } else {
-                    slots.iter().position(|tracked| {
-                        tracked.pane_id == agent.pane_id && tracked.session == report.session
-                    })
-                };
-                let tracked = if let Some(slot) = slot {
-                    &mut slots[slot]
-                } else {
-                    let rebound = candidate_slots.get(agent.terminal_id.as_str()).map_or_else(
-                        || slots.iter().any(|tracked| tracked.pane_id == agent.pane_id),
-                        |index| index.2.contains(agent.pane_id.as_str()),
-                    ) || self
-                        .pending_prime
-                        .get(agent.terminal_id.as_str())
-                        .is_some_and(|panes| panes.contains(agent.pane_id.as_str()));
-                    slots.push(TrackedOutcome {
-                        pane_id: agent.pane_id.clone(),
-                        session: report.session.clone(),
-                        tracker: OutcomeTracker::new(if rebound {
-                            None
-                        } else {
-                            self.outcome_snapshot_unix_ms
-                        }),
-                    });
-                    if let Some(index) = candidate_slots.get_mut(agent.terminal_id.as_str()) {
-                        let position = slots.len() - 1;
-                        index.0.insert(
-                            (agent.pane_id.as_str(), report.session.as_str()),
-                            Some(position),
+                for agent in self.agents.values().chain(self.duplicate_agents.iter()) {
+                    let ambiguous = self.ambiguous_terminal_ids.contains(&agent.terminal_id)
+                        || pane_counts.get(agent.pane_id.as_str()) != Some(&1);
+                    if ambiguous || !agent.outcome_authoritative || agent.outcome.is_none() {
+                        state.invalidate_session_outcome(
+                            &self.source,
+                            self.generation,
+                            &agent.terminal_id,
+                            &agent.pane_id,
                         );
-                        index.2.insert(agent.pane_id.as_str());
                     }
-                    slots.last_mut().expect("inserted outcome tracker")
-                };
-                if ambiguous {
-                    tracked.tracker.observe_ambiguous(report);
-                    continue;
+                    if !agent.outcome_authoritative {
+                        continue;
+                    }
+                    let Some(report) = &agent.outcome else {
+                        continue;
+                    };
+                    if !self.outcomes.contains_key(agent.terminal_id.as_str()) {
+                        self.outcomes.insert(agent.terminal_id.clone(), Vec::new());
+                    }
+                    let slots = self.outcomes.get_mut(agent.terminal_id.as_str()).unwrap();
+                    let slot = if let Some(index) = candidate_slots.get(agent.terminal_id.as_str())
+                    {
+                        index
+                            .0
+                            .get(&(agent.pane_id.as_str(), report.session.as_str()))
+                            .copied()
+                            .flatten()
+                    } else {
+                        slots.iter().position(|tracked| {
+                            tracked.pane_id == agent.pane_id && tracked.session == report.session
+                        })
+                    };
+                    let tracked = if let Some(slot) = slot {
+                        &mut slots[slot]
+                    } else {
+                        let rebound = candidate_slots.get(agent.terminal_id.as_str()).map_or_else(
+                            || slots.iter().any(|tracked| tracked.pane_id == agent.pane_id),
+                            |index| index.2.contains(agent.pane_id.as_str()),
+                        ) || self
+                            .pending_prime
+                            .get(agent.terminal_id.as_str())
+                            .is_some_and(|panes| panes.contains(agent.pane_id.as_str()));
+                        slots.push(TrackedOutcome {
+                            pane_id: agent.pane_id.clone(),
+                            session: report.session.clone(),
+                            tracker: OutcomeTracker::new(if rebound {
+                                None
+                            } else {
+                                self.outcome_snapshot_unix_ms
+                            }),
+                        });
+                        if let Some(index) = candidate_slots.get_mut(agent.terminal_id.as_str()) {
+                            let position = slots.len() - 1;
+                            index.0.insert(
+                                (agent.pane_id.as_str(), report.session.as_str()),
+                                Some(position),
+                            );
+                            index.2.insert(agent.pane_id.as_str());
+                        }
+                        slots.last_mut().expect("inserted outcome tracker")
+                    };
+                    if ambiguous {
+                        tracked.tracker.observe_ambiguous(report);
+                        continue;
+                    }
+                    if let Some(panes) = self.pending_prime.get_mut(agent.terminal_id.as_str()) {
+                        panes.remove(agent.pane_id.as_str());
+                    }
+                    if let Some(outcome) = tracked.tracker.observe(report, now_unix_ms) {
+                        state.push_outcome(OutcomeObservation {
+                            source: self.source.clone(),
+                            generation: self.generation,
+                            terminal_id: agent.terminal_id.clone(),
+                            pane_id: agent.pane_id.clone(),
+                            outcome,
+                            at_unix_ms: report.at_unix_ms,
+                            observed_at,
+                        });
+                    }
                 }
-                if let Some(panes) = self.pending_prime.get_mut(agent.terminal_id.as_str()) {
-                    panes.remove(agent.pane_id.as_str());
-                }
-                if let Some(outcome) = tracked.tracker.observe(report, now_unix_ms) {
-                    state.push_outcome(OutcomeObservation {
-                        source: self.source.clone(),
-                        generation: self.generation,
-                        terminal_id: agent.terminal_id.clone(),
-                        pane_id: agent.pane_id.clone(),
-                        outcome,
-                        at_unix_ms: report.at_unix_ms,
-                        observed_at,
-                    });
-                }
-            }
-            // The observation started before the snapshot request. Reports
-            // published while that request was in flight must remain new.
-            self.outcome_snapshot_unix_ms = Some(
-                now_unix_ms
-                    .saturating_sub(observed_at.elapsed().as_millis().min(u64::MAX as u128) as u64),
-            );
-        });
+                // The observation started before the snapshot request. Reports
+                // published while that request was in flight must remain new.
+                self.outcome_snapshot_unix_ms =
+                    Some(now_unix_ms.saturating_sub(
+                        observed_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    ));
+            },
+        );
         shared.wake();
     }
     fn replace_snapshot(&mut self, snapshot: Snapshot) {
@@ -627,9 +725,14 @@ impl Endpoint {
         completions
     }
     fn mark_retry(&mut self, shared: &Arc<Shared>, now: Instant) {
-        self.stream = None; self.publish(shared, false);
+        self.stream = None;
+        self.publish(shared, false);
         self.next_attempt = now + self.backoff;
-        self.backoff = self.backoff.checked_mul(2).unwrap_or(MAX_BACKOFF).min(MAX_BACKOFF);
+        self.backoff = self
+            .backoff
+            .checked_mul(2)
+            .unwrap_or(MAX_BACKOFF)
+            .min(MAX_BACKOFF);
     }
     fn mark_connected(&mut self, shared: &Arc<Shared>, now: Instant) {
         self.mark_connected_with_completions(shared, now, Vec::new());
@@ -655,38 +758,94 @@ pub(crate) fn watcher_loop(shared: Arc<Shared>) {
     let mut next_load = Instant::now();
     while !shared.stop.load(Ordering::Acquire) {
         if let Some(current) = shared.epoch() {
-            if epoch != Some(current) { endpoints.clear(); epoch = Some(current); endpoint_revision = None; next_load = Instant::now(); }
-            let load = shared.registry.lock().ok().and_then(|registry| (!registry.endpoints_loaded).then(|| registry.configured_socket.clone()));
+            if epoch != Some(current) {
+                endpoints.clear();
+                epoch = Some(current);
+                endpoint_revision = None;
+                next_load = Instant::now();
+            }
+            let load = shared.registry.lock().ok().and_then(|registry| {
+                (!registry.endpoints_loaded).then(|| registry.configured_socket.clone())
+            });
             if let Some(configured) = load.filter(|_| Instant::now() >= next_load) {
                 let result = (|| {
-                    let store = shared.store.lock().map_err(|_| "Herdr profile is poisoned")?.clone().ok_or("Herdr profile is not configured")?;
+                    let store = shared
+                        .store
+                        .lock()
+                        .map_err(|_| "Herdr profile is poisoned")?
+                        .clone()
+                        .ok_or("Herdr profile is not configured")?;
                     let mut paths = crate::settings::read_endpoints(&store)?;
-                    let path = crate::socket::canonical_endpoint(&configured.unwrap_or_else(crate::settings::default_herdr_socket))?;
-                    if !paths.contains(&path) { paths.push(path); }
+                    let path = crate::socket::canonical_endpoint(
+                        &configured.unwrap_or_else(crate::settings::default_herdr_socket),
+                    )?;
+                    if !paths.contains(&path) {
+                        paths.push(path);
+                    }
                     Ok::<_, String>(paths)
                 })();
                 match result {
-                    Ok(paths) => { let _ = shared.with_epoch(current, &mut |_, registry| {
-                        for path in &paths {
-                            if !registry.initial_endpoints.contains(path) && registry.initial_endpoints.len() < crate::MAX_ENDPOINTS {
-                                registry.initial_endpoints.push(path.clone()); registry.endpoint_revision += 1;
+                    Ok(paths) => {
+                        let _ = shared.with_epoch(current, &mut |_, registry| {
+                            for path in &paths {
+                                if !registry.initial_endpoints.contains(path)
+                                    && registry.initial_endpoints.len() < crate::MAX_ENDPOINTS
+                                {
+                                    registry.initial_endpoints.push(path.clone());
+                                    registry.endpoint_revision += 1;
+                                }
                             }
-                        }
-                        registry.endpoints_loaded = true;
-                    }); }
-                    Err(error) => { shared.fail(error); next_load = Instant::now() + RECONCILE_INTERVAL; }
+                            registry.endpoints_loaded = true;
+                        });
+                    }
+                    Err(error) => {
+                        shared.fail(error);
+                        next_load = Instant::now() + RECONCILE_INTERVAL;
+                    }
                 }
             }
-            let paths = shared.registry.lock().ok().and_then(|registry| {
-                if endpoint_revision != Some(registry.endpoint_revision) { endpoint_revision = Some(registry.endpoint_revision); Some(registry.initial_endpoints.clone()) } else { None }
-            }).unwrap_or_default();
-            for path in paths { if endpoints.len() < crate::MAX_ENDPOINTS && !endpoints.contains_key(&path) { endpoints.insert(path.clone(), Endpoint::with_registry(path, Arc::clone(&shared))); } }
+            let paths = shared
+                .registry
+                .lock()
+                .ok()
+                .and_then(|registry| {
+                    if endpoint_revision != Some(registry.endpoint_revision) {
+                        endpoint_revision = Some(registry.endpoint_revision);
+                        Some(registry.initial_endpoints.clone())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            for path in paths {
+                if endpoints.len() < crate::MAX_ENDPOINTS && !endpoints.contains_key(&path) {
+                    endpoints.insert(
+                        path.clone(),
+                        Endpoint::with_registry(path, Arc::clone(&shared)),
+                    );
+                }
+            }
             for endpoint in endpoints.values_mut() {
-                if !shared.current(current) { break; }
-                if endpoint.disabled && shared.registry.lock().is_ok_and(|registry| registry.bindings.get(&endpoint.source).is_some_and(|binding| !binding.disabled)) { endpoint.disabled = false; endpoint.next_attempt = Instant::now(); }
+                if !shared.current(current) {
+                    break;
+                }
+                if endpoint.disabled
+                    && shared.registry.lock().is_ok_and(|registry| {
+                        registry
+                            .bindings
+                            .get(&endpoint.source)
+                            .is_some_and(|binding| !binding.disabled)
+                    })
+                {
+                    endpoint.disabled = false;
+                    endpoint.next_attempt = Instant::now();
+                }
                 process_endpoint(endpoint, &shared, &mut request_counter, Instant::now());
             }
-        } else { endpoints.clear(); epoch = None; }
+        } else {
+            endpoints.clear();
+            epoch = None;
+        }
         thread::sleep(WORKER_TICK);
     }
 }
@@ -892,15 +1051,28 @@ fn plugin_allows_observation(endpoint: &mut Endpoint, availability: PluginAvaila
     }
 }
 fn detach_endpoint(endpoint: &mut Endpoint, shared: &Arc<Shared>) {
-    let _ = shared.with_epoch(endpoint.observation_epoch.unwrap_or(0), &mut |domain, registry| {
-        endpoint.stream = None; endpoint.disabled = true;
-        domain.remove_source(&endpoint.source, endpoint.generation);
-        registry.operations.retain(|_, operation| {
-            if operation.source == endpoint.source { operation.cancel(); false } else { true }
-        });
-        if let Some(binding) = registry.bindings.get_mut(&endpoint.source) { binding.disabled = true; binding.connected = false; binding.offline_since.get_or_insert(Instant::now()); }
-        Shared::observe_connections(registry, Instant::now());
-    });
+    let _ = shared.with_epoch(
+        endpoint.observation_epoch.unwrap_or(0),
+        &mut |domain, registry| {
+            endpoint.stream = None;
+            endpoint.disabled = true;
+            domain.remove_source(&endpoint.source, endpoint.generation);
+            registry.operations.retain(|_, operation| {
+                if operation.source == endpoint.source {
+                    operation.cancel();
+                    false
+                } else {
+                    true
+                }
+            });
+            if let Some(binding) = registry.bindings.get_mut(&endpoint.source) {
+                binding.disabled = true;
+                binding.connected = false;
+                binding.offline_since.get_or_insert(Instant::now());
+            }
+            Shared::observe_connections(registry, Instant::now());
+        },
+    );
     shared.wake();
 }
 fn request(

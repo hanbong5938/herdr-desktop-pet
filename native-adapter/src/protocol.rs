@@ -80,20 +80,20 @@ impl Response {
 }
 
 fn parse_status(value: Option<&Value>) -> Result<AgentStatus, ProtocolError> {
-        match value.and_then(Value::as_str) {
-            Some("idle") => Ok(AgentStatus::Idle),
-            Some("working") => Ok(AgentStatus::Working),
-            Some("blocked") => Ok(AgentStatus::Blocked),
-            Some("done") => Ok(AgentStatus::Done),
-            Some("unknown") => Ok(AgentStatus::Unknown),
-            Some(other) => Err(ProtocolError::InvalidResponse(format!(
-                "unsupported agent_status {other:?}"
-            ))),
-            None => Err(ProtocolError::InvalidResponse(
-                "agent_status must be a string".to_owned(),
-            )),
-        }
+    match value.and_then(Value::as_str) {
+        Some("idle") => Ok(AgentStatus::Idle),
+        Some("working") => Ok(AgentStatus::Working),
+        Some("blocked") => Ok(AgentStatus::Blocked),
+        Some("done") => Ok(AgentStatus::Done),
+        Some("unknown") => Ok(AgentStatus::Unknown),
+        Some(other) => Err(ProtocolError::InvalidResponse(format!(
+            "unsupported agent_status {other:?}"
+        ))),
+        None => Err(ProtocolError::InvalidResponse(
+            "agent_status must be a string".to_owned(),
+        )),
     }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PluginAvailability {
@@ -191,7 +191,11 @@ pub(crate) fn request_with_delivery(
     let mut stream = crate::socket::connect(endpoint, deadline)
         .map_err(|error| (ProtocolError::from(error), false))?;
     #[derive(serde::Serialize)]
-    struct WireRequest<'a, T> { id: &'a str, method: &'a str, params: T }
+    struct WireRequest<'a, T> {
+        id: &'a str,
+        method: &'a str,
+        params: T,
+    }
     let request = WireRequest { id, method, params };
     let mut write_attempted = false;
     write_json_line(&mut stream, &request, deadline, &mut write_attempted)
