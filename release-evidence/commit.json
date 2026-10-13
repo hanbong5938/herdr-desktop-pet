@@ -1,0 +1,35 @@
+{
+  "sha": "e3e5cb6eb7dbeae93ac7aa71321b6a1e78c78817",
+  "node_id": "C_kwDOVG1Ac9oAKGUzZTVjYjZlYjdkYmVhZTkzYWM3YWE3MTMyMWI2YTFlNzhjNzg4MTc",
+  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/e3e5cb6eb7dbeae93ac7aa71321b6a1e78c78817",
+  "html_url": "https://github.com/hanbong5938/desktop-pet/commit/e3e5cb6eb7dbeae93ac7aa71321b6a1e78c78817",
+  "author": {
+    "name": "배한봉",
+    "email": "han@baehanbong-ui-MacStudio.local",
+    "date": "2026-10-13T21:00:01Z"
+  },
+  "committer": {
+    "name": "배한봉",
+    "email": "han@baehanbong-ui-MacStudio.local",
+    "date": "2026-10-13T21:00:01Z"
+  },
+  "tree": {
+    "sha": "1c388165eca09a2ee7620ee2ea2adf0903192afd",
+    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/trees/1c388165eca09a2ee7620ee2ea2adf0903192afd"
+  },
+  "message": "docs: record real artifact, old reservation and shared zombie proofs",
+  "parents": [
+    {
+      "sha": "9ee22d775ca02e96029da96e612e19f539f2f93c",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/9ee22d775ca02e96029da96e612e19f539f2f93c",
+      "html_url": "https://github.com/hanbong5938/desktop-pet/commit/9ee22d775ca02e96029da96e612e19f539f2f93c"
+    }
+  ],
+  "verification": {
+    "verified": false,
+    "reason": "unsigned",
+    "signature": null,
+    "payload": null,
+    "verified_at": null
+  }
+}

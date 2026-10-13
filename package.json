@@ -1,25 +1,18 @@
 {
-  "name": "herdr-desktop-pet",
-  "version": "0.3.6",
+  "name": "herdr-desktop-pet-integration",
   "private": true,
   "type": "module",
-  "description": "Native desktop character companion for Herdr",
+  "description": "Herdr adapter, plugin consumer and OMP outcome integration for Desktop Pet",
   "scripts": {
     "check": "tsc --noEmit",
-    "build:native": "set --; if [ -n \"${HERDR_PET_CARGO_TARGET:-}\" ]; then set -- --target \"$HERDR_PET_CARGO_TARGET\"; fi; cargo build --release --locked --target-dir native/target \"$@\" --manifest-path native/Cargo.toml && cargo build --release --locked --target-dir native/target \"$@\" --manifest-path native/update-coordinator/Cargo.toml",
-    "test:native": "cargo test --manifest-path native/Cargo.toml",
-    "package:native": "bun scripts/package-native.ts",
-    "install:local": "bash scripts/install.sh --local-build"
+    "verify": "bash scripts/verify-integration.sh",
+    "test:adapter": "cargo test --locked --manifest-path native-adapter/Cargo.toml",
+    "release:check": "bun scripts/integration-release.ts check",
+    "release:publish": "bun scripts/integration-release.ts publish"
   },
   "devDependencies": {
     "@types/bun": "^1.2.20",
-    "@types/mdast": "^4.0.4",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.2"
-  },
-  "dependencies": {
-    "mdast-util-from-markdown": "^2.1.0",
-    "micromark-core-commonmark": "^2.0.4",
-    "micromark-util-normalize-identifier": "^2.0.1"
   }
 }

@@ -1,6 +1,16 @@
-# Versioning and compatibility
+# Herdr integration versioning and compatibility
 
 [Versions](README.md) · [한국어 버전 안내](README.ko.md) · [Publishing](publishing.md)
+
+Current app versioning, protocol-4 updates, integration API and the generated app Wiki are [core policy](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/policy.md), not this integration's release authority. The Herdr consumer uses `integration_api: 1` compatibility; plugin and app versions are independent. An integration-only release has no native archive and never changes `.herdrchar`, pack v5, `default@0`, rig ABI or artwork licensing.
+
+[Consumer publication](publishing.md) · [integration v0.4.0 notes](v0.4.0.md) · [exact host/actions/lifecycle/OMP contract](../../integrations/herdr/README.md) · [legacy A → B migration](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md). A commit/tag is not proof of publication or real Tern/OMP acceptance.
+
+현재 앱·업데이터·Wiki 정책은 core, Herdr 호스트·action·실행 정책·훅·패치·OMP는 이 연동 소유입니다. 앱/플러그인 버전은 독립이며 기존 stable/beta 태그·자산·본문을 변경하지 않습니다.
+
+<details>
+<summary>Historical common-app policy through v0.3.6 (preserved; not current manifests or install guidance)</summary>
+
 
 ## A commit is not a release
 
@@ -81,3 +91,5 @@ Each minor line has an `X.Y.md` overview and individual `vX.Y.Z.md` notes; add a
 **과거 베타 준비 기록:** 앞선 `0.3.0-beta.1` 계획은 당시 검색·정렬 기능을 실제 GUI 수락 전에 준비한다는 문맥이며 공개 자산의 증거가 아닙니다. 별도 v0.3.2 안정판 소스가 그 이후 준비됐으며 출시 여부는 Release 목록으로 확인합니다. 기존 베타 태그·자산(`beta/0.3.0-beta.2` 포함)은 유지합니다.
 
 앱 버전, Herdr/Tern 호스트의 실제 기능, 캐릭터 팩 v5, 내장 `default@0`는 서로 다른 기준입니다. 호스트 최소 버전만 보고 `client.attached`나 프롬프트 API 지원을 가정하지 마세요. 원격 관찰은 읽기 전용이고 프롬프트 접수 확인은 에이전트 작업 완료가 아닙니다. 설치·실행은 [한국어 루트 안내](../../readme.ko.md), 이번 안정판 전환은 [v0.3.6 정본 업그레이드 안내](v0.3.6.md)를 따르세요. 릴리스 계열을 보관해도 LTS·EOL·백포트·지원 기간을 약속하지 않습니다.
+
+</details>

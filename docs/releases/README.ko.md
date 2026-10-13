@@ -1,6 +1,16 @@
-# Herdr Desktop Pet 버전 안내
+# Desktop Pet — Herdr 연동 릴리스
 
 [English](README.md) · **한국어**
+
+현재 공통 앱 릴리스·설치·사용법·개발·4개 언어 Pages·앱 Wiki는 독립 [Desktop Pet core](https://github.com/hanbong5938/desktop-pet) 소유입니다. 이 저장소는 Herdr 연동만 출시합니다. [연동 v0.4.0 노트](v0.4.0.md)·[소비자 게시 절차](publishing.md)·[Herdr action / 훅 / 패치 / link / OMP](../../integrations/herdr/README.md)를 확인하세요.
+
+실제 게시 후 앱 명령은 `brew install hanbong5938/tap/desktop-pet`, 선택형 연동은 `herdr plugin install hanbong5938/herdr-desktop-pet`와 `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`입니다. [기존 A → B 이전](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md)은 기존 두 프로필 경로를 보존하고 각각 동의를 요구합니다.
+
+[Core 릴리스 기록](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/README.ko.md) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki). 링크나 문서는 실제 공개·배포 검증을 대신하지 않습니다.
+
+<details>
+<summary>v0.3.6까지의 과거 공통 앱 인덱스 (보존 기록; 현재 설치 지침 아님)</summary>
+
 
 이 저장소에서 검토한 Markdown이 버전 문서의 원본입니다. GitHub Wiki는 원본에서 생성한 읽기용 화면이며 따로 편집하는 원본이 아닙니다. 개요·설치는 [한국어 루트 안내](../../readme.ko.md), 현행 조작·운영은 [사용 안내](../usage.ko.md), 소스·웹사이트 개발은 [개발 안내](../development.ko.md), Herdr 호스트 연동은 [연동 안내(영어)](../../integrations/herdr/README.md)를 기준으로 합니다.
 
@@ -41,3 +51,5 @@ v0.1.4–v0.1.11 태그에는 이 문서 트리가 없었습니다. 따라서 �
 ## 업그레이드 안전 요약
 
 v0.3.6으로 옮길 때는 기존 데몬을 먼저 종료하고 [v0.3.6 정본 업그레이드 안내](v0.3.6.md)를 확인하세요. 공개 자산 4개와 stable 포뮬러의 정확한 태그 URL·검증된 SHA는 [현행 게시 기록](0.3.md#v036-실제-게시-확인)에 있습니다. 업그레이드 후 CLI 버전뿐 아니라 다시 시작한 앱의 `status` 버전·실행 경로도 확인하세요. Herdr/Tern 프로필은 설정과 상태를 모두 분리하며 이전 protocol-1/2 updater 기록·예약은 보존하고 해당 helper로 복구합니다. 이전 v0.3.5 게시와 업그레이드는 [0.3 과거 기록](0.3.md), v0.1.11 → v0.2.0 전환은 [과거 한영 안내](../migrations/v0.1.11-to-v0.2.0.md), Arin 수정은 [v0.2.1 패치](v0.2.1.md)를 참고하세요.
+
+</details>

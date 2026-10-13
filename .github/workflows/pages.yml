@@ -1,21 +1,15 @@
-name: Check and deploy Herdr Desktop Pet Pages
+name: Stage and deploy Herdr integration Pages
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
       - "site/**"
-      - "tools/pages.mjs"
-      - "tools/pages.test.ts"
       - ".github/workflows/pages.yml"
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - "site/**"
-      - "tools/pages.mjs"
-      - "tools/pages.test.ts"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -27,9 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  preview:
-    name: Check pull request and save review artifact
-    if: github.event_name == 'pull_request'
+  stage:
+    name: Stage static integration entrypoints
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source without persisted credentials
@@ -37,32 +30,42 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22.13.0"
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: "1.4.2"
-
-      - name: Test Pages server
-        run: bun test tools/pages.test.ts
-
-      - name: Check and stage public site files
-        run: node tools/pages.mjs stage "$RUNNER_TEMP/herdr-pages"
+      - name: Stage only the integration landing site
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/herdr-pages"
+          mkdir "$output"
+          # No app tooling, build, images, scripts or character assets belong here.
+          for page in index.html en/index.html ja/index.html zh-Hans/index.html 404.html sitemap.xml; do
+            test -f "site/$page" && test ! -L "site/$page"
+            mkdir -p "$output/$(dirname "$page")"
+            cp "site/$page" "$output/$page"
+          done
+          touch "$output/.nojekyll"
 
       - name: Upload review artifact (not a deployed preview URL)
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: herdr-pages-review
+          name: herdr-integration-pages-review
           path: ${{ runner.temp }}/herdr-pages/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload Pages artifact
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main' &&
+          github.event.repository.default_branch == 'main'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        with:
+          path: ${{ runner.temp }}/herdr-pages/
+
   deploy:
-    name: Deploy reviewed main branch to Pages
+    name: Deploy main integration landing site
+    needs: stage
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main' &&
@@ -76,36 +79,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Check out source without persisted credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22.13.0"
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version: "1.4.2"
-
-      - name: Test Pages server
-        run: bun test tools/pages.test.ts
-
-      - name: Check and stage public site files
-        run: node tools/pages.mjs stage "$RUNNER_TEMP/herdr-pages"
-
       - name: Read existing Pages configuration without enabling it
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
         with:
           enablement: false
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
-        with:
-          path: ${{ runner.temp }}/herdr-pages/
 
       - name: Deploy Pages
         id: deployment

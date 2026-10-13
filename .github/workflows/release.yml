@@ -1,194 +1,65 @@
-name: Release Herdr Desktop Pet
+name: Publish reviewed Herdr integration
 
+# No tag/push/release trigger. Native publication and the legacy bridge are core
+# operations; this workflow can create only a manually authorized assetless release.
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing public integration tag (v0.4.0 or later; never bridge/beta)
+        required: true
+        type: string
+      reviewed_ref:
+        description: Full reviewed immutable Herdr commit SHA selected by that tag
+        required: true
+        type: string
+      authorization:
+        description: Type hanbong5938/herdr-desktop-pet@ followed by reviewed_ref to authorize publication
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: desktop-pet-release-${{ github.ref }}
+  group: herdr-integration-manual-publication
   cancel-in-progress: false
 
 jobs:
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  publish:
+    if: github.repository == 'hanbong5938/herdr-desktop-pet' && inputs.authorization == format('hanbong5938/herdr-desktop-pet@{0}', inputs.reviewed_ref)
     runs-on: macos-15
+    environment: integration-release
+    permissions:
+      contents: write
     env:
       CARGO_TERM_COLOR: always
-      HERDR_PET_CARGO_TARGET: aarch64-apple-darwin
+      INTEGRATION_TAG: ${{ inputs.tag }}
+      REVIEWED_HERDR_REF: ${{ inputs.reviewed_ref }}
     steps:
-      - name: Check out source
+      - name: Check out exact reviewed integration commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ inputs.reviewed_ref }}
           persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22.13.0"
-          cache: npm
-          cache-dependency-path: web/rig/package-lock.json
-
       - name: Install Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.4.2"
-
-      - name: Validate release tag, versions, and reviewed notes
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          bun scripts/release-docs.ts check "$tag" \
-            --repository "$GITHUB_REPOSITORY" \
-            --output "$RUNNER_TEMP/herdr-release-notes.md"
-          version="${tag#v}"
-          {
-            echo "HERDR_PET_REPOSITORY=${GITHUB_REPOSITORY}"
-            echo "HERDR_PET_VERSION=${version}"
-            echo "HERDR_PET_RELEASE_TAG=${tag}"
-            echo "HERDR_PET_ASSET_NAME=HerdrDesktopPet-v${version}-macos-arm64.tar.gz"
-          } >> "$GITHUB_ENV"
-
-      - name: Install native rig JavaScript dependencies
-        working-directory: web/rig
-        run: npm ci
-
       - name: Install Rust stable toolchain
         shell: bash
         run: |
+          set -euo pipefail
           rustup toolchain install stable --profile minimal
           rustup default stable
-          rustup component add rustfmt
-
-      - name: Install JavaScript tooling
-        run: bun install --frozen-lockfile
-
-      - name: Install Rust target
-        run: rustup target add aarch64-apple-darwin
-
-      - name: Check TypeScript packaging scripts
-        run: bun run check
-
-      - name: Test release docs, Wiki rendering, rig decoding and background pocket repair
-        run: bun test scripts/release-docs.test.ts scripts/wiki-docs.test.ts tools/repair-hair-pockets.test.ts web/rig
-
-      - name: Check native crate
-        run: cargo check --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/Cargo.toml
-
-      - name: Check standalone update coordinator
-        run: cargo check --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/update-coordinator/Cargo.toml
-
-      - name: Test native crate
-        run: cargo test --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/Cargo.toml
-
-      - name: Test standalone update coordinator
-        run: cargo test --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/update-coordinator/Cargo.toml
-
-      - name: Build native arm64 binary
-        run: cargo build --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/Cargo.toml
-
-      - name: Build standalone arm64 update coordinator
-        run: cargo build --locked --release --target aarch64-apple-darwin --target-dir native/target --manifest-path native/update-coordinator/Cargo.toml
-
-      - name: Build ad-hoc signed application bundle
+      - name: Verify independent integration closure
+        run: bash scripts/verify-integration.sh
+      - name: Authenticate reviewed notes, tag, ref and real core release metadata
+        shell: bash
+        run: bun scripts/integration-release.ts check "$INTEGRATION_TAG" "$REVIEWED_HERDR_REF"
+      - name: Publish new integration Release without native assets
+        shell: bash
         env:
-          HERDR_PET_APP_NAME: HerdrDesktopPet.app
-        run: bun run package:native
-
-      - name: Verify arm64 application and standalone update coordinator
-        shell: bash
-        run: |
-          set -euo pipefail
-          app="dist/HerdrDesktopPet.app"
-          binary="$app/Contents/MacOS/herdr-desktop-pet"
-          helper="$app/Contents/MacOS/herdr-update-coordinator"
-          manifest="$app/Contents/Resources/default/manifest.json"
-          [[ -x "$binary" ]]
-          archs="$(lipo -archs "$binary")"
-          [[ "$archs" == "arm64" ]] || {
-            echo "error: expected an arm64-only binary, got $archs" >&2
-            exit 1
-          }
-          [[ -x "$helper" && ! -L "$helper" ]]
-          [[ "$(lipo -archs "$helper")" == "arm64" ]] || {
-            echo "error: expected arm64-only update coordinator" >&2
-            exit 1
-          }
-          for executable in "$binary" "$helper"; do
-            "$executable" update-capabilities | node -e 'const fs = require("node:fs"); const capabilities = JSON.parse(fs.readFileSync(0, "utf8")); if (capabilities === null || typeof capabilities !== "object" || capabilities.protocol !== 3 || capabilities.observation_mode !== 1) process.exit(1);'
-          done
-          [[ "$(otool -l "$helper")" != *"cmd LC_RPATH"* ]]
-          dependencies="$(otool -L "$helper")"
-          dependencies="${dependencies#*$'\n'}"
-          [[ -n "$dependencies" ]]
-          while IFS= read -r line; do
-            [[ -n "$line" ]] || continue
-            read -r library _ <<< "$line"
-            case "$library" in
-              /usr/lib/*|/System/Library/*) ;;
-              *) echo "error: non-system coordinator dependency: $library" >&2; exit 1 ;;
-            esac
-          done <<< "$dependencies"
-          codesign --verify --strict "$helper"
-          codesign --verify --deep --strict "$app"
-          test -f "$manifest"
-          node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (m.id !== "rubelia-at12-multi-pose" || m.version !== 5 || m.render_mode !== "rig") process.exit(1);' "$manifest"
-
-      - name: Verify Homebrew-style symlinked CLI resolves bundled assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The Homebrew cask links Contents/MacOS/herdr-desktop-pet onto PATH.
-          scratch="$(mktemp -d)"
-          trap 'rm -rf "$scratch"' EXIT
-          mkdir -p "$scratch/bin" "$scratch/config" "$scratch/state"
-          ln -s "$PWD/dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet" "$scratch/bin/herdr-desktop-pet"
-          "$scratch/bin/herdr-desktop-pet" pack export default \
-            --config-dir "$scratch/config" --state-dir "$scratch/state" \
-            --output "$scratch/default.herdrchar"
-          test -s "$scratch/default.herdrchar"
-
-      - name: Create release archives and checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          asset="$HERDR_PET_ASSET_NAME"
-          COPYFILE_DISABLE=1 tar --no-xattrs -czf "$asset" -C dist HerdrDesktopPet.app
-          sidecar="HerdrDesktopPet-v${HERDR_PET_VERSION}-rig-native.json"
-          test -s dist/HerdrDesktopPet.app.rig-native.json
-          cp dist/HerdrDesktopPet.app.rig-native.json "$sidecar"
-          shasum -a 256 "$asset" > "$asset.sha256"
-          shasum -a 256 "$asset" > SHA256SUMS
-          for output in "$asset" "$asset.sha256" SHA256SUMS "$sidecar"; do
-            test -s "$output"
-          done
-
-      - name: Publish release assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          tag_name: ${{ github.ref_name }}
-          target_commitish: ${{ github.sha }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fail_on_unmatched_files: true
-          body_path: ${{ runner.temp }}/herdr-release-notes.md
-          prerelease: false
-          make_latest: true
-          files: |
-            ${{ env.HERDR_PET_ASSET_NAME }}
-            ${{ env.HERDR_PET_ASSET_NAME }}.sha256
-            SHA256SUMS
-            HerdrDesktopPet-v${{ env.HERDR_PET_VERSION }}-rig-native.json
-
-  wiki_sync:
-    needs: release
-    permissions:
-      contents: read
-    uses: ./.github/workflows/wiki.yml
-    with:
-      required_release: ${{ github.ref_name }}
-    secrets:
-      WIKI_PUBLISH_TOKEN: ${{ secrets.WIKI_PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HERDR_INTEGRATION_RELEASE_AUTHORIZATION: ${{ inputs.authorization }}
+        run: bun scripts/integration-release.ts publish "$INTEGRATION_TAG" "$REVIEWED_HERDR_REF"

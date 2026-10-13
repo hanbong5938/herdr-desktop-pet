@@ -1,6 +1,18 @@
-# Publishing release documentation and the Wiki
+# Publishing the Herdr integration
 
 [Versions](README.md) · [Versioning and compatibility](policy.md) · [Unreleased](unreleased.md) · [한국어 버전 안내](README.ko.md)
+
+This checkout owns integration-only consumer source, not native app packaging, common Pages tooling or app Wiki generation/publication. Its assetless integration release uses the reviewed [v0.4.0 integration note](v0.4.0.md), `scripts/integration-release.ts` and `.github/workflows/release.yml`. The consumer pin must be materialized from the actual public core release and anonymously verified installer/checksum metadata; no dummy hashes or tag-only fallback are allowed.
+
+For native app Releases, six-asset publication, app formula, four-locale Pages and the current app Wiki, use [core publication instructions](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/publishing.md) and its existing Wiki renderer/publisher. The Herdr site stages static integration/migration entrypoints only via `.github/workflows/pages.yml`. Removed common scripts/workflows below are historical source references, not runnable current commands.
+
+Parent/owner publication verifies actual release URLs/assets, formula, hosted Pages and initialized/published core Wiki independently. A source note or tag is not release proof. No credential use, settings change, release, hosted deployment, Wiki push or real Tern/OMP acceptance is claimed by this documentation work.
+
+현재 앱 릴리스·포뮬러·4개 언어 앱 사이트·Wiki는 core에서 게시하고 이 저장소는 네이티브 자산 없는 Herdr 연동과 얇은 연동 사이트만 게시합니다. 실제 공개 core 메타데이터를 검증한 뒤에만 consumer pin을 작성합니다. 과거 릴리스·베타 자산은 그대로 보존합니다.
+
+<details>
+<summary>Historical common-app publication procedures and evidence through v0.3.6 (preserved; not current operations)</summary>
+
 
 Reviewed Markdown in this repository is canonical; the Wiki is a generated reading view. New app Release bodies and Wiki version pages use the same note frozen by the exact release tag, while current indexes and status use reviewed default-branch documents and the live Release catalog. The [v0.3.6 canonical note](v0.3.6.md) belongs to the verified [published stable Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6); the [0.3 publication record](0.3.md) records current asset and consumer proof separately from historical [v0.3.5](v0.3.5.md) evidence. Neither note nor source build alone proves publication.
 
@@ -209,3 +221,5 @@ A render error occurs before the publisher is called. Clone/validation/copy/comm
 새 릴리스의 본문과 Wiki 버전 페이지는 같은 태그의 고정된 문서를 사용하고, 인덱스·정책·Unreleased는 현재 기본 브랜치 문서와 실제 Release API 상태를 사용합니다. Markdown 병합이나 태그 존재만으로 미배포 변경을 출시 완료로 표시하지 않습니다. 전용 자동화 토큰이 준비된 뒤에는 아래 Wiki 전용 워크플로로 복구할 수 있으며, 허가된 로컬 수동 발행과 Actions의 수동 실행은 다른 경로입니다.
 
 Wiki만 실패했으면 이미 공개된 Release는 그대로 두고 [Wiki 전용 워크플로](https://github.com/hanbong5938/herdr-desktop-pet/actions/workflows/wiki.yml)를 **기본 브랜치**에서 다시 실행하세요. 일반 동기화는 tag를 비우고, 릴리스 후 복구는 해당 공개·완전 배포 태그를 넣습니다. Wiki 복구 때문에 바이너리 릴리스 작업을 다시 실행하지 마세요. 과거 v0.1.5는 태그만 있고 공개 바이너리가 없습니다. 관련 없는 Wiki 페이지와 기존 이력은 보존하고, 충돌 해결에 force push를 쓰지 않습니다. 로컬 `--wiki-url` 검증은 초기 커밋이 있는 격리된 로컬 Git 원격만 대상으로 합니다.
+
+</details>

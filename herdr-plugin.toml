@@ -1,9 +1,9 @@
 id = "desktop-pet"
-name = "Herdr Desktop Pet"
-version = "0.3.6"
-# Herdr v0.9.3 is the base only: client.attached requires integrations/herdr/client-attached.patch (or a future host release that explicitly advertises the hook).
+name = "Desktop Pet — Herdr integration"
+version = "0.4.0"
+# Herdr v0.9.3 requires integrations/herdr/client-attached.patch, or an explicitly hook-capable host.
 min_herdr_version = "0.9.3"
-description = "A native macOS desktop companion for Herdr"
+description = "Connect Herdr to the independently installed Desktop Pet"
 platforms = ["macos"]
 
 [[build]]

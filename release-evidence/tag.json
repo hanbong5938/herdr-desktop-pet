@@ -1,0 +1,10 @@
+{
+  "ref": "refs/tags/v0.4.0",
+  "node_id": "REF_kwDOVG1Ac7ByZWZzL3RhZ3MvdjAuNC4w",
+  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/refs/tags/v0.4.0",
+  "object": {
+    "sha": "e3e5cb6eb7dbeae93ac7aa71321b6a1e78c78817",
+    "type": "commit",
+    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/e3e5cb6eb7dbeae93ac7aa71321b6a1e78c78817"
+  }
+}

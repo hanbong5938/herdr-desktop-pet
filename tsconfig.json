@@ -13,9 +13,6 @@
     "skipLibCheck": true,
     "types": ["bun", "node"]
   },
-  "include": [
-    "scripts/**/*.ts",
-    "integrations/**/*.ts"
-  ],
-  "exclude": ["node_modules", "dist", "native/target"]
+  "include": ["scripts/integration-release.ts", "integrations/omp/**/*.ts"],
+  "exclude": ["node_modules", "native-adapter/target"]
 }

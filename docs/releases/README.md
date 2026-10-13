@@ -1,6 +1,16 @@
-# Herdr Desktop Pet versions
+# Desktop Pet — Herdr integration releases
 
 **English** · [한국어](README.ko.md)
+
+Current app releases, installation, usage, development, four-locale Pages and the app Wiki belong to [Desktop Pet core](https://github.com/hanbong5938/desktop-pet). This repository now releases only the Herdr integration; [integration v0.4.0 notes](v0.4.0.md), [consumer publication](publishing.md), and [Herdr actions / hook / patch / link / OMP](../../integrations/herdr/README.md) describe that boundary.
+
+The app installation command after actual publication is `brew install hanbong5938/tap/desktop-pet`; optional integration commands are `herdr plugin install hanbong5938/herdr-desktop-pet` and `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`. [Legacy migration](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md) preserves both existing profile paths and requires separate A → B consent.
+
+[Core release history](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/README.md) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki). Actual publication/deployment is separately verified, not established by these links.
+
+<details>
+<summary>Historical common-app index through v0.3.6 (preserved; not current installation guidance)</summary>
+
 
 Reviewed Markdown in this repository is the canonical version documentation. The GitHub Wiki is a generated reading view, not a separately edited source. These pages describe versions; use the [root overview and installation](../../readme.md), [current usage guide](../usage.md), [development guide](../development.md), and [Herdr integration guide](../../integrations/herdr/README.md) for their respective procedures.
 
@@ -37,3 +47,5 @@ Future minor lines get their own `X.Y.md` overview with tagged version notes and
 For new releases, reviewed `docs/releases/vX.Y.Z.md` at the exact release tag supplies both the generated Wiki version page and the new GitHub Release body. See [Publishing](publishing.md) for the procedure and [policy](policy.md) for the compatibility contract.
 
 The v0.1.4–v0.1.11 tags predate this documentation tree. Their notes are explicitly reconstructed from contemporaneous evidence in the reviewed current source, with links to historical tagged sources and actual Releases where available. That exception does not rewrite old tags, archives, or Release bodies. Historical verification statements describe previously reported evidence, not checks run while creating these pages.
+
+</details>

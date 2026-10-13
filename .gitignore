@@ -1,18 +1,8 @@
 node_modules/
-dist/
-native/target/
-native/update-coordinator/target/
+native-adapter/target/
 .DS_Store
-__pycache__/
-*.py[cod]
 .env
 .env.*
 .claude/
 .agents/skills/open-code-review/
 skills-lock.json
-
-# Optional artwork lives in herdr-characters; retain only the bundled default.
-assets/*
-!assets/rubelia-default/
-!assets/rubelia-default/**
-!assets/rubelia-thumbnail.png

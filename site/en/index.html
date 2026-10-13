@@ -3,129 +3,37 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0D1117">
-  <title>Herdr Desktop Pet — View Herdr sessions and reply locally</title>
-  <meta name="description" content="A native desktop app for Apple Silicon Mac. View observed Herdr session states in a bubble and submit replies to selected local agents.">
+  <meta name="color-scheme" content="light dark">
+  <title>Desktop Pet — Herdr integration</title>
+  <meta name="description" content="Core owns the app, installation, usage and characters. This site owns only Herdr integration and migration entrypoints.">
   <link rel="canonical" href="https://hanbong5938.github.io/herdr-desktop-pet/en/">
   <link rel="alternate" hreflang="ko" href="https://hanbong5938.github.io/herdr-desktop-pet/">
   <link rel="alternate" hreflang="en" href="https://hanbong5938.github.io/herdr-desktop-pet/en/">
-  <link rel="alternate" hreflang="zh-Hans" href="https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/">
   <link rel="alternate" hreflang="ja" href="https://hanbong5938.github.io/herdr-desktop-pet/ja/">
+  <link rel="alternate" hreflang="zh-Hans" href="https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/">
   <link rel="alternate" hreflang="x-default" href="https://hanbong5938.github.io/herdr-desktop-pet/">
-  <meta property="og:type" content="website">
-  <meta property="og:site_name" content="Herdr Desktop Pet">
-  <meta property="og:locale" content="en_US">
-  <meta property="og:title" content="Herdr Desktop Pet — View Herdr sessions and reply locally">
-  <meta property="og:description" content="A native desktop app for Apple Silicon Mac. View observed Herdr session states in a bubble and submit replies to selected local agents.">
-  <meta property="og:url" content="https://hanbong5938.github.io/herdr-desktop-pet/en/">
-  <meta property="og:image" content="https://hanbong5938.github.io/herdr-desktop-pet/assets/images/og-en.png">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Herdr Desktop Pet and its bundled character Rubelia">
-  <meta name="twitter:card" content="summary_large_image">
-  <link rel="icon" type="image/svg+xml" href="../assets/images/favicon.svg">
-  <link rel="stylesheet" href="../assets/css/site.css">
-  <script src="../assets/js/site.js" defer></script>
+  <style>body{font:1rem/1.7 system-ui,sans-serif;max-width:52rem;margin:3rem auto;padding:0 1.2rem}a{text-underline-offset:.2em}pre{padding:1rem;border:1px solid currentColor;overflow:auto}nav,footer{font-size:.9rem}aside{border-left:3px solid currentColor;padding-left:1rem}h1{line-height:1.25}</style>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header">
-    <div class="wrap header-inner">
-      <a class="brand" href="#main" aria-label="Herdr Desktop Pet, back to top"><span class="brand-mark" aria-hidden="true"></span><span>Herdr <strong>Desktop Pet</strong></span></a>
-      <nav class="primary-nav" aria-label="Main navigation">
-        <a href="#demo">The app</a><a href="#features">Features</a><a href="#installation">Install</a><a href="#characters">Characters</a><a href="#faq">FAQ</a>
-      </nav>
-      <nav class="locale-nav" aria-label="Language"><a href="../" lang="ko" hreflang="ko">KO</a><a href="./" lang="en" hreflang="en" aria-current="page">EN</a><a href="../zh-Hans/" lang="zh-Hans" hreflang="zh-Hans">简体中文</a><a href="../ja/" lang="ja" hreflang="ja">日本語</a></nav>
-    </div>
-  </header>
-  <main id="main">
-    <section class="hero wrap" aria-labelledby="hero-title">
-      <div class="hero-copy">
-        <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> NATIVE DESKTOP COMPANION</p>
-        <h1 id="hero-title">See <em>Herdr sessions</em> on your desktop. Reply to local agents.</h1>
-        <p class="hero-lead">See observed session states in Rubelia’s bubble and submit messages to a selected local agent. An accepted message is not a completed task.</p>
-        <div class="hero-actions"><a class="button button-primary" href="#connect-herdr">Connect to Herdr <span aria-hidden="true">↗</span></a><a class="button button-secondary" href="#demo">See the actual app <span aria-hidden="true">↗</span></a></div>
-        <p class="hero-alternative">Use the same native app with <a href="#connect-tern">Tern in a separate profile</a>, or <a href="#standalone-pet">run just the character without Herdr.</a></p>
-        <p class="hero-spec"><span class="spec-dot" aria-hidden="true"></span> Apple Silicon Mac <span aria-hidden="true">·</span> macOS 13+ <span aria-hidden="true">·</span> Rubelia bundled</p>
-      </div>
-      <figure class="hero-art"><span class="hero-art-halo" aria-hidden="true"></span><img src="../assets/images/rubelia-thumbnail.png" width="450" height="525" alt="Full-length illustration of Rubelia, the bundled desktop character" fetchpriority="high"><figcaption>01 / RUBELIA — INCLUDED CHARACTER</figcaption></figure>
-    </section>
-
-    <section id="demo" class="section demo-section" aria-labelledby="demo-title">
-      <div class="wrap">
-        <div class="section-heading"><div><p class="eyebrow">01 / IN THE APP</p><h2 id="demo-title">Off the page.<br>Onto your desktop.</h2></div><p>Captured from the native macOS app v0.3.2 in an isolated offline profile. No sessions are connected in these shots.</p></div>
-        <div class="demo-grid">
-          <figure class="demo-shot demo-shot-primary"><div class="shot-frame"><img src="../assets/images/product-desktop.png" width="984" height="720" alt="Actual macOS app v0.3.2 with Rubelia and status bubble, offline with one disconnected source and zero tasks" loading="lazy" decoding="async"></div><figcaption><span class="caption-index">01 — DESKTOP</span><span>Actual macOS app v0.3.2 · captured offline in an isolated profile; no connected sessions</span></figcaption></figure>
-          <figure class="demo-shot demo-shot-detail"><div class="shot-frame"><img src="../assets/images/product-detail.png" width="552" height="244" alt="Separate capture of the actual native status bubble showing offline, one disconnected source, and zero tasks" loading="lazy" decoding="async"></div><figcaption><span class="caption-index">02 — STATUS BUBBLE</span><span>A separate capture of the same offline bubble</span></figcaption></figure>
-        </div>
-      </div>
-    </section>
-
-    <section id="features" class="section features-section wrap" aria-labelledby="features-title">
-      <div class="section-heading"><div><p class="eyebrow">02 / WHAT IT DOES</p><h2 id="features-title">Observe sessions.<br>Reply locally. Interact.</h2></div><p>Three ways to use the observed Herdr workspace and desktop character.</p></div>
-      <div class="feature-grid">
-        <article class="feature feature-first"><span class="feature-number">01 / OBSERVE</span><span class="feature-glyph feature-glyph-circle" aria-hidden="true">◉</span><h3>Observed states, not guesses</h3><p>The bubble’s session cards show idle, running, waiting, or unknown status. They do not infer an agent’s outcome.</p></article>
-        <article class="feature"><span class="feature-number">02 / REPLY</span><span class="feature-glyph" aria-hidden="true">↗</span><h3>Submit to a local session</h3><p>Send a message from a selected local agent card. Herdr accepting it does not mean the work is complete; remote cards are read-only.</p></article>
-        <article class="feature"><span class="feature-number">03 / INTERACT</span><span class="feature-glyph" aria-hidden="true">✳</span><h3>Rubelia responds to touch</h3><p>Tap her head or body, or pet her head for a reaction. Drag her around your desktop and adjust her size.</p></article>
-      </div>
-    </section>
-
-    <section id="installation" class="section install-section" aria-labelledby="installation-title">
-      <div class="wrap">
-        <div class="section-heading"><div><p class="eyebrow">03 / GET STARTED</p><h2 id="installation-title">One app. Choose your connection.</h2></div><p>Apple Silicon Mac · macOS 13 or later. Herdr, <a href="#connect-tern">Tern</a> and independent operation use the same public v0.3.6 native app and CLI via Homebrew. Install and start explicitly; Herdr connection needs no plugin, while Tern uses its separate connector and profile.</p></div>
-        <div class="install-grid">
-          <article id="connect-herdr" class="install-option" aria-labelledby="connect-herdr-title">
-            <div class="install-option-head"><span class="option-label">01 / CONNECT HERDR</span><span class="option-badge">Local sessions</span></div>
-            <h3 id="connect-herdr-title">Connect to Herdr sessions</h3>
-            <p>Manually connect the native app to a running Herdr server on this Mac (Herdr 0.9.0 or later for local session observation). Start the server first, then install, check the version, start the pet and inspect its status.</p>
-            <div class="command-head"><span id="connect-command-label">Homebrew commands for Herdr connection</span><button class="copy-button" type="button" hidden data-copy-target="connect-command" data-copy-success="Commands copied." data-copy-failure="Could not copy. Select and copy the commands manually.">Copy commands</button></div>
-            <pre tabindex="0" role="region" aria-labelledby="connect-command-label"><code id="connect-command">brew install hanbong5938/tap/herdr-desktop-pet
-herdr-desktop-pet --version
-herdr-desktop-pet start
-herdr-desktop-pet status</code></pre><span class="copy-status" role="status" aria-live="polite"></span>
-            <p class="install-followup">Check the CLI version and the running app’s <code>status</code> version and executable. If the server’s actual socket differs from the environment/default path, identify its real backend socket and run <code>herdr-desktop-pet start --socket PATH</code> with <code>PATH</code> replaced by that path. <code>--socket</code> selects the Herdr backend, not the app’s control socket. Card replies require that local server to support <code>agent.prompt</code>; an accepted submission does not mean agent completion.</p>
-          </article>
-          <article id="standalone-pet" class="install-option" aria-labelledby="standalone-pet-title">
-            <div class="install-option-head"><span class="option-label">02 / INDEPENDENT PET</span><span class="option-badge">No Herdr needed</span></div>
-            <h3 id="standalone-pet-title">Run just the character</h3>
-            <p>Run the same native app without a Herdr server. Turn off the new profile’s server-disconnect exit policy before the first start and inspect the saved setting. Session cards and replies need a connection.</p>
-            <div class="command-head"><span id="standalone-command-label">Homebrew commands for independent operation</span><button class="copy-button" type="button" hidden data-copy-target="standalone-command" data-copy-success="Commands copied." data-copy-failure="Could not copy. Select and copy the commands manually.">Copy commands</button></div>
-            <pre tabindex="0" role="region" aria-labelledby="standalone-command-label"><code id="standalone-command">brew install hanbong5938/tap/herdr-desktop-pet
-herdr-desktop-pet --version
-herdr-desktop-pet settings set exit_with_herdr off
-herdr-desktop-pet settings get
-herdr-desktop-pet start
-herdr-desktop-pet status</code></pre><span class="copy-status" role="status" aria-live="polite"></span>
-            <p class="install-followup">For the character without its bubble, optionally run <code>herdr-desktop-pet hide_bubble</code> after starting. The app keeps running. <code>exit_with_herdr off</code> does not prevent shutdown if all registered local endpoints are explicitly disabled or unlinked.</p>
-          </article>
-        </div>
-        <details id="managed-plugin" class="managed-plugin"><summary>Advanced option: manage startup with a Herdr plugin</summary><div class="managed-plugin-body"><p>Neither native connection nor independent operation above requires the plugin. Use this only to install the plugin and invoke its start action on a running Herdr host. If its pinned prebuilt is unavailable, default plugin installation can fall back to building from source, requiring Rust/Cargo, Bun, Node.js/npm and Xcode Command Line Tools.</p><pre tabindex="0"><code>herdr plugin install hanbong5938/herdr-desktop-pet
-herdr plugin action invoke start --plugin desktop-pet</code></pre><p>Auto-start on client attach is a separate feature: it requires a host built from official Herdr 0.9.3 source with the <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/integrations/herdr/client-attached.patch">client.attached patch</a>, or a host release explicitly supporting that hook. Stock 0.9.0/0.9.3 lack it; manual native startup above does not need it.</p></div></details>
-        <details id="connect-tern" class="managed-plugin"><summary>Connect to Tern — public v0.3.6</summary><div class="managed-plugin-body"><p>The native app and stable Homebrew formula are published. Install the app first, then explicitly install the Tern connector and manually start a separate Tern profile. Rust is not required for this prebuilt route.</p><pre tabindex="0"><code>brew install hanbong5938/tap/herdr-desktop-pet
-tern plugin install https://github.com/hanbong5938/tern-desktop-pet
-PET="$(command -v herdr-desktop-pet)"
-PET_CONFIG="$HOME/.config/herdr/plugins/config/desktop-pet-tern"
-PET_STATE="$HOME/.local/state/herdr/plugins/desktop-pet-tern"
-"$PET" --version
-"$PET" --host tern --config-dir "$PET_CONFIG" --state-dir "$PET_STATE" start
-"$PET" --host tern --config-dir "$PET_CONFIG" --state-dir "$PET_STATE" status</code></pre><p>The plugin never silently downloads, builds or executes the app. The same native app defaults to Herdr; explicit <code>--host tern</code> needs no Herdr server, socket or plugin. Config <strong>and</strong> state are separate from Herdr. In the actual Tern window, choose <strong>Configure desktop pet connection</strong>, enter the absolute executable and exact config/state paths above (actual values, not variable names), then <strong>Connect to desktop pet</strong>. Check the window connection and matching native status; plugin installation alone is not connection or automatic startup. Stop the same profile before changing binary or mode. See the <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/usage.md">usage guide</a>.</p></div></details>
-        <aside class="install-notes" aria-label="Before installing"><p><strong>Public stable v0.3.6.</strong> The non-draft, non-prerelease <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6">exact Release</a> is GitHub's observed latest. Its four assets (app-only arm64 archive, <code>.sha256</code>, <code>SHA256SUMS</code> and separate rig provenance sidecar) were anonymously verified, including all 68 deployed-byte identities. <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/download/v0.3.6/HerdrDesktopPet-v0.3.6-macos-arm64.tar.gz">Exact archive download</a> SHA-256: <code>5d40f6ada23f7d91d967a98331b28ea767202f5d01b7cd7732b2d9e543fdaafa</code>. <a href="https://github.com/hanbong5938/homebrew-tap/commit/c7be4b5">Stable tap c7be4b5</a> uses that URL/hash; the beta formula and older v0.3.5-beta.1 release are unchanged, not a new v0.3.6 beta. Stop an existing daemon before upgrading. The app is ad-hoc signed and not notarized.</p><p><strong>Evidence has limits.</strong> Actual Homebrew upgrade and no-Cargo/Bun/Node/npm pinned-prebuilt install passed native Tern-only startup and valid empty-snapshot exchange. Public Tern plugin CLI installation also succeeded; this is not a GUI window connection or populated-agent delivery claim. The app shots above remain isolated offline v0.3.2 captures, not connected v0.3.6 sessions. See <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/0.3.md#observed-v036-publication">publication and consumer evidence</a>, the frozen <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/v0.3.6.md">canonical note</a> and <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/readme.md">English README</a>.</p></aside>
-      </div>
-    </section>
-
-    <section id="characters" class="section characters-section wrap" aria-labelledby="characters-title">
-      <div class="characters-copy"><p class="eyebrow">04 / CHARACTERS</p><h2 id="characters-title">Start with one.<br><em>Make room for more.</em></h2><p>Rubelia is the only bundled character. Optional characters and wardrobe packs live in a separate official character repository. In supported app versions, the character browser offers explicit verified download and apply for published, supported packs only.</p><a class="text-link" href="https://github.com/hanbong5938/herdr-characters">Explore the character repository <span aria-hidden="true">↗</span></a></div>
-      <div class="characters-aside" aria-label="Bundled character"><span class="character-frame-label">BUNDLED / 01</span><img src="../assets/images/rubelia-thumbnail.png" width="450" height="525" loading="lazy" decoding="async" alt="Rubelia, the only bundled character"><span class="character-name">Rubelia <small>default@0</small></span></div>
-    </section>
-
-    <section id="faq" class="section faq-section" aria-labelledby="faq-title"><div class="wrap faq-layout"><div><p class="eyebrow">05 / GOOD TO KNOW</p><h2 id="faq-title">Frequently asked</h2><p class="faq-intro">A few things to know before you begin.</p></div><div class="faq-list">
-      <details><summary>Does it run on Intel Mac, Windows, or Linux?</summary><p>No. The native distribution targets Apple Silicon Mac with macOS 13 or later.</p></details>
-      <details><summary>Does a successful message mean the agent finished?</summary><p>No. You can submit a message when the server for your selected local session supports <code>agent.prompt</code>. Success means Herdr accepted it, not that the agent processed or completed it. Remote sessions are read-only.</p></details>
-      <details><summary>Will it auto-start on client attach with stock Herdr?</summary><p>No. Client-attach auto-start requires a host supporting the <code>client.attached</code> hook: apply the supplied patch to official Herdr 0.9.3 source, or use a host release explicitly supporting it. Stock 0.9.0 and 0.9.3 lack this hook.</p></details>
-      <details><summary>Are other characters included?</summary><p>No. Only Rubelia is bundled. Explore optional packs and their terms in the separate <a href="https://github.com/hanbong5938/herdr-characters">official character repository</a>.</p></details>
-    </div></div></section>
+  <nav aria-label="Language"><a lang="ko" href="https://hanbong5938.github.io/herdr-desktop-pet/">한국어</a> · <a lang="en" href="https://hanbong5938.github.io/herdr-desktop-pet/en/" aria-current="page">English</a> · <a lang="ja" href="https://hanbong5938.github.io/herdr-desktop-pet/ja/">日本語</a> · <a lang="zh-Hans" href="https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/">简体中文</a></nav>
+  <main>
+    <h1>The app has moved to independent Desktop Pet.</h1>
+    <p>Core owns the app, installation, usage and characters. This site owns only Herdr integration and migration entrypoints.</p>
+    <ul>
+      <li><a href="https://hanbong5938.github.io/desktop-pet/en/">App site</a> · <a href="https://github.com/hanbong5938/desktop-pet/blob/main/readme.md">Desktop Pet README</a> · <a href="https://github.com/hanbong5938/desktop-pet/blob/main/docs/usage.md">Current app usage</a> · <a href="https://github.com/hanbong5938/desktop-pet/wiki">Core Wiki</a></li>
+      <li><a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/integrations/herdr/README.md">Herdr hooks / patch / link / OMP</a></li>
+      <li><a href="https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md">Legacy A → B migration</a></li>
+    </ul>
+    <aside><h2>Publication boundary</h2><p>Actual publication of independent app v0.4.0, bridge v0.3.7, formula and integration tags has not yet been established here. These are post-publication commands; documentation or tags alone do not prove installability.</p></aside>
+    <pre tabindex="0"><code>brew install hanbong5938/tap/desktop-pet
+herdr plugin install hanbong5938/herdr-desktop-pet
+herdr plugin action invoke start --plugin desktop-pet
+# Optional Tern integration:
+tern plugin install https://github.com/hanbong5938/tern-desktop-pet</code></pre>
+    <p>Install only the integrations you want. Herdr is a thin consumer; Tern never installs or auto-starts the app. Plugin updates/removal do not change the shared app, profile or characters.</p>
+    <p>Optional Herdr attach auto-start requires a real hook-capable host or the official 0.9.3 patch. Installing the plugin never patches the host. Preserve both existing profile paths without moving or merging them.</p>
+    <p>For Tern, install/start the app separately, then Configure → Connect using the actual executable/config/state triple. Real Tern reconnect and OMP model delivery are not asserted here. <a href="https://github.com/hanbong5938/tern-desktop-pet">Tern Connect / Configure</a>.</p>
   </main>
-  <footer class="site-footer"><div class="wrap"><div class="footer-main"><div><a class="footer-brand" href="#main">Herdr Desktop Pet</a><p>A small companion beside your work.</p></div><nav aria-label="Related links"><a href="https://github.com/hanbong5938/herdr-desktop-pet">Source repository</a><a href="https://github.com/hanbong5938/herdr-desktop-pet/releases">Release catalog</a><a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/usage.md">User guide</a><a href="https://github.com/hanbong5938/herdr-characters">Character packs</a></nav></div><div class="footer-legal"><p>Rubelia is owner-authorized, AI-origin artwork. <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/LICENSE.txt">Artwork license</a> · <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/ATTRIBUTION.txt">Attribution</a> · <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/owner-approval.json">Owner approval record</a>. The software’s MIT license does not relicense the artwork.</p><a href="../" lang="ko" hreflang="ko">한국어 ↗</a> · <a href="../zh-Hans/" lang="zh-Hans" hreflang="zh-Hans">简体中文 ↗</a> · <a href="../ja/" lang="ja" hreflang="ja">日本語 ↗</a></div></div></footer>
+  <footer><p><a href="https://github.com/hanbong5938/desktop-pet/blob/main/assets/rubelia-default/LICENSE.txt">Artwork licenses / attribution</a> · <a href="https://github.com/hanbong5938/desktop-pet/blob/main/assets/rubelia-default/ATTRIBUTION.txt">Rubelia attribution</a> · <a href="https://github.com/hanbong5938/desktop-pet/blob/main/assets/rubelia-default/source-record.json">Source record</a>. MIT software terms do not relicense artwork. <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6">Frozen legacy v0.3.6</a>.</p></footer>
 </body>
 </html>
