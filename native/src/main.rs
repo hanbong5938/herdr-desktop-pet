@@ -53,6 +53,7 @@ mod socket;
 mod sources;
 mod state;
 mod status_indicator;
+mod tern;
 #[cfg(test)]
 mod transport_tests;
 mod ui;
@@ -60,7 +61,10 @@ mod update_card;
 use herdr_update_coordinator::protocol::{
     latest_operation, read_operation, record_user_stop, start_allowed, UPDATER_PROTOCOL,
 };
-use herdr_update_coordinator::{detect_origin, executable_identity, InstallOrigin, UpdateContext};
+use herdr_update_coordinator::{
+    detect_origin, executable_identity, InstallOrigin, ObservationMode, UpdateContext,
+    OBSERVATION_MODE_ENV,
+};
 use std::collections::BTreeMap;
 mod worktree_confirmation;
 use character_service::execute_offline;
@@ -75,7 +79,7 @@ use lifecycle::{default_herdr_socket, LifecycleLock, LifecycleSetting, Paths};
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions, Permissions};
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
@@ -106,6 +110,7 @@ const USAGE: &str = concat!(
     "    settings set exit_with_herdr on|off\n",
     "    status              Show daemon, registration, data, and executable status\n",
     "    update-capabilities  Show read-only updater protocol support\n",
+    "    tern-exchange       Exchange one bounded Tern window inventory on stdin/stdout\n",
     "    update-status [OPID] Show offline durable updater outcome (--state-dir PATH)\n",
     "    show                Show character; reattach visible bubble\n",
     "    hide                Hide character; leave enabled bubble standalone\n",
@@ -127,7 +132,7 @@ const USAGE: &str = concat!(
     "    presentation reset  Reset pet/bubble positions without changing visibility\n",
     "    presentation status OPID --instance ID   Show an operation from this daemon instance\n",
     "    preferences get      Show saved and effective preferences from the running daemon\n",
-    "    preferences set      Set --language system|ko|en, --theme warm_ivory|dusty_rose|moonlit_ink|custom,\n",
+    "    preferences set      Set --language system|ko|en|zh-Hans|ja, --theme warm_ivory|dusty_rose|moonlit_ink|custom,\n",
     "                         --surface/--text/--muted/--border/--accent #RRGGBB (partial palette preserves saved colors),\n",
     "                         --status-indicators on|off, --menu-bar always|recovery_only,\n",
     "                         --observation-local/--observation-remote on|off, --machine ID (repeatable) or --clear-machines\n",
@@ -139,9 +144,9 @@ const USAGE: &str = concat!(
     "                         exactly one of --text TEXT, --file PATH, --stdin; [--operation-id ID] [--wait SECONDS|--no-wait]\n",
     "    sessions status      --instance ID --operation-id ID (prompt operations only)\n",
     "    dialogue list        List editor targets, identities, locales and slots\n",
-    "    dialogue get         --target JSON --locale ko|en --slot KEY\n",
-    "    dialogue set         --target JSON --locale ko|en --slot KEY exactly one of --text TEXT, --file PATH, --stdin\n",
-    "    dialogue reset-entry --target JSON --locale ko|en --slot KEY\n",
+    "    dialogue get         --target JSON --locale ko|en|zh-Hans|ja --slot KEY\n",
+    "    dialogue set         --target JSON --locale ko|en|zh-Hans|ja --slot KEY exactly one of --text TEXT, --file PATH, --stdin\n",
+    "    dialogue reset-entry --target JSON --locale ko|en|zh-Hans|ja --slot KEY\n",
     "    dialogue reset-character --target JSON\n",
     "                         --slot KEY: idle|running|waiting|unknown|head_tap|body_tap|pet|completion_observed\n",
     "                         --target is the serialized identity returned by dialogue list; omit --baseline to read fresh CAS first\n",
@@ -175,6 +180,7 @@ const USAGE: &str = concat!(
     "    An ACK confirms only acceptance, not native application or persistence.\n",
     "    On uncertain transmission use presentation status OPID --instance ID.\n\n",
     "Options:\n",
+    "    --host herdr|tern|both  Observation host (default: owned env, then herdr)\n",
     "    --socket PATH       Herdr Unix socket path\n",
     "    --assets PATH       Renderer assets directory (not for pack/settings/presentation/preferences/sessions/dialogue/worktree)\n",
     "    --config-dir PATH   Lifecycle and preference directory\n",
@@ -195,6 +201,7 @@ enum CommandKind {
     Status,
     UpdateCapabilities,
     UpdateStatus,
+    TernExchange,
     Settings,
     Show,
     Hide,
@@ -231,6 +238,7 @@ impl CommandKind {
             "restart" => Self::Restart,
             "status" => Self::Status,
             "update-capabilities" => Self::UpdateCapabilities,
+            "tern-exchange" => Self::TernExchange,
             "update-status" => Self::UpdateStatus,
             "settings" => Self::Settings,
             "show" => Self::Show,
@@ -270,6 +278,7 @@ impl CommandKind {
             Self::Stop => "stop",
             Self::UpdateCapabilities => "update-capabilities",
             Self::UpdateStatus => "update-status",
+            Self::TernExchange => "tern-exchange",
             Self::Restart => "restart",
             Self::Status => "status",
             Self::Show => "show",
@@ -348,6 +357,7 @@ struct Cli {
     settings: Option<SettingsCommand>,
     presentation: Option<automation_cli::PresentationCommand>,
     automation: Option<automation_cli::DomainCommand>,
+    host: Option<ObservationMode>,
     socket: Option<PathBuf>,
     assets: Option<PathBuf>,
     config_dir: Option<PathBuf>,
@@ -374,7 +384,9 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     if cli.command == Some(CommandKind::UpdateCapabilities) {
-        return print_json(&serde_json::json!({"protocol": UPDATER_PROTOCOL}));
+        return print_json(
+            &serde_json::json!({"protocol": UPDATER_PROTOCOL, "observation_mode": 1}),
+        );
     }
     let command = cli.command.unwrap_or(CommandKind::Ensure);
     if matches!(
@@ -389,6 +401,7 @@ fn run() -> Result<(), String> {
             | CommandKind::Dialogue
             | CommandKind::Worktree
             | CommandKind::UpdateStatus
+            | CommandKind::TernExchange
     ) && cli.assets.is_some()
     {
         return Err("--assets is not valid with this command".to_owned());
@@ -407,6 +420,10 @@ fn run() -> Result<(), String> {
     let host_plugin_config_dir =
         lifecycle::captured_host_plugin_config_dir(command == CommandKind::Daemon);
     let paths = Paths::resolve(cli.config_dir.as_deref(), cli.state_dir.as_deref())?;
+    if command == CommandKind::TernExchange {
+        return tern_exchange(&paths);
+    }
+    let observation_mode = resolve_observation_mode(cli.host)?;
     let herdr_socket = cli.socket.unwrap_or_else(default_herdr_socket);
     if herdr_socket.is_relative() || herdr_socket.as_os_str().is_empty() {
         return Err("Herdr socket path must be a non-empty absolute path".to_owned());
@@ -432,6 +449,7 @@ fn run() -> Result<(), String> {
             assets_override,
             automatic_start,
             host_plugin_config_dir,
+            observation_mode,
         ));
     }
     execute_command(
@@ -441,11 +459,61 @@ fn run() -> Result<(), String> {
         assets,
         assets_override,
         host_plugin_config_dir,
+        observation_mode,
         cli.pack,
         cli.settings,
         cli.presentation,
         cli.automation,
     )
+}
+
+fn resolve_observation_mode(explicit: Option<ObservationMode>) -> Result<ObservationMode, String> {
+    if let Some(mode) = explicit {
+        return Ok(mode);
+    }
+    match env::var(OBSERVATION_MODE_ENV) {
+        Ok(value) => value.parse(),
+        Err(env::VarError::NotPresent) => Ok(ObservationMode::Herdr),
+        Err(env::VarError::NotUnicode(_)) => Err(format!(
+            "{OBSERVATION_MODE_ENV} must be herdr, tern, or both"
+        )),
+    }
+}
+
+fn require_observation_mode(
+    response: &ControlResponse,
+    requested: ObservationMode,
+) -> Result<(), String> {
+    if response.observation_mode == requested.as_str() {
+        Ok(())
+    } else {
+        Err(format!(
+            "desktop-pet is already running with host {}; requested {}",
+            response.observation_mode,
+            requested.as_str()
+        ))
+    }
+}
+
+fn tern_exchange(paths: &Paths) -> Result<(), String> {
+    let request = read_tern_exchange_request(io::stdin().lock())?;
+    let reply = control::send_tern_exchange(&paths.control_socket, &request, CONTROL_TIMEOUT)?;
+    let bytes = tern::serialize_response(&reply)
+        .map_err(|error| format!("cannot serialize Tern exchange: {error}"))?;
+    io::stdout()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|error| format!("cannot write Tern exchange: {error}"))
+}
+
+fn read_tern_exchange_request(input: impl Read) -> Result<tern::TernExchangeRequest, String> {
+    let mut bytes = Vec::new();
+    // Reserve room for an optional CRLF and one byte proving an oversize input.
+    input
+        .take(tern::MAX_EXCHANGE_BYTES as u64 + 3)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read Tern exchange: {error}"))?;
+    control::decode_tern_exchange_request(&bytes)
 }
 
 fn execute_command(
@@ -455,11 +523,27 @@ fn execute_command(
     assets: Option<PathBuf>,
     assets_override: bool,
     host_plugin_config_dir: Option<PathBuf>,
+    observation_mode: ObservationMode,
     pack: Option<PackCommand>,
     settings: Option<SettingsCommand>,
     presentation: Option<automation_cli::PresentationCommand>,
     automation: Option<automation_cli::DomainCommand>,
 ) -> Result<(), String> {
+    if matches!(
+        command,
+        CommandKind::SettingsGet
+            | CommandKind::SettingsSet
+            | CommandKind::Presentation
+            | CommandKind::Preferences
+            | CommandKind::Sessions
+            | CommandKind::Dialogue
+            | CommandKind::Worktree
+            | CommandKind::Pack
+    ) && control::control_socket_is_live(&paths.control_socket, CONTROL_TIMEOUT)
+    {
+        let current = send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT)?;
+        require_observation_mode(&current, observation_mode)?;
+    }
     match command {
         CommandKind::Ensure => ensure(
             paths,
@@ -468,6 +552,7 @@ fn execute_command(
             assets_override,
             true,
             host_plugin_config_dir,
+            observation_mode,
         ),
         CommandKind::Start => ensure(
             paths,
@@ -476,6 +561,7 @@ fn execute_command(
             assets_override,
             false,
             host_plugin_config_dir,
+            observation_mode,
         ),
         CommandKind::Stop => stop(paths),
         CommandKind::Restart => restart(
@@ -484,9 +570,10 @@ fn execute_command(
             assets,
             assets_override,
             host_plugin_config_dir,
+            observation_mode,
         ),
         CommandKind::UpdateCapabilities | CommandKind::UpdateStatus => unreachable!(),
-        CommandKind::Status => status(paths, herdr_socket),
+        CommandKind::Status => status(paths, herdr_socket, observation_mode),
         CommandKind::Settings => lifecycle_settings_ui::run(paths, herdr_socket),
         CommandKind::SettingsGet | CommandKind::SettingsSet => {
             let settings = match settings.ok_or_else(|| "settings operation missing".to_owned())? {
@@ -511,12 +598,12 @@ fn execute_command(
         | CommandKind::BubbleAuto
         | CommandKind::Reset
         | CommandKind::Bigger
-        | CommandKind::Smaller => control_action(command, paths, herdr_socket),
+        | CommandKind::Smaller => control_action(command, paths, herdr_socket, observation_mode),
         CommandKind::Pack => execute_pack(
             pack.ok_or_else(|| "pack requires an operation".to_owned())?,
             paths,
         ),
-        CommandKind::Daemon => unreachable!(),
+        CommandKind::Daemon | CommandKind::TernExchange => unreachable!(),
         CommandKind::Presentation => automation_cli::execute(
             presentation.ok_or_else(|| "presentation requires an operation".to_owned())?,
             &paths.control_socket,
@@ -840,15 +927,11 @@ fn new_operation_id() -> String {
     format!("{nanos:x}-{:x}-{counter:x}", std::process::id())
 }
 
-fn startup_origin(
-    paths: &Paths,
-    herdr_socket: &Path,
-    host_plugin_config_dir: Option<&Path>,
-) -> Result<InstallOrigin, String> {
-    let executable =
-        bundle::executable().map_err(|error| format!("cannot resolve executable path: {error}"))?;
-    let running = executable_identity(&executable)?;
-    let environment = [
+fn startup_environment(
+    observation_mode: ObservationMode,
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    let mut environment = [
         "HOME",
         "XDG_CONFIG_HOME",
         "XDG_STATE_HOME",
@@ -860,8 +943,28 @@ fn startup_origin(
         "HERDR_SOCKET_PATH",
     ]
     .into_iter()
-    .filter_map(|key| env::var(key).ok().map(|value| (key.to_owned(), value)))
+    .filter_map(|key| lookup(key).map(|value| (key.to_owned(), value)))
     .collect::<BTreeMap<_, _>>();
+    // Absence is the legacy-compatible Herdr encoding, not an inherited selection.
+    if observation_mode != ObservationMode::Herdr {
+        environment.insert(
+            OBSERVATION_MODE_ENV.to_owned(),
+            observation_mode.as_str().to_owned(),
+        );
+    }
+    environment
+}
+
+fn startup_origin(
+    paths: &Paths,
+    herdr_socket: &Path,
+    host_plugin_config_dir: Option<&Path>,
+    observation_mode: ObservationMode,
+) -> Result<InstallOrigin, String> {
+    let executable =
+        bundle::executable().map_err(|error| format!("cannot resolve executable path: {error}"))?;
+    let running = executable_identity(&executable)?;
+    let environment = startup_environment(observation_mode, |key| env::var(key).ok());
     let context = UpdateContext {
         executable,
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -895,6 +998,28 @@ fn updater_start_authorization() -> Result<(Option<u64>, Option<String>), String
     Ok((generation, token))
 }
 
+fn admit_startup(
+    paths: &Paths,
+    herdr_socket: &Path,
+    host_plugin_config_dir: Option<&Path>,
+    expected_generation: Option<u64>,
+    updater_token: Option<&str>,
+    observation_mode: ObservationMode,
+) -> Result<(), String> {
+    let origin = startup_origin(
+        paths,
+        herdr_socket,
+        host_plugin_config_dir,
+        observation_mode,
+    )?;
+    start_allowed(
+        &origin,
+        &paths.state_dir,
+        expected_generation,
+        updater_token,
+    )
+}
+
 fn ensure(
     paths: Paths,
     herdr_socket: PathBuf,
@@ -902,35 +1027,43 @@ fn ensure(
     assets_override: bool,
     automatic_start: bool,
     host_plugin_config_dir: Option<PathBuf>,
+    observation_mode: ObservationMode,
 ) -> Result<(), String> {
     let (expected_generation, updater_token) = updater_start_authorization()?;
-    let origin = startup_origin(&paths, &herdr_socket, host_plugin_config_dir.as_deref())?;
-    start_allowed(
-        &origin,
-        &paths.state_dir,
+    admit_startup(
+        &paths,
+        &herdr_socket,
+        host_plugin_config_dir.as_deref(),
         expected_generation,
         updater_token.as_deref(),
+        observation_mode,
     )?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     let mut last_error = None;
     while Instant::now() < deadline {
-        start_allowed(
-            &origin,
-            &paths.state_dir,
+        admit_startup(
+            &paths,
+            &herdr_socket,
+            host_plugin_config_dir.as_deref(),
             expected_generation,
             updater_token.as_deref(),
+            observation_mode,
         )?;
         if control::control_socket_is_live(&paths.control_socket, Duration::from_millis(150)) {
-            match wait_for_ready(&paths, &herdr_socket, deadline) {
+            match wait_for_ready(&paths, &herdr_socket, deadline, observation_mode) {
                 Ok(response) => {
-                    start_allowed(
-                        &origin,
-                        &paths.state_dir,
+                    admit_startup(
+                        &paths,
+                        &herdr_socket,
+                        host_plugin_config_dir.as_deref(),
                         expected_generation,
                         updater_token.as_deref(),
+                        observation_mode,
                     )?;
+                    require_observation_mode(&response, observation_mode)?;
                     return print_response(&response);
                 }
+                Err(ReadyFailure::ModeMismatch(error)) => return Err(error),
                 Err(ReadyFailure::Exiting(error)) => {
                     last_error = Some(error);
                     wait_for_finalization(&paths, deadline)?;
@@ -944,6 +1077,7 @@ fn ensure(
                     ) {
                         match send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT) {
                             Ok(response) if !response.shutdown => {
+                                require_observation_mode(&response, observation_mode)?;
                                 return Err(last_error
                                     .take()
                                     .unwrap_or_else(|| "desktop-pet is not ready".to_owned()));
@@ -972,11 +1106,13 @@ fn ensure(
             drop(lock);
             continue;
         }
-        start_allowed(
-            &origin,
-            &paths.state_dir,
+        admit_startup(
+            &paths,
+            &herdr_socket,
+            host_plugin_config_dir.as_deref(),
             expected_generation,
             updater_token.as_deref(),
+            observation_mode,
         )?;
         let settings = lifecycle::read_settings(&paths.config_dir)?;
         if automatic_start && !settings.auto_start {
@@ -988,15 +1124,18 @@ fn ensure(
             drop(lock);
             return print_json(&serde_json::json!({
                 "type": "ensure", "ok": true, "running": false, "skipped": true,
-                "auto_start": settings.auto_start, "exit_with_herdr": settings.exit_with_herdr
+                "auto_start": settings.auto_start, "exit_with_herdr": settings.exit_with_herdr,
+                "observation_mode": observation_mode.as_str()
             }));
         }
         let assets = resolve_assets(assets.as_deref())?;
-        start_allowed(
-            &origin,
-            &paths.state_dir,
+        admit_startup(
+            &paths,
+            &herdr_socket,
+            host_plugin_config_dir.as_deref(),
             expected_generation,
             updater_token.as_deref(),
+            observation_mode,
         )?;
         let lease = match lifecycle::begin_startup(&paths.config_dir)? {
             Some(lease) => lease,
@@ -1006,6 +1145,17 @@ fn ensure(
                 continue;
             }
         };
+        if let Err(error) = admit_startup(
+            &paths,
+            &herdr_socket,
+            host_plugin_config_dir.as_deref(),
+            expected_generation,
+            updater_token.as_deref(),
+            observation_mode,
+        ) {
+            let _ = lifecycle::abandon_startup(&paths.config_dir, &lease.token);
+            return Err(error);
+        }
         let child_pid = match spawn_daemon(
             &paths,
             &herdr_socket,
@@ -1014,6 +1164,7 @@ fn ensure(
             &lease.token,
             automatic_start,
             host_plugin_config_dir.as_deref(),
+            observation_mode,
         ) {
             Ok(pid) => pid,
             Err(error) => {
@@ -1023,14 +1174,20 @@ fn ensure(
         };
         lifecycle::set_startup_child(&paths.config_dir, &lease.token, child_pid)?;
         drop(lock);
-        match wait_for_ready(&paths, &herdr_socket, deadline) {
+        match wait_for_ready(&paths, &herdr_socket, deadline, observation_mode) {
             Ok(response) => {
-                start_allowed(
-                    &origin,
-                    &paths.state_dir,
+                if let Err(error) = admit_startup(
+                    &paths,
+                    &herdr_socket,
+                    host_plugin_config_dir.as_deref(),
                     expected_generation,
                     updater_token.as_deref(),
-                )?;
+                    observation_mode,
+                ) {
+                    let _ = lifecycle::abandon_startup(&paths.config_dir, &lease.token);
+                    return Err(error);
+                }
+                require_observation_mode(&response, observation_mode)?;
                 return print_response(&response);
             }
             Err(failure) => {
@@ -1040,7 +1197,10 @@ fn ensure(
                         Duration::from_millis(150),
                     ) {
                         match send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT) {
-                            Ok(response) if !response.shutdown => return Err(error.clone()),
+                            Ok(response) if !response.shutdown => {
+                                require_observation_mode(&response, observation_mode)?;
+                                return Err(error.clone());
+                            }
                             Err(error)
                                 if control::control_socket_is_live(
                                     &paths.control_socket,
@@ -1113,6 +1273,7 @@ fn restart(
     assets: Option<PathBuf>,
     assets_override: bool,
     host_plugin_config_dir: Option<PathBuf>,
+    observation_mode: ObservationMode,
 ) -> Result<(), String> {
     stop(paths.clone())?;
     ensure(
@@ -1122,6 +1283,7 @@ fn restart(
         assets_override,
         false,
         host_plugin_config_dir,
+        observation_mode,
     )
 }
 
@@ -1216,7 +1378,11 @@ fn update_status(state_dir: &Path, operation_id: Option<&str>) -> Result<(), Str
     print_json(&update_status_payload(state_dir, operation_id)?)
 }
 
-fn status(paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
+fn status(
+    paths: Paths,
+    herdr_socket: PathBuf,
+    observation_mode: ObservationMode,
+) -> Result<(), String> {
     let response = if control::control_socket_is_live(&paths.control_socket, CONTROL_TIMEOUT) {
         send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT)?
     } else {
@@ -1227,6 +1393,7 @@ fn status(paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
             r#type: "status".to_owned(),
             version: 1,
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            observation_mode: observation_mode.as_str().to_owned(),
             ok: true,
             command: "status".to_owned(),
             error: None,
@@ -1266,24 +1433,36 @@ fn status(paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
     print_response(&response)
 }
 
-fn control_action(command: CommandKind, paths: Paths, herdr_socket: PathBuf) -> Result<(), String> {
-    let registration = send_command(
-        &paths.control_socket,
-        "register",
-        Some(&herdr_socket),
-        CONTROL_TIMEOUT,
-    )?;
-    if !registration.ok {
-        return Err(registration
-            .error
-            .unwrap_or_else(|| "Herdr endpoint registration failed".to_owned()));
+fn control_action(
+    command: CommandKind,
+    paths: Paths,
+    herdr_socket: PathBuf,
+    observation_mode: ObservationMode,
+) -> Result<(), String> {
+    let current = send_command(&paths.control_socket, "status", None, CONTROL_TIMEOUT)?;
+    require_observation_mode(&current, observation_mode)?;
+    if observation_mode.supports_herdr() {
+        let registration = send_command(
+            &paths.control_socket,
+            "register",
+            Some(&herdr_socket),
+            CONTROL_TIMEOUT,
+        )?;
+        if !registration.ok {
+            return Err(registration
+                .error
+                .unwrap_or_else(|| "Herdr endpoint registration failed".to_owned()));
+        }
     }
     let response = send_command(
         &paths.control_socket,
         command.as_str(),
-        Some(&herdr_socket),
+        observation_mode
+            .supports_herdr()
+            .then_some(herdr_socket.as_path()),
         CONTROL_TIMEOUT,
     )?;
+    require_observation_mode(&response, observation_mode)?;
     if !response.ok {
         return Err(response
             .error
@@ -1300,12 +1479,15 @@ enum ReadyFailure {
     Exiting(String),
     /// `deadline` passed without a ready response.
     TimedOut(String),
+    ModeMismatch(String),
 }
 
 impl ReadyFailure {
     fn into_message(self) -> String {
         match self {
-            Self::Exiting(message) | Self::TimedOut(message) => message,
+            Self::Exiting(message) | Self::TimedOut(message) | Self::ModeMismatch(message) => {
+                message
+            }
         }
     }
 }
@@ -1314,8 +1496,13 @@ fn wait_for_ready(
     paths: &Paths,
     herdr_socket: &Path,
     deadline: Instant,
+    observation_mode: ObservationMode,
 ) -> Result<ControlResponse, ReadyFailure> {
-    let herdr_socket = socket::canonical_endpoint(herdr_socket).map_err(ReadyFailure::TimedOut)?;
+    let herdr_socket = observation_mode
+        .supports_herdr()
+        .then(|| socket::canonical_endpoint(herdr_socket))
+        .transpose()
+        .map_err(ReadyFailure::TimedOut)?;
     let mut last_error = None;
     let mut registered = false;
     let mut answered = false;
@@ -1324,10 +1511,15 @@ fn wait_for_ready(
         // A newly spawned daemon already owns this endpoint. Read readiness
         // first; re-register only when the requested endpoint is not accepted.
         // This also avoids a forbidden mutation during an updater reservation.
-        let (command, endpoint) = if register_next && !registered {
-            ("register", Some(herdr_socket.as_path()))
+        let (command, endpoint) = if observation_mode.supports_herdr() {
+            let endpoint = herdr_socket.as_deref();
+            if register_next && !registered {
+                ("register", endpoint)
+            } else {
+                ("ready", endpoint)
+            }
         } else {
-            ("ready", Some(herdr_socket.as_path()))
+            ("ready", None)
         };
         match send_command(
             &paths.control_socket,
@@ -1341,6 +1533,20 @@ fn wait_for_ready(
                         .error
                         .unwrap_or_else(|| "desktop pet is shutting down".to_owned()),
                 ));
+            }
+            Ok(response) if response.observation_mode != observation_mode.as_str() => {
+                return Err(ReadyFailure::ModeMismatch(format!(
+                    "desktop-pet is already running with host {}; requested {}",
+                    response.observation_mode,
+                    observation_mode.as_str()
+                )));
+            }
+            Ok(response) if !observation_mode.supports_herdr() => {
+                answered = true;
+                if response.ok && response.ready && response.control_ready {
+                    return Ok(response);
+                }
+                last_error = response.error;
             }
             Ok(response) if !registered => {
                 answered = true;
@@ -1395,6 +1601,7 @@ fn spawn_daemon(
     startup_token: &str,
     automatic_start: bool,
     host_plugin_config_dir: Option<&Path>,
+    observation_mode: ObservationMode,
 ) -> Result<u32, String> {
     let executable = bundle::executable()
         .map_err(|error| format!("cannot resolve desktop-pet executable path: {error}"))?;
@@ -1422,6 +1629,8 @@ fn spawn_daemon(
     let mut command = Command::new(&executable);
     command
         .arg("daemon")
+        .arg("--host")
+        .arg(observation_mode.as_str())
         .arg("--socket")
         .arg(herdr_socket)
         .arg("--config-dir")
@@ -1431,6 +1640,7 @@ fn spawn_daemon(
         .env("HERDR_PLUGIN_CONFIG_DIR", &paths.config_dir)
         .env("HERDR_PLUGIN_STATE_DIR", &paths.state_dir)
         .env("HERDR_SOCKET_PATH", herdr_socket)
+        .env(OBSERVATION_MODE_ENV, observation_mode.as_str())
         .env("HERDR_DESKTOP_PET_STARTUP_TOKEN", startup_token)
         .env(
             "HERDR_DESKTOP_PET_AUTOMATIC_START",
@@ -1675,6 +1885,29 @@ where
                 return Err("duplicate --version".to_owned());
             }
             cli.version = true;
+            Ok(true)
+        }
+        "--host" => {
+            let value = arguments
+                .next()
+                .ok_or_else(|| "--host requires herdr, tern, or both".to_owned())?;
+            if cli
+                .host
+                .replace(value.parse::<ObservationMode>()?)
+                .is_some()
+            {
+                return Err("duplicate --host".to_owned());
+            }
+            Ok(true)
+        }
+        value if value.starts_with("--host=") => {
+            if cli
+                .host
+                .replace(value["--host=".len()..].parse::<ObservationMode>()?)
+                .is_some()
+            {
+                return Err("duplicate --host".to_owned());
+            }
             Ok(true)
         }
         "--socket" => {
@@ -2395,6 +2628,28 @@ fn validate_assets_path(path: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     #[test]
+    fn startup_capture_omits_default_mode_even_with_inherited_selection() {
+        for inherited in [None, Some("herdr"), Some("tern"), Some("both")] {
+            for mode in [
+                ObservationMode::Herdr,
+                ObservationMode::Tern,
+                ObservationMode::Both,
+            ] {
+                let captured = startup_environment(mode, |key| match key {
+                    OBSERVATION_MODE_ENV => inherited.map(str::to_owned),
+                    "HOME" => Some("/tmp/home".into()),
+                    _ => None,
+                });
+                assert_eq!(captured.get("HOME").map(String::as_str), Some("/tmp/home"));
+                assert_eq!(
+                    captured.get(OBSERVATION_MODE_ENV).map(String::as_str),
+                    (mode != ObservationMode::Herdr).then_some(mode.as_str())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn update_status_rejects_invalid_operation_identity_and_extra_arguments() {
         let valid = "0123456789abcdef0123456789abcdef";
         assert!(parse_cli(["update-status", valid].map(str::to_owned)).is_ok());
@@ -2485,6 +2740,27 @@ mod tests {
         .expect("cli");
         assert_eq!(cli.command, Some(CommandKind::Restart));
         assert_eq!(cli.socket, Some(PathBuf::from("/tmp/herdr.sock")));
+    }
+
+    #[test]
+    fn host_option_is_strict_and_unique() {
+        let parse = |args: &[&str]| parse_cli(args.iter().map(|arg| (*arg).to_owned()));
+        assert_eq!(
+            parse(&["start", "--host=tern"]).unwrap().host,
+            Some(ObservationMode::Tern)
+        );
+        assert_eq!(
+            parse(&["--host", "both", "ensure"]).unwrap().host,
+            Some(ObservationMode::Both)
+        );
+        for args in [
+            vec!["start", "--host=TERn"],
+            vec!["start", "--host="],
+            vec!["start", "--host"],
+            vec!["start", "--host=tern", "--host=herdr"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
     }
 
     #[test]
@@ -2913,6 +3189,7 @@ mod tests {
             r#type: "status".to_owned(),
             version: 1,
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            observation_mode: ObservationMode::Herdr.as_str().to_owned(),
             ok,
             command: "register".to_owned(),
             error: shutdown.then(|| "desktop pet is stopping".to_owned()),
@@ -2987,6 +3264,11 @@ mod tests {
                 assert_eq!(request["command"], "ready");
                 assert_eq!(request["endpoint"], expected.display().to_string());
             }
+            if reply.observation_mode == "tern" {
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["command"], "ready");
+                assert!(request["endpoint"].is_null());
+            }
             if vanish {
                 fs::remove_file(&control_socket).unwrap();
             }
@@ -3005,6 +3287,7 @@ mod tests {
             &paths,
             Path::new("/tmp/herdr.sock"),
             Instant::now() + STARTUP_TIMEOUT,
+            ObservationMode::Herdr,
         );
         server.join().unwrap();
         let _ = fs::remove_dir_all(paths.control_socket.parent().unwrap());
@@ -3023,6 +3306,7 @@ mod tests {
             &paths,
             Path::new("/tmp/herdr.sock"),
             Instant::now() + STARTUP_TIMEOUT,
+            ObservationMode::Herdr,
         );
         server.join().unwrap();
         let _ = fs::remove_dir_all(paths.control_socket.parent().unwrap());
@@ -3045,11 +3329,52 @@ mod tests {
             .display()
             .to_string();
         let (paths, server) = serve_one_reply(reply, false, Some(canonical.clone()));
-        let response =
-            wait_for_ready(&paths, &alias, Instant::now() + Duration::from_secs(2)).unwrap();
+        let response = wait_for_ready(
+            &paths,
+            &alias,
+            Instant::now() + Duration::from_secs(2),
+            ObservationMode::Herdr,
+        )
+        .unwrap();
         server.join().unwrap();
         let _ = fs::remove_dir_all(paths.control_socket.parent().unwrap());
         assert!(response.registration_accepted && response.ready);
         assert_ne!(response.herdr_socket, canonical.display().to_string());
+    }
+    #[test]
+    fn tern_readiness_neither_requires_nor_registers_a_herdr_endpoint() {
+        let mut reply = control_reply(true, false, false);
+        reply.observation_mode = "tern".to_owned();
+        reply.ready = true;
+        reply.control_ready = true;
+        let (paths, server) = serve_one_reply(reply, false, None);
+        let response = wait_for_ready(
+            &paths,
+            Path::new("/tmp/herdr-not-running.sock"),
+            Instant::now() + Duration::from_secs(2),
+            ObservationMode::Tern,
+        )
+        .unwrap();
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(paths.control_socket.parent().unwrap());
+        assert_eq!(response.observation_mode, "tern");
+        assert!(!response.registration_accepted);
+    }
+
+    #[test]
+    fn readiness_rejects_existing_daemon_with_different_host() {
+        let (paths, server) = serve_one_reply(control_reply(true, true, false), false, None);
+        let result = wait_for_ready(
+            &paths,
+            Path::new("/tmp/herdr-not-running.sock"),
+            Instant::now() + Duration::from_secs(2),
+            ObservationMode::Tern,
+        );
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(paths.control_socket.parent().unwrap());
+        assert!(
+            matches!(result, Err(ReadyFailure::ModeMismatch(_))),
+            "{result:?}"
+        );
     }
 }

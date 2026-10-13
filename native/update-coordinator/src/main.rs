@@ -11,7 +11,10 @@ fn run() -> Result<(), String> {
         if args.next().is_some() {
             return Err("update-capabilities accepts no arguments".into());
         }
-        println!("{{\"protocol\":{}}}", protocol::UPDATER_PROTOCOL);
+        println!(
+            "{{\"protocol\":{},\"observation_mode\":1}}",
+            protocol::UPDATER_PROTOCOL
+        );
         return Ok(());
     }
     let mut state_dir = None;

@@ -68,7 +68,7 @@ pub struct UpdateControlReply {
     pub accepted: bool,
     pub detail: String,
 }
-pub const UPDATER_PROTOCOL: u32 = 2;
+pub const UPDATER_PROTOCOL: u32 = 3;
 
 pub fn validate_operation_id(id: &str) -> Result<(), String> {
     if id.len() != 32
@@ -288,7 +288,7 @@ pub fn latest_operation(state_dir: &Path) -> Result<Option<OperationRecord>, Str
     check_dir(&updates, false)?;
     let marker = updates.join("profile.reservation.json");
     if !missing_file(&marker) {
-        let scope = reservation(&owned_private_file(&marker, 4096)?)?;
+        let scope = reservation(&owned_private_file(&marker, 16384)?)?;
         if scope.state_dir != state_dir {
             return Err("reserved update belongs to a different profile".into());
         }
@@ -350,20 +350,29 @@ fn reject_legacy_marker(global: &Path, origin: &InstallOrigin) -> Result<(), Str
     Ok(())
 }
 
-fn lock_legacy_key(
+fn lock_scope(
     global: &Path,
-    origin: &InstallOrigin,
-    key: &str,
-) -> Result<Option<File>, String> {
-    legacy_key(origin)
-        .filter(|old| old != key)
-        .map(|old| {
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+    keys: &[String],
+) -> Result<Vec<File>, String> {
+    let mut lock_keys = keys.to_vec();
+    for origin in std::iter::once(source).chain(target) {
+        if let Some(old) = legacy_key(origin) {
+            lock_keys.push(old);
+        }
+    }
+    lock_keys.sort_unstable();
+    lock_keys.dedup();
+    lock_keys
+        .iter()
+        .map(|key| {
             lock_with_mode(
-                &global.join(format!("{old}.lock")),
+                &global.join(format!("{key}.lock")),
                 libc::LOCK_EX | libc::LOCK_NB,
             )
         })
-        .transpose()
+        .collect()
 }
 /// UID-wide durable private root outside replaceable app/checkout, shared by profiles.
 pub fn global_updates() -> Result<PathBuf, String> {
@@ -422,24 +431,169 @@ fn lock_with_mode(path: &Path, mode: libc::c_int) -> Result<File, String> {
     }
     Ok(file)
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reservation {
     version: u32,
     operation_id: String,
-    installation_key: String,
+    source: InstallOrigin,
+    target: Option<InstallOrigin>,
+    keys: Vec<String>,
     state_dir: PathBuf,
     stop_generation: u64,
     control_token: String,
+    startup_origin: Option<InstallOrigin>,
     startup_token: Option<String>,
 }
 
-fn reservation(bytes: &[u8]) -> Result<Reservation, String> {
-    let marker: Reservation = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    if marker.version != UPDATER_PROTOCOL {
-        return Err("unsupported legacy reservation; preserve original marker".into());
+fn selectable_origin(
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+    origin: &InstallOrigin,
+) -> bool {
+    if origin == source || target == Some(origin) {
+        return true;
     }
+    if target.is_some() {
+        return false;
+    }
+    match (source, origin) {
+        (
+            InstallOrigin::Herdr {
+                host,
+                host_config_dir,
+                checkout_root,
+                plugin_root,
+                source,
+                requested_ref,
+                enabled,
+                ..
+            },
+            InstallOrigin::Herdr {
+                host: actual_host,
+                host_config_dir: actual_config,
+                checkout_root: actual_checkout,
+                plugin_root: actual_plugin,
+                source: actual_source,
+                requested_ref: actual_ref,
+                resolved_commit: Some(commit),
+                enabled: actual_enabled,
+            },
+        ) => {
+            host == actual_host
+                && host_config_dir == actual_config
+                && checkout_root == actual_checkout
+                && plugin_root == actual_plugin
+                && source == actual_source
+                && requested_ref == actual_ref
+                && enabled == actual_enabled
+                && commit.len() == 40
+                && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }
+        _ => false,
+    }
+}
+
+fn valid_reservation(marker: &Reservation) -> Result<(), String> {
+    if marker.version != UPDATER_PROTOCOL
+        || validate_operation_id(&marker.operation_id).is_err()
+        || marker.keys != installation_keys(&marker.source, marker.target.as_ref())?
+        || marker.startup_origin.is_some() != marker.startup_token.is_some()
+        || marker.startup_origin.as_ref().is_some_and(|origin| {
+            !selectable_origin(&marker.source, marker.target.as_ref(), origin)
+        })
+    {
+        return Err("unsupported reservation; preserve original marker".into());
+    }
+    Ok(())
+}
+fn reservation(bytes: &[u8]) -> Result<Reservation, String> {
+    let marker: Reservation = serde_json::from_slice(bytes)
+        .map_err(|_| "unsupported reservation; preserve original marker")?;
+    valid_reservation(&marker)?;
     Ok(marker)
+}
+
+fn installation_keys(
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+) -> Result<Vec<String>, String> {
+    let mut keys = vec![installation_key(source)?];
+    if let Some(target) = target {
+        keys.push(installation_key(target)?);
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    Ok(keys)
+}
+
+// The atomic index is written before any individual marker and removed last.
+// Thus a crash between writes never leaves an unguarded root, even if the
+// profile or one of the installation markers has not yet been created.
+fn scopes_path(global: &Path) -> PathBuf {
+    global.join("installation-scopes.json")
+}
+fn scopes(global: &Path) -> Result<Vec<Reservation>, String> {
+    let path = scopes_path(global);
+    if missing_file(&path) {
+        return Ok(Vec::new());
+    }
+    let bytes = owned_private_file(&path, 1024 * 1024)?;
+    let entries: Vec<Reservation> = serde_json::from_slice(&bytes)
+        .map_err(|_| "unsupported installation scopes; preserve original bytes")?;
+    if entries.len() > 256 {
+        return Err("installation scope registry exceeds bound".into());
+    }
+    for entry in &entries {
+        valid_reservation(entry)?;
+    }
+    Ok(entries)
+}
+fn write_scopes(global: &Path, entries: &[Reservation]) -> Result<(), String> {
+    write_private_bytes(
+        &scopes_path(global),
+        &serde_json::to_vec(entries).map_err(|e| e.to_string())?,
+        0o600,
+    )
+}
+fn marker_path(global: &Path, key: &str) -> PathBuf {
+    global.join(format!("{key}.reservation.json"))
+}
+fn marker_at(path: &Path) -> Result<Option<Reservation>, String> {
+    if missing_file(path) {
+        Ok(None)
+    } else {
+        reservation(&owned_private_file(path, 16384)?).map(Some)
+    }
+}
+fn markers_match(global: &Path, data: &Reservation) -> Result<bool, String> {
+    if marker_at(&profile_marker(&data.state_dir)?)?.as_ref() != Some(data) {
+        return Ok(false);
+    }
+    for key in &data.keys {
+        if marker_at(&marker_path(global, key))?.as_ref() != Some(data) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+fn write_markers(global: &Path, data: &Reservation) -> Result<(), String> {
+    let bytes = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+    write_private_bytes(&profile_marker(&data.state_dir)?, &bytes, 0o600)?;
+    for key in &data.keys {
+        write_private_bytes(&marker_path(global, key), &bytes, 0o600)?;
+    }
+    Ok(())
+}
+fn scope_for<'a>(
+    entries: &'a [Reservation],
+    op: &str,
+    state_dir: &Path,
+) -> Result<&'a Reservation, String> {
+    entries
+        .iter()
+        .find(|entry| entry.operation_id == op && entry.state_dir == state_dir)
+        .ok_or_else(|| "operation has no durable installation scope".into())
 }
 fn missing_file(path: &Path) -> bool {
     fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
@@ -466,18 +620,6 @@ pub fn start_allowed(
     expected_generation: Option<u64>,
     updater_token: Option<&str>,
 ) -> Result<(), String> {
-    if matches!(origin, InstallOrigin::Unknown { .. }) {
-        let current = generation(state_dir)?;
-        if expected_generation.is_some_and(|generation| generation != current) {
-            return Err("user requested stop after updater prepared startup".into());
-        }
-        let reservation = profile_marker(state_dir)?;
-        if !missing_file(&reservation) {
-            owned_private_file(&reservation, 4096)?;
-            return Err("unsupported installation cannot start a reserved profile".into());
-        }
-        return Ok(());
-    }
     start_allowed_at(
         &global_updates()?,
         origin,
@@ -514,34 +656,42 @@ fn start_allowed_locked(
         return Err("user requested stop after updater prepared startup".into());
     }
     let profile_path = profile_marker(state_dir)?;
-    let key = match installation_key(origin) {
-        Ok(key) => key,
-        Err(_) if missing_file(&profile_path) => return Ok(()),
-        Err(error) => return Err(error),
+    let key = match origin {
+        InstallOrigin::Unknown { .. } => None,
+        _ => {
+            reject_legacy_marker(global, origin)?;
+            Some(installation_key(origin)?)
+        }
     };
-    reject_legacy_marker(global, origin)?;
-    if !missing_file(&profile_path) {
-        let active = reservation(&owned_private_file(&profile_path, 4096)?)?;
-        if active.state_dir != state_dir
-            || active.installation_key != key
-            || expected_generation != Some(active.stop_generation)
+    let entries = scopes(global)?;
+    let relevant = entries.iter().filter(|entry| {
+        entry.state_dir == state_dir || key.as_ref().is_some_and(|key| entry.keys.contains(key))
+    });
+    let mut admitted = false;
+    for entry in relevant {
+        if entry.state_dir != state_dir
+            || entry.startup_origin.as_ref() != Some(origin)
+            || expected_generation != Some(entry.stop_generation)
             || updater_token.is_none()
-            || updater_token != active.startup_token.as_deref()
+            || updater_token != entry.startup_token.as_deref()
+            || !markers_match(global, entry)?
         {
-            return Err("profile reserved by updater".into());
+            return Err("installation or profile reserved by updater".into());
+        }
+        admitted = true;
+    }
+    if let Some(marker) = marker_at(&profile_path)? {
+        if !admitted || marker.state_dir != state_dir {
+            return Err("profile reservation lacks matching durable scope".into());
         }
     }
-    let path = global.join(format!("{key}.reservation.json"));
-    if !missing_file(&path) {
-        let reservation = reservation(&owned_private_file(&path, 4096)?)?;
-        if reservation.state_dir != state_dir
-            || reservation.installation_key != key
-            || expected_generation != Some(reservation.stop_generation)
-            || updater_token.is_none()
-            || updater_token != reservation.startup_token.as_deref()
-        {
-            return Err("installation reserved by updater".into());
+    if let Some(key) = key {
+        if marker_at(&marker_path(global, &key))?.is_some() && !admitted {
+            return Err("installation reservation lacks matching durable scope".into());
         }
+    }
+    if updater_token.is_some() && !admitted {
+        return Err("updater start token has no active full-scope reservation".into());
     }
     Ok(())
 }
@@ -680,35 +830,43 @@ pub fn conflicting_active_profiles(
         .collect())
 }
 
-/// Control requests must also match expected live instance and same-UID peer, checked by daemon.
-pub fn verify_control(
-    origin: &InstallOrigin,
+/// Control requests must match both the original and proposed installation scope.
+pub fn verify_control_for(
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
     state_dir: &Path,
     operation_id: &str,
     token: &str,
 ) -> Result<(), String> {
-    verify_control_at(&global_updates()?, origin, state_dir, operation_id, token)
+    verify_control_at(
+        &global_updates()?,
+        source,
+        target,
+        state_dir,
+        operation_id,
+        token,
+    )
 }
 fn verify_control_at(
     global: &Path,
-    origin: &InstallOrigin,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
     state_dir: &Path,
     operation_id: &str,
     token: &str,
 ) -> Result<(), String> {
     validate_operation_id(operation_id)?;
     let _gate = lock(&global.join("gate.lock"))?;
-    reject_legacy_marker(global, origin)?;
-    let key = installation_key(origin)?;
-    let marker = global.join(format!("{key}.reservation.json"));
-    let data = reservation(&owned_private_file(&marker, 4096)?)?;
-    if data.operation_id != operation_id
-        || data.installation_key != key
-        || data.state_dir != state_dir
+    let entries = scopes(global)?;
+    let data = scope_for(&entries, operation_id, state_dir)?;
+    if &data.source != source
+        || data.target.as_ref() != target
+        || data.keys != installation_keys(source, target)?
         || data.control_token != token
         || generation(state_dir)? != data.stop_generation
+        || !markers_match(global, data)?
     {
-        return Err("updater request has no valid same-profile reservation".into());
+        return Err("updater request has no valid full-scope reservation".into());
     }
     Ok(())
 }
@@ -731,87 +889,195 @@ fn record_user_stop_at(global: &Path, state_dir: &Path) -> Result<u64, String> {
     )?;
     Ok(next)
 }
-/// Durable reservation survives helper death. Only explicit recovery after disk reconciliation
-/// releases it; dropping the lock never clears the marker.
+/// Durable atomic scope index gates both roots even across partial marker writes.
+/// Dropping the locks never clears the scope; release follows reconciliation.
 pub struct InstallationReservation {
-    _lock: File,
-    _legacy_lock: Option<File>,
+    _locks: Vec<File>,
     _profile_lock: File,
-    key: String,
+    source: InstallOrigin,
+    target: Option<InstallOrigin>,
     operation_id: String,
     state_dir: PathBuf,
     global_dir: PathBuf,
     control_token: String,
     pub stop_generation: u64,
 }
+/// Read-only inspection of the authoritative scope index. This never repairs
+/// partially written markers or treats selection as startup admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReservationSnapshot {
+    pub startup_origin: Option<InstallOrigin>,
+    pub markers_complete: bool,
+}
+
+pub fn reservation_snapshot(
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+    state_dir: &Path,
+    operation_id: &str,
+) -> Result<Option<ReservationSnapshot>, String> {
+    reservation_snapshot_at(&global_updates()?, source, target, state_dir, operation_id)
+}
+
+fn reservation_snapshot_at(
+    global: &Path,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+    state_dir: &Path,
+    operation_id: &str,
+) -> Result<Option<ReservationSnapshot>, String> {
+    validate_operation_id(operation_id)?;
+    check_dir(state_dir, false)?;
+    let updates = state_dir.join("updates");
+    if !missing_file(&updates) {
+        check_dir(&updates, false)?;
+    }
+    let keys = installation_keys(source, target)?;
+    let _gate = lock(&global.join("gate.lock"))?;
+    for origin in std::iter::once(source).chain(target) {
+        reject_legacy_marker(global, origin)?;
+    }
+    let entries = scopes(global)?;
+    let found = entries.iter().find(|entry| {
+        entry.operation_id == operation_id
+            || entry.state_dir == state_dir
+            || entry.keys.iter().any(|key| keys.contains(key))
+    });
+    let paths = std::iter::once(updates.join("profile.reservation.json"))
+        .chain(keys.iter().map(|key| marker_path(global, key)));
+    match found {
+        Some(entry)
+            if entry.operation_id == operation_id
+                && entry.state_dir == state_dir
+                && &entry.source == source
+                && entry.target.as_ref() == target
+                && entry.keys == keys =>
+        {
+            let mut markers_complete = true;
+            for path in paths {
+                match marker_at(&path)? {
+                    Some(marker) if compatible_marker(&marker, entry) => {
+                        markers_complete &= marker == *entry;
+                    }
+                    Some(_) => {
+                        return Err("reservation evidence conflicts with full scope".into());
+                    }
+                    None => markers_complete = false,
+                }
+            }
+            Ok(Some(ReservationSnapshot {
+                startup_origin: entry.startup_origin.clone(),
+                markers_complete,
+            }))
+        }
+        Some(_) => Err("another update has reserved this profile or installation".into()),
+        None => {
+            for path in paths {
+                if !missing_file(&path) {
+                    return Err(
+                        "reservation marker has no durable scope; preserve original bytes".into(),
+                    );
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Read-only discovery includes index-only reservations left by an interrupted
+/// marker write; incompatible evidence is never interpreted as absence.
+pub fn reservation_exists(
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+    state_dir: &Path,
+    operation_id: &str,
+) -> Result<bool, String> {
+    reservation_exists_at(&global_updates()?, source, target, state_dir, operation_id)
+}
+fn reservation_exists_at(
+    global: &Path,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
+    state_dir: &Path,
+    operation_id: &str,
+) -> Result<bool, String> {
+    Ok(reservation_snapshot_at(global, source, target, state_dir, operation_id)?.is_some())
+}
+
 pub fn reserve_install(
-    origin: &InstallOrigin,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
     state_dir: &Path,
     operation_id: &str,
 ) -> Result<InstallationReservation, String> {
-    reserve_install_at(&global_updates()?, origin, state_dir, operation_id)
+    reserve_install_at(&global_updates()?, source, target, state_dir, operation_id)
 }
 fn reserve_install_at(
     global: &Path,
-    origin: &InstallOrigin,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
     state_dir: &Path,
     operation_id: &str,
 ) -> Result<InstallationReservation, String> {
     validate_operation_id(operation_id)?;
     check_dir(global, false)?;
-    let key = installation_key(origin)?;
+    let keys = installation_keys(source, target)?;
     let profile_lock = lock_with_mode(
         &private_updates(state_dir)?.join("profile.lock"),
         libc::LOCK_EX | libc::LOCK_NB,
     )?;
-    let install_lock = lock_with_mode(
-        &global.join(format!("{key}.lock")),
-        libc::LOCK_EX | libc::LOCK_NB,
-    )?;
-    let legacy_lock = lock_legacy_key(global, origin, &key)?;
+    let locks = lock_scope(global, source, target, &keys)?;
     let _gate = lock(&global.join("gate.lock"))?;
-    reject_legacy_marker(global, origin)?;
-    let marker = global.join(format!("{key}.reservation.json"));
-    if !missing_file(&marker) {
-        return Err("installation already reserved; inspect/recover previous operation".into());
+    let mut entries = scopes(global)?;
+    for origin in std::iter::once(source).chain(target) {
+        reject_legacy_marker(global, origin)?;
+        if active_for_origin(global, origin)?
+            .iter()
+            .any(|entry| entry.state_dir != state_dir && live(entry.pid))
+        {
+            return Err("another active profile shares the installation".into());
+        }
     }
-    let scoped_marker = profile_marker(state_dir)?;
-    if !missing_file(&scoped_marker) {
-        return Err("profile already reserved; inspect/recover previous operation".into());
-    }
-    if active_for_origin(global, origin)?
-        .iter()
-        .any(|e| e.state_dir != state_dir && live(e.pid))
+    if entries.iter().any(|entry| {
+        entry.state_dir == state_dir
+            || entry.operation_id == operation_id
+            || entry.keys.iter().any(|key| keys.contains(key))
+    }) || !missing_file(&profile_marker(state_dir)?)
+        || keys
+            .iter()
+            .any(|key| !missing_file(&marker_path(global, key)))
     {
-        return Err("another active profile shares the installation".into());
+        return Err(
+            "installation or profile already reserved; inspect/recover previous operation".into(),
+        );
+    }
+    if entries.len() >= 256 {
+        return Err("installation scope registry is full".into());
     }
     let stop_generation = generation(state_dir)?;
-    let mut random = [0u8; 32];
-    use std::io::Read;
-    File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut random))
-        .map_err(|e| e.to_string())?;
-    let control_token: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let data = serde_json::to_vec(&Reservation {
+    let control_token = new_token()?;
+    let data = Reservation {
         version: UPDATER_PROTOCOL,
         operation_id: operation_id.into(),
-        installation_key: key.clone(),
+        source: source.clone(),
+        target: target.cloned(),
+        keys,
         state_dir: state_dir.into(),
         stop_generation,
         control_token: control_token.clone(),
+        startup_origin: None,
         startup_token: None,
-    })
-    .map_err(|e| e.to_string())?;
-    write_private_bytes(&scoped_marker, &data, 0o600)?;
-    if let Err(error) = write_private_bytes(&marker, &data, 0o600) {
-        let _ = fs::remove_file(&scoped_marker);
-        return Err(error);
-    }
+    };
+    entries.push(data.clone());
+    write_scopes(global, &entries)?;
+    // Keep the index after a failed marker write: it is the durable barrier
+    // for both roots, and recovery completes the missing individual markers.
+    write_markers(global, &data)?;
     Ok(InstallationReservation {
-        _lock: install_lock,
-        _legacy_lock: legacy_lock,
+        _locks: locks,
         _profile_lock: profile_lock,
-        key,
+        source: source.clone(),
+        target: target.cloned(),
         operation_id: operation_id.into(),
         state_dir: state_dir.into(),
         global_dir: global.into(),
@@ -819,78 +1085,107 @@ fn reserve_install_at(
         stop_generation,
     })
 }
-/// Reattach to a marker after coordinator death. This does not infer that disk state is safe:
-/// caller must reconcile journal, manager process and actual registered installation.
+fn new_token() -> Result<String, String> {
+    let mut random = [0u8; 32];
+    use std::io::Read;
+    File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut random))
+        .map_err(|e| e.to_string())?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(64);
+    for byte in random {
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 15) as usize] as char);
+    }
+    Ok(token)
+}
+fn compatible_marker(actual: &Reservation, expected: &Reservation) -> bool {
+    actual == expected
+        || (actual.startup_origin.is_none()
+            && actual.startup_token.is_none()
+            && actual.version == expected.version
+            && actual.operation_id == expected.operation_id
+            && actual.source == expected.source
+            && actual.target == expected.target
+            && actual.keys == expected.keys
+            && actual.state_dir == expected.state_dir
+            && actual.stop_generation == expected.stop_generation
+            && actual.control_token == expected.control_token)
+}
+/// Reattach to an atomic scope after coordinator death; callers still reconcile
+/// disk state and journal before they start or release anything.
 pub fn recover_reservation(
-    origin: &InstallOrigin,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
     state_dir: &Path,
     operation_id: &str,
 ) -> Result<InstallationReservation, String> {
-    recover_reservation_at(&global_updates()?, origin, state_dir, operation_id)
+    recover_reservation_at(&global_updates()?, source, target, state_dir, operation_id)
 }
 fn recover_reservation_at(
     global: &Path,
-    origin: &InstallOrigin,
+    source: &InstallOrigin,
+    target: Option<&InstallOrigin>,
     state_dir: &Path,
     operation_id: &str,
 ) -> Result<InstallationReservation, String> {
     validate_operation_id(operation_id)?;
-    let key = installation_key(origin)?;
+    let keys = installation_keys(source, target)?;
     let profile_lock = lock_with_mode(
         &private_updates(state_dir)?.join("profile.lock"),
         libc::LOCK_EX | libc::LOCK_NB,
     )?;
-    let install_lock = lock_with_mode(
-        &global.join(format!("{key}.lock")),
-        libc::LOCK_EX | libc::LOCK_NB,
-    )?;
-    let legacy_lock = lock_legacy_key(global, origin, &key)?;
+    let locks = lock_scope(global, source, target, &keys)?;
     let _gate = lock(&global.join("gate.lock"))?;
-    reject_legacy_marker(global, origin)?;
-    let marker = global.join(format!("{key}.reservation.json"));
-    let scoped_marker = profile_marker(state_dir)?;
-    let scoped_bytes = owned_private_file(&scoped_marker, 4096)?;
-    let scoped = reservation(&scoped_bytes)?;
-    if scoped.operation_id != operation_id
-        || scoped.installation_key != key
-        || scoped.state_dir != state_dir
+    for origin in std::iter::once(source).chain(target) {
+        reject_legacy_marker(global, origin)?;
+    }
+    let entries = scopes(global)?;
+    let data = scope_for(&entries, operation_id, state_dir)?;
+    if &data.source != source || data.target.as_ref() != target || data.keys != keys {
+        return Err("recovery full installation scope does not match".into());
+    }
+    for path in std::iter::once(profile_marker(state_dir)?)
+        .chain(keys.iter().map(|key| marker_path(global, key)))
     {
-        return Err("profile recovery marker does not match installation".into());
-    }
-    if !missing_file(&marker) {
-        let marker_bytes = owned_private_file(&marker, 4096)?;
-        let data = reservation(&marker_bytes)?;
-        if data.operation_id != operation_id
-            || data.installation_key != key
-            || data.state_dir != state_dir
-            || data.control_token != scoped.control_token
-            || data.stop_generation != scoped.stop_generation
-        {
-            return Err("recovery scope does not match durable installation reservation".into());
-        }
-        if data.startup_token != scoped.startup_token {
-            if scoped.startup_token.is_some() {
-                return Err("startup authorization scopes conflict during recovery".into());
+        if let Some(marker) = marker_at(&path)? {
+            if !compatible_marker(&marker, data) {
+                return Err("recovery marker conflicts with durable installation scope".into());
             }
-            write_private_bytes(&scoped_marker, &marker_bytes, 0o600)?;
         }
-    } else {
-        write_private_bytes(&marker, &scoped_bytes, 0o600)?;
     }
+    write_markers(global, data)?;
     Ok(InstallationReservation {
-        _lock: install_lock,
-        _legacy_lock: legacy_lock,
+        _locks: locks,
         _profile_lock: profile_lock,
-        key,
+        source: source.clone(),
+        target: target.cloned(),
         operation_id: operation_id.into(),
         state_dir: state_dir.into(),
         global_dir: global.into(),
-        control_token: scoped.control_token,
-        stop_generation: scoped.stop_generation,
+        control_token: data.control_token.clone(),
+        stop_generation: data.stop_generation,
     })
 }
 
 impl InstallationReservation {
+    fn checked_scope<'a>(&self, entries: &'a [Reservation]) -> Result<&'a Reservation, String> {
+        let data = scope_for(entries, &self.operation_id, &self.state_dir)?;
+        if data.source != self.source
+            || data.target != self.target
+            || data.control_token != self.control_token
+            || data.stop_generation != self.stop_generation
+        {
+            return Err("reservation full-scope ownership mismatch".into());
+        }
+        Ok(data)
+    }
+    fn selected(&self, origin: &InstallOrigin) -> Result<(), String> {
+        if !selectable_origin(&self.source, self.target.as_ref(), origin) {
+            return Err("startup origin is outside reserved installations".into());
+        }
+        Ok(())
+    }
     pub fn control_token(&self) -> &str {
         &self.control_token
     }
@@ -898,101 +1193,84 @@ impl InstallationReservation {
         let _gate = lock(&self.global_dir.join("gate.lock"))?;
         Ok(generation(&self.state_dir)? != self.stop_generation)
     }
-
-    /// Explicit recovery may reuse an issued token only while both scopes still agree.
-    pub fn issued_start_token(&self) -> Result<Option<String>, String> {
+    pub fn issued_start_token_for(&self, origin: &InstallOrigin) -> Result<Option<String>, String> {
+        self.selected(origin)?;
         let _gate = lock(&self.global_dir.join("gate.lock"))?;
         if generation(&self.state_dir)? != self.stop_generation {
             return Err("user stop superseded updater start".into());
         }
-        let marker = self
-            .global_dir
-            .join(format!("{}.reservation.json", self.key));
-        let data = reservation(&owned_private_file(&marker, 4096)?)?;
-        let scoped = reservation(&owned_private_file(
-            &profile_marker(&self.state_dir)?,
-            4096,
-        )?)?;
-        if data.operation_id != self.operation_id
-            || data.installation_key != self.key
-            || data.state_dir != self.state_dir
-            || data.control_token != self.control_token
-            || data.stop_generation != self.stop_generation
-            || scoped.operation_id != data.operation_id
-            || scoped.installation_key != data.installation_key
-            || scoped.state_dir != data.state_dir
-            || scoped.control_token != data.control_token
-            || scoped.stop_generation != data.stop_generation
-            || scoped.startup_token != data.startup_token
-        {
+        let entries = scopes(&self.global_dir)?;
+        let data = self.checked_scope(&entries)?;
+        if !markers_match(&self.global_dir, data)? {
             return Err("startup reservation scopes do not match".into());
         }
-        Ok(data.startup_token)
+        if data
+            .startup_origin
+            .as_ref()
+            .is_some_and(|selected| selected != origin)
+        {
+            return Err("startup authorization belongs to another installation".into());
+        }
+        Ok(data.startup_token.clone())
     }
-    /// After successful manager validation, authorize exactly this profile's updater startup.
-    pub fn authorize_start(&self) -> Result<String, String> {
+    /// The selected candidate or verified original is the only admissible start.
+    pub fn authorize_start_for(&self, origin: &InstallOrigin) -> Result<String, String> {
+        self.selected(origin)?;
         let _gate = lock(&self.global_dir.join("gate.lock"))?;
         if generation(&self.state_dir)? != self.stop_generation {
             return Err("user stop superseded updater start".into());
         }
-        let marker = self
-            .global_dir
-            .join(format!("{}.reservation.json", self.key));
-        let mut data = reservation(&owned_private_file(&marker, 4096)?)?;
-        if data.operation_id != self.operation_id
-            || data.installation_key != self.key
-            || data.state_dir != self.state_dir
-        {
-            return Err("reservation ownership mismatch".into());
+        let mut entries = scopes(&self.global_dir)?;
+        let data = self.checked_scope(&entries)?;
+        if !markers_match(&self.global_dir, data)? {
+            return Err("startup reservation scopes do not match".into());
         }
         if data.startup_token.is_some() {
             return Err("startup authorization already issued".into());
         }
-        let mut random = [0u8; 32];
-        use std::io::Read;
-        File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(&mut random))
-            .map_err(|e| e.to_string())?;
-        let token: String = random.iter().map(|b| format!("{b:02x}")).collect();
-        data.startup_token = Some(token.clone());
-        let bytes = serde_json::to_vec(&data).map_err(|e| e.to_string())?;
-        write_private_bytes(&marker, &bytes, 0o600)?;
-        write_private_bytes(&profile_marker(&self.state_dir)?, &bytes, 0o600)?;
+        let token = new_token()?;
+        let index = entries
+            .iter()
+            .position(|entry| {
+                entry.operation_id == self.operation_id && entry.state_dir == self.state_dir
+            })
+            .ok_or("operation has no durable installation scope")?;
+        entries[index].startup_origin = Some(origin.clone());
+        entries[index].startup_token = Some(token.clone());
+        // Atomic index first: a partial authorization cannot admit either root.
+        write_scopes(&self.global_dir, &entries)?;
+        write_markers(&self.global_dir, &entries[index])?;
         Ok(token)
     }
     /// Release only after durable final result and reconciled installation state.
     pub fn release(self) -> Result<(), String> {
         let _gate = lock(&self.global_dir.join("gate.lock"))?;
-        let marker = self
-            .global_dir
-            .join(format!("{}.reservation.json", self.key));
-        let scoped_marker = profile_marker(&self.state_dir)?;
-        let scoped = reservation(&owned_private_file(&scoped_marker, 4096)?)?;
-        if scoped.operation_id != self.operation_id
-            || scoped.installation_key != self.key
-            || scoped.state_dir != self.state_dir
-            || scoped.control_token != self.control_token
-        {
-            return Err("profile reservation ownership mismatch".into());
-        }
-        if !missing_file(&marker) {
-            let data = reservation(&owned_private_file(&marker, 4096)?)?;
-            if data.operation_id != self.operation_id
-                || data.installation_key != self.key
-                || data.state_dir != self.state_dir
-                || data.control_token != scoped.control_token
-                || data.stop_generation != scoped.stop_generation
-            {
-                return Err("installation reservation ownership mismatch".into());
+        let mut entries = scopes(&self.global_dir)?;
+        let data = self.checked_scope(&entries)?;
+        let paths = std::iter::once(profile_marker(&self.state_dir)?)
+            .chain(
+                data.keys
+                    .iter()
+                    .map(|key| marker_path(&self.global_dir, key)),
+            )
+            .collect::<Vec<_>>();
+        for path in &paths {
+            if let Some(marker) = marker_at(path)? {
+                if !compatible_marker(&marker, &data) {
+                    return Err("release marker conflicts with durable installation scope".into());
+                }
             }
         }
-        if !missing_file(&marker) {
-            fs::remove_file(&marker).map_err(|e| e.to_string())?;
-            sync_parent(&marker)?;
+        for path in &paths {
+            if !missing_file(path) {
+                fs::remove_file(path).map_err(|e| e.to_string())?;
+                sync_parent(path)?;
+            }
         }
-        fs::remove_file(&scoped_marker).map_err(|e| e.to_string())?;
-        sync_parent(&scoped_marker)?;
-        Ok(())
+        entries.retain(|entry| {
+            entry.operation_id != self.operation_id || entry.state_dir != self.state_dir
+        });
+        write_scopes(&self.global_dir, &entries)
     }
 }
 
@@ -1015,6 +1293,318 @@ mod tests {
         (dir, global, state, origin)
     }
 
+    fn herdr_source(state: &Path) -> InstallOrigin {
+        let root = state.parent().unwrap();
+        InstallOrigin::Herdr {
+            host: root.join("host"),
+            host_config_dir: root.join("host-config"),
+            checkout_root: root.join("checkout"),
+            plugin_root: root.join("checkout/plugin"),
+            source: "owner/repository".into(),
+            requested_ref: Some("beta".into()),
+            resolved_commit: Some("a".repeat(40)),
+            enabled: true,
+        }
+    }
+
+    fn herdr_commit(source: &InstallOrigin, commit: &str) -> InstallOrigin {
+        let mut next = source.clone();
+        if let InstallOrigin::Herdr {
+            resolved_commit, ..
+        } = &mut next
+        {
+            *resolved_commit = Some(commit.into());
+        }
+        next
+    }
+
+    #[test]
+    fn targetless_herdr_selects_exact_actual_commit_and_admits_only_its_token() {
+        let (_dir, global, state, _) = fixture();
+        let source = herdr_source(&state);
+        let candidate = herdr_commit(&source, &"b".repeat(40));
+        let other_commit = herdr_commit(&source, &"c".repeat(40));
+        let op = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, None, &state, op).unwrap();
+        let token = lease.authorize_start_for(&candidate).unwrap();
+        assert_eq!(
+            lease.issued_start_token_for(&candidate).unwrap(),
+            Some(token.clone())
+        );
+        assert!(lease.issued_start_token_for(&source).is_err());
+        assert!(lease.authorize_start_for(&other_commit).is_err());
+        assert!(lease.authorize_start_for(&source).is_err());
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: Some(candidate.clone()),
+                markers_complete: true,
+            })
+        );
+        start_allowed_at(&global, &candidate, &state, Some(0), Some(&token)).unwrap();
+        for origin in [&source, &other_commit] {
+            assert!(start_allowed_at(&global, origin, &state, Some(0), Some(&token)).is_err());
+        }
+        assert!(start_allowed_at(&global, &candidate, &state, None, Some(&token)).is_err());
+        assert!(start_allowed_at(&global, &candidate, &state, Some(0), None).is_err());
+        assert!(start_allowed_at(&global, &candidate, &state, Some(0), Some("wrong")).is_err());
+        lease.release().unwrap();
+
+        let lease = reserve_install_at(&global, &source, None, &state, op).unwrap();
+        let old_token = lease.authorize_start_for(&source).unwrap();
+        assert_eq!(
+            lease.issued_start_token_for(&source).unwrap(),
+            Some(old_token.clone())
+        );
+        assert!(lease.issued_start_token_for(&candidate).is_err());
+        assert!(lease.authorize_start_for(&candidate).is_err());
+        assert!(start_allowed_at(&global, &candidate, &state, Some(0), Some(&old_token)).is_err());
+        lease.release().unwrap();
+    }
+
+    #[test]
+    fn targetless_herdr_rejects_scope_drift_invalid_commit_and_explicit_target_delta() {
+        let (_dir, global, state, _) = fixture();
+        let source = herdr_source(&state);
+        let candidate = herdr_commit(&source, &"b".repeat(40));
+        let op = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, None, &state, op).unwrap();
+        let mut mutations = Vec::new();
+        for field in 0..7 {
+            let mut drift = candidate.clone();
+            if let InstallOrigin::Herdr {
+                host,
+                host_config_dir,
+                checkout_root,
+                plugin_root,
+                source,
+                requested_ref,
+                enabled,
+                ..
+            } = &mut drift
+            {
+                match field {
+                    0 => *host = host.with_file_name("other-host"),
+                    1 => *host_config_dir = host_config_dir.with_file_name("other-config"),
+                    2 => *checkout_root = checkout_root.with_file_name("other-checkout"),
+                    3 => *plugin_root = plugin_root.with_file_name("other-plugin"),
+                    4 => *source = "other/repository".into(),
+                    5 => *requested_ref = Some("other-ref".into()),
+                    _ => *enabled = false,
+                }
+            }
+            mutations.push(drift);
+        }
+        mutations.push(herdr_commit(&source, "not-a-commit"));
+        mutations.push(herdr_commit(&source, &"g".repeat(40)));
+        let mut no_commit = candidate.clone();
+        if let InstallOrigin::Herdr {
+            resolved_commit, ..
+        } = &mut no_commit
+        {
+            *resolved_commit = None;
+        }
+        mutations.push(no_commit);
+        for drift in &mutations {
+            assert!(lease.authorize_start_for(drift).is_err(), "{drift:?}");
+        }
+        let token = lease.authorize_start_for(&candidate).unwrap();
+        for drift in &mutations {
+            assert!(start_allowed_at(&global, drift, &state, Some(0), Some(&token)).is_err());
+        }
+        lease.release().unwrap();
+
+        let lease = reserve_install_at(&global, &source, Some(&candidate), &state, op).unwrap();
+        assert!(lease
+            .authorize_start_for(&herdr_commit(&source, &"c".repeat(40)))
+            .is_err());
+        let explicit_token = lease.authorize_start_for(&candidate).unwrap();
+        start_allowed_at(&global, &candidate, &state, Some(0), Some(&explicit_token)).unwrap();
+        lease.release().unwrap();
+    }
+
+    #[test]
+    fn snapshot_observes_index_before_markers_without_repair_then_reuses_token() {
+        let (_dir, global, state, _) = fixture();
+        let source = herdr_source(&state);
+        let candidate = herdr_commit(&source, &"b".repeat(40));
+        let op = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            None
+        );
+        assert!(!state.join("updates").exists());
+        let lease = reserve_install_at(&global, &source, None, &state, op).unwrap();
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: None,
+                markers_complete: true,
+            })
+        );
+        let mut entries = scopes(&global).unwrap();
+        let token = new_token().unwrap();
+        entries[0].startup_origin = Some(candidate.clone());
+        entries[0].startup_token = Some(token.clone());
+        write_scopes(&global, &entries).unwrap();
+        let profile = profile_marker(&state).unwrap();
+        let root_marker = marker_path(&global, &installation_key(&source).unwrap());
+        let old_profile = fs::read(&profile).unwrap();
+        fs::remove_file(&root_marker).unwrap();
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: Some(candidate.clone()),
+                markers_complete: false,
+            })
+        );
+        assert_eq!(fs::read(&profile).unwrap(), old_profile);
+        assert!(!root_marker.exists());
+        fs::remove_file(&profile).unwrap();
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: Some(candidate.clone()),
+                markers_complete: false,
+            })
+        );
+        assert!(!profile.exists());
+        assert!(start_allowed_at(&global, &candidate, &state, Some(0), Some(&token)).is_err());
+        drop(lease);
+        let recovered = recover_reservation_at(&global, &source, None, &state, op).unwrap();
+        assert_eq!(
+            recovered.issued_start_token_for(&candidate).unwrap(),
+            Some(token.clone())
+        );
+        assert!(recovered.authorize_start_for(&candidate).is_err());
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: Some(candidate.clone()),
+                markers_complete: true,
+            })
+        );
+        start_allowed_at(&global, &candidate, &state, Some(0), Some(&token)).unwrap();
+        recovered.release().unwrap();
+    }
+
+    #[test]
+    fn snapshot_rejects_conflicting_or_malformed_markers_and_stop_preserves_selection() {
+        let (_dir, global, state, _) = fixture();
+        let source = herdr_source(&state);
+        let candidate = herdr_commit(&source, &"b".repeat(40));
+        let other = herdr_commit(&source, &"c".repeat(40));
+        let op = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, None, &state, op).unwrap();
+        let token = lease.authorize_start_for(&candidate).unwrap();
+        drop(lease);
+        record_user_stop_at(&global, &state).unwrap();
+        let profile = profile_marker(&state).unwrap();
+        let original = fs::read(&profile).unwrap();
+        let mut conflicting = scopes(&global).unwrap().remove(0);
+        conflicting.startup_origin = Some(other);
+        let bytes = serde_json::to_vec(&conflicting).unwrap();
+        write_private_bytes(&profile, &bytes, 0o600).unwrap();
+        assert!(reservation_snapshot_at(&global, &source, None, &state, op).is_err());
+        assert!(recover_reservation_at(&global, &source, None, &state, op).is_err());
+        assert_eq!(fs::read(&profile).unwrap(), bytes);
+        write_private_bytes(&profile, b"{malformed", 0o600).unwrap();
+        assert!(reservation_snapshot_at(&global, &source, None, &state, op).is_err());
+        assert!(recover_reservation_at(&global, &source, None, &state, op).is_err());
+        assert_eq!(fs::read(&profile).unwrap(), b"{malformed");
+        write_private_bytes(&profile, &original, 0o600).unwrap();
+        let recovered = recover_reservation_at(&global, &source, None, &state, op).unwrap();
+        assert!(recovered.user_stop_requested().unwrap());
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: Some(candidate.clone()),
+                markers_complete: true,
+            })
+        );
+        assert!(recovered.issued_start_token_for(&candidate).is_err());
+        assert!(recovered.authorize_start_for(&candidate).is_err());
+        assert!(start_allowed_at(&global, &candidate, &state, Some(0), Some(&token)).is_err());
+        recovered.release().unwrap();
+    }
+
+    #[test]
+    fn user_stop_allows_explicit_partial_marker_recovery_and_safe_release() {
+        let (_dir, global, state, _) = fixture();
+        let source = herdr_source(&state);
+        let candidate = herdr_commit(&source, &"b".repeat(40));
+        let op = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, None, &state, op).unwrap();
+        let token = lease.authorize_start_for(&candidate).unwrap();
+        let generation = lease.stop_generation;
+        drop(lease);
+        let profile = profile_marker(&state).unwrap();
+        let original = fs::read(&profile).unwrap();
+        let root_marker = marker_path(&global, &installation_key(&source).unwrap());
+        fs::remove_file(&root_marker).unwrap();
+        record_user_stop_at(&global, &state).unwrap();
+        let selection = Some(ReservationSnapshot {
+            startup_origin: Some(candidate.clone()),
+            markers_complete: false,
+        });
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            selection
+        );
+        assert_eq!(fs::read(&profile).unwrap(), original);
+        assert!(!root_marker.exists());
+        let recovered = recover_reservation_at(&global, &source, None, &state, op).unwrap();
+        assert!(recovered.user_stop_requested().unwrap());
+        assert_eq!(
+            reservation_snapshot_at(&global, &source, None, &state, op).unwrap(),
+            Some(ReservationSnapshot {
+                startup_origin: Some(candidate.clone()),
+                markers_complete: true,
+            })
+        );
+        assert_eq!(
+            scopes(&global).unwrap()[0].startup_origin,
+            Some(candidate.clone())
+        );
+        assert!(recovered.issued_start_token_for(&candidate).is_err());
+        assert!(recovered.authorize_start_for(&candidate).is_err());
+        assert!(
+            start_allowed_at(&global, &candidate, &state, Some(generation), Some(&token)).is_err()
+        );
+        recovered.release().unwrap();
+        assert!(!reservation_exists_at(&global, &source, None, &state, op).unwrap());
+    }
+
+    #[test]
+    fn snapshot_never_treats_orphan_legacy_or_invalid_index_as_absence() {
+        let (_dir, global, state, origin) = fixture();
+        let op = "0123456789abcdef0123456789abcdef";
+        let marker = marker_path(&global, &installation_key(&origin).unwrap());
+        write_private_bytes(&marker, b"orphan marker", 0o600).unwrap();
+        assert!(reservation_snapshot_at(&global, &origin, None, &state, op).is_err());
+        assert_eq!(fs::read(&marker).unwrap(), b"orphan marker");
+        fs::remove_file(&marker).unwrap();
+
+        let index = scopes_path(&global);
+        write_private_bytes(&index, b"malformed index", 0o600).unwrap();
+        assert!(reservation_snapshot_at(&global, &origin, None, &state, op).is_err());
+        assert_eq!(fs::read(&index).unwrap(), b"malformed index");
+        fs::remove_file(&index).unwrap();
+
+        let prefix = state.parent().unwrap().join("brew");
+        let brew = InstallOrigin::Homebrew {
+            brew: prefix.join("bin/brew"),
+            prefix: prefix.clone(),
+            cellar_formula_root: prefix.join("Cellar/herdr-desktop-pet"),
+            formula: "hanbong5938/tap/herdr-desktop-pet".into(),
+            locator: prefix.join("opt/herdr-desktop-pet/libexec/app"),
+        };
+        let legacy = marker_path(&global, &legacy_key(&brew).unwrap());
+        write_private_bytes(&legacy, b"legacy evidence", 0o600).unwrap();
+        assert!(reservation_snapshot_at(&global, &brew, None, &state, op).is_err());
+        assert_eq!(fs::read(legacy).unwrap(), b"legacy evidence");
+    }
+
     #[test]
     fn reservation_blocks_other_profiles_and_user_stop_defeats_authorized_start() {
         let (_dir, global, state, origin) = fixture();
@@ -1023,7 +1613,7 @@ mod tests {
         };
         start_allowed_at(&global, &unknown, &state, None, None).unwrap();
         let id = "0123456789abcdef0123456789abcdef";
-        let reservation = reserve_install_at(&global, &origin, &state, id).unwrap();
+        let reservation = reserve_install_at(&global, &origin, None, &state, id).unwrap();
         let different_install = InstallOrigin::Local {
             root: state.parent().unwrap().join("other-checkout"),
         };
@@ -1031,15 +1621,24 @@ mod tests {
         assert!(reserve_install_at(
             &global,
             &different_install,
+            None,
             &state,
             "ffffffffffffffffffffffffffffffff"
         )
         .is_err());
         assert!(start_allowed_at(&global, &unknown, &state, None, None).is_err());
         assert!(start_allowed_at(&global, &origin, &state, None, None).is_err());
-        assert!(verify_control_at(&global, &origin, &state, id, "invalid").is_err());
-        verify_control_at(&global, &origin, &state, id, reservation.control_token()).unwrap();
-        let startup = reservation.authorize_start().unwrap();
+        assert!(verify_control_at(&global, &origin, None, &state, id, "invalid").is_err());
+        verify_control_at(
+            &global,
+            &origin,
+            None,
+            &state,
+            id,
+            reservation.control_token(),
+        )
+        .unwrap();
+        let startup = reservation.authorize_start_for(&origin).unwrap();
         assert!(
             start_allowed_at(&global, &different_install, &state, Some(0), Some(&startup)).is_err()
         );
@@ -1057,11 +1656,17 @@ mod tests {
         assert!(start_allowed_at(&global, &origin, &other, Some(0), Some(&startup)).is_err());
         record_user_stop_at(&global, &state).unwrap();
         assert!(reservation.user_stop_requested().unwrap());
-        assert!(reservation.issued_start_token().is_err());
+        assert!(reservation.issued_start_token_for(&origin).is_err());
         assert!(start_allowed_at(&global, &origin, &state, Some(0), Some(&startup)).is_err());
-        assert!(
-            verify_control_at(&global, &origin, &state, id, reservation.control_token()).is_err()
-        );
+        assert!(verify_control_at(
+            &global,
+            &origin,
+            None,
+            &state,
+            id,
+            reservation.control_token()
+        )
+        .is_err());
         reservation.release().unwrap();
         start_allowed_at(&global, &origin, &state, None, None).unwrap();
     }
@@ -1083,7 +1688,7 @@ mod tests {
         )
         .unwrap();
         let id = "0123456789abcdef0123456789abcdef";
-        assert!(reserve_install_at(&global, &origin, &state, id).is_err());
+        assert!(reserve_install_at(&global, &origin, None, &state, id).is_err());
         assert!(active(&global, &installation_key(&origin).unwrap())
             .unwrap()
             .iter()
@@ -1094,8 +1699,8 @@ mod tests {
     fn crashed_owner_keeps_reservation_until_explicit_recovery() {
         let (_dir, global, state, origin) = fixture();
         let id = "0123456789abcdef0123456789abcdef";
-        let lease = reserve_install_at(&global, &origin, &state, id).unwrap();
-        lease.authorize_start().unwrap();
+        let lease = reserve_install_at(&global, &origin, None, &state, id).unwrap();
+        lease.authorize_start_for(&origin).unwrap();
         drop(lease);
         fs::remove_file(global.join(format!(
             "{}.reservation.json",
@@ -1105,19 +1710,20 @@ mod tests {
         let different_install = InstallOrigin::Local {
             root: state.parent().unwrap().join("other-checkout"),
         };
-        assert!(recover_reservation_at(&global, &different_install, &state, id).is_err());
+        assert!(recover_reservation_at(&global, &different_install, None, &state, id).is_err());
         assert!(start_allowed_at(&global, &origin, &state, None, None).is_err());
         assert!(recover_reservation_at(
             &global,
             &origin,
+            None,
             &state,
             "ffffffffffffffffffffffffffffffff"
         )
         .is_err());
-        let recovered = recover_reservation_at(&global, &origin, &state, id).unwrap();
-        let startup = recovered.issued_start_token().unwrap().unwrap();
+        let recovered = recover_reservation_at(&global, &origin, None, &state, id).unwrap();
+        let startup = recovered.issued_start_token_for(&origin).unwrap().unwrap();
         start_allowed_at(&global, &origin, &state, Some(0), Some(&startup)).unwrap();
-        assert!(recovered.authorize_start().is_err());
+        assert!(recovered.authorize_start_for(&origin).is_err());
         recovered.release().unwrap();
         start_allowed_at(&global, &origin, &state, None, None).unwrap();
     }
@@ -1126,18 +1732,20 @@ mod tests {
     fn partial_start_authorization_can_resume_without_second_issue() {
         let (_dir, global, state, origin) = fixture();
         let id = "0123456789abcdef0123456789abcdef";
-        let lease = reserve_install_at(&global, &origin, &state, id).unwrap();
-        lease.authorize_start().unwrap();
+        let lease = reserve_install_at(&global, &origin, None, &state, id).unwrap();
+        lease.authorize_start_for(&origin).unwrap();
         let profile = profile_marker(&state).unwrap();
         let mut interrupted: Reservation =
-            serde_json::from_slice(&owned_private_file(&profile, 4096).unwrap()).unwrap();
+            serde_json::from_slice(&owned_private_file(&profile, 16384).unwrap()).unwrap();
+        interrupted.startup_origin = None;
         interrupted.startup_token = None;
         write_private_bytes(&profile, &serde_json::to_vec(&interrupted).unwrap(), 0o600).unwrap();
+        assert!(start_allowed_at(&global, &origin, &state, Some(0), None).is_err());
         drop(lease);
-        let recovered = recover_reservation_at(&global, &origin, &state, id).unwrap();
-        let token = recovered.issued_start_token().unwrap().unwrap();
+        let recovered = recover_reservation_at(&global, &origin, None, &state, id).unwrap();
+        let token = recovered.issued_start_token_for(&origin).unwrap().unwrap();
         start_allowed_at(&global, &origin, &state, Some(0), Some(&token)).unwrap();
-        assert!(recovered.authorize_start().is_err());
+        assert!(recovered.authorize_start_for(&origin).is_err());
         recovered.release().unwrap();
     }
 
@@ -1158,7 +1766,7 @@ mod tests {
         };
         write_operation(&state, &completed).unwrap();
         let id = "ffffffffffffffffffffffffffffffff";
-        let lease = reserve_install_at(&global, &origin, &state, id).unwrap();
+        let lease = reserve_install_at(&global, &origin, None, &state, id).unwrap();
         assert!(latest_operation(&state).is_err());
         let mut active = OperationRecord {
             version: UPDATER_PROTOCOL,
@@ -1268,20 +1876,192 @@ mod tests {
             installation_key(&stable).unwrap(),
             installation_key(&beta).unwrap()
         );
-        let stable_lease =
-            reserve_install_at(&global, &stable, &state, "0123456789abcdef0123456789abcdef")
-                .unwrap();
+        let stable_lease = reserve_install_at(
+            &global,
+            &stable,
+            None,
+            &state,
+            "0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
         assert!(reserve_install_at(
             &global,
             &next_keg,
+            None,
             &other,
             "ffffffffffffffffffffffffffffffff"
         )
         .is_err());
-        let beta_lease =
-            reserve_install_at(&global, &beta, &other, "ffffffffffffffffffffffffffffffff").unwrap();
+        let beta_lease = reserve_install_at(
+            &global,
+            &beta,
+            None,
+            &other,
+            "ffffffffffffffffffffffffffffffff",
+        )
+        .unwrap();
         beta_lease.release().unwrap();
         stable_lease.release().unwrap();
+    }
+
+    #[test]
+    fn dual_scope_blocks_both_roots_and_only_selected_origin_can_start() {
+        let (_dir, global, state, source) = fixture();
+        let target = InstallOrigin::Local {
+            root: state.parent().unwrap().join("beta-checkout"),
+        };
+        let other = state.parent().unwrap().join("other-profile");
+        fs::create_dir(&other).unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o700)).unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, Some(&target), &state, id).unwrap();
+        let entries = scopes(&global).unwrap();
+        assert_eq!(
+            entries[0].keys,
+            installation_keys(&source, Some(&target)).unwrap()
+        );
+        assert_eq!(entries[0].source, source);
+        assert_eq!(entries[0].target.as_ref(), Some(&target));
+        assert!(start_allowed_at(&global, &source, &other, None, None).is_err());
+        assert!(start_allowed_at(&global, &target, &other, None, None).is_err());
+        assert!(reserve_install_at(&global, &target, Some(&source), &other, id).is_err());
+        assert!(
+            verify_control_at(&global, &source, None, &state, id, lease.control_token()).is_err()
+        );
+        verify_control_at(
+            &global,
+            &source,
+            Some(&target),
+            &state,
+            id,
+            lease.control_token(),
+        )
+        .unwrap();
+        let token = lease.authorize_start_for(&target).unwrap();
+        assert!(lease.issued_start_token_for(&source).is_err());
+        assert!(start_allowed_at(&global, &source, &state, Some(0), Some(&token)).is_err());
+        start_allowed_at(&global, &target, &state, Some(0), Some(&token)).unwrap();
+        lease.release().unwrap();
+        assert!(start_allowed_at(&global, &target, &state, Some(0), Some(&token)).is_err());
+        start_allowed_at(&global, &source, &other, None, None).unwrap();
+        start_allowed_at(&global, &target, &other, None, None).unwrap();
+    }
+
+    #[test]
+    fn dual_scope_restore_selects_original_without_unblocking_target() {
+        let (_dir, global, state, source) = fixture();
+        let target = InstallOrigin::Local {
+            root: state.parent().unwrap().join("beta-target"),
+        };
+        let id = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, Some(&target), &state, id).unwrap();
+        let token = lease.authorize_start_for(&source).unwrap();
+        start_allowed_at(&global, &source, &state, Some(0), Some(&token)).unwrap();
+        assert!(start_allowed_at(&global, &target, &state, Some(0), Some(&token)).is_err());
+        record_user_stop_at(&global, &state).unwrap();
+        assert!(start_allowed_at(&global, &source, &state, Some(0), Some(&token)).is_err());
+        lease.release().unwrap();
+    }
+
+    #[test]
+    fn live_profile_on_proposed_target_prevents_replacement() {
+        let (_dir, global, state, source) = fixture();
+        let target = InstallOrigin::Local {
+            root: state.parent().unwrap().join("beta-checkout"),
+        };
+        let other = state.parent().unwrap().join("other-profile");
+        fs::create_dir(&other).unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o700)).unwrap();
+        register_active_at(
+            &global,
+            &target,
+            &other,
+            std::process::id(),
+            "target-instance",
+            None,
+            None,
+        )
+        .unwrap();
+        let id = "0123456789abcdef0123456789abcdef";
+        assert!(reserve_install_at(&global, &source, Some(&target), &state, id).is_err());
+        assert!(scopes(&global).unwrap().is_empty());
+        assert!(!profile_marker(&state).unwrap().exists());
+    }
+
+    #[test]
+    fn same_key_dedup_still_requires_exact_selected_origin() {
+        let (_dir, global, state, _) = fixture();
+        let root = state.parent().unwrap().join("brew");
+        let source = InstallOrigin::Homebrew {
+            brew: root.join("bin/brew"),
+            prefix: root.clone(),
+            cellar_formula_root: root.join("Cellar/herdr"),
+            formula: "hanbong5938/tap/herdr-desktop-pet".into(),
+            locator: root.join("opt/herdr/old"),
+        };
+        let mut target = source.clone();
+        if let InstallOrigin::Homebrew { locator, .. } = &mut target {
+            *locator = root.join("opt/herdr/new");
+        }
+        let id = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, Some(&target), &state, id).unwrap();
+        assert_eq!(scopes(&global).unwrap()[0].keys.len(), 1);
+        let token = lease.authorize_start_for(&target).unwrap();
+        assert!(start_allowed_at(&global, &source, &state, Some(0), Some(&token)).is_err());
+        start_allowed_at(&global, &target, &state, Some(0), Some(&token)).unwrap();
+        lease.release().unwrap();
+    }
+
+    #[test]
+    fn partial_dual_markers_keep_both_roots_gated_and_recover_from_index() {
+        let (_dir, global, state, source) = fixture();
+        let target = InstallOrigin::Local {
+            root: state.parent().unwrap().join("target"),
+        };
+        let id = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, Some(&target), &state, id).unwrap();
+        drop(lease);
+        fs::remove_file(profile_marker(&state).unwrap()).unwrap();
+        fs::remove_file(marker_path(&global, &installation_key(&target).unwrap())).unwrap();
+        fs::remove_file(marker_path(&global, &installation_key(&source).unwrap())).unwrap();
+        assert!(reservation_exists_at(&global, &source, Some(&target), &state, id).unwrap());
+        let other = state.parent().unwrap().join("other-profile");
+        fs::create_dir(&other).unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o700)).unwrap();
+        for origin in [&source, &target] {
+            assert!(start_allowed_at(&global, origin, &state, None, None).is_err());
+            assert!(start_allowed_at(&global, origin, &other, None, None).is_err());
+            assert!(reserve_install_at(&global, origin, None, &other, id).is_err());
+        }
+        assert!(recover_reservation_at(&global, &source, None, &state, id).is_err());
+        let recovered =
+            recover_reservation_at(&global, &source, Some(&target), &state, id).unwrap();
+        assert!(markers_match(&global, &scopes(&global).unwrap()[0]).unwrap());
+        recovered.release().unwrap();
+        assert!(!reservation_exists_at(&global, &source, Some(&target), &state, id).unwrap());
+    }
+
+    #[test]
+    fn partial_dual_authorization_never_admits_until_recovered() {
+        let (_dir, global, state, source) = fixture();
+        let target = InstallOrigin::Local {
+            root: state.parent().unwrap().join("target"),
+        };
+        let id = "0123456789abcdef0123456789abcdef";
+        let lease = reserve_install_at(&global, &source, Some(&target), &state, id).unwrap();
+        let token = lease.authorize_start_for(&target).unwrap();
+        fs::remove_file(marker_path(&global, &installation_key(&source).unwrap())).unwrap();
+        assert!(start_allowed_at(&global, &target, &state, Some(0), Some(&token)).is_err());
+        drop(lease);
+        let recovered =
+            recover_reservation_at(&global, &source, Some(&target), &state, id).unwrap();
+        assert_eq!(
+            recovered.issued_start_token_for(&target).unwrap(),
+            Some(token.clone())
+        );
+        assert!(recovered.issued_start_token_for(&source).is_err());
+        start_allowed_at(&global, &target, &state, Some(0), Some(&token)).unwrap();
+        recovered.release().unwrap();
     }
 
     #[test]
@@ -1302,23 +2082,23 @@ mod tests {
         let old_lock = global.join(format!("{}.lock", legacy_key(&origin).unwrap()));
         let old_owner = lock_with_mode(&old_lock, libc::LOCK_EX | libc::LOCK_NB).unwrap();
         let id = "0123456789abcdef0123456789abcdef";
-        assert!(reserve_install_at(&global, &origin, &state, id).is_err());
+        assert!(reserve_install_at(&global, &origin, None, &state, id).is_err());
         drop(old_owner);
-        let lease = reserve_install_at(&global, &origin, &state, id).unwrap();
+        let lease = reserve_install_at(&global, &origin, None, &state, id).unwrap();
         assert!(lock_with_mode(&old_lock, libc::LOCK_EX | libc::LOCK_NB).is_err());
         lease.release().unwrap();
         let old = global.join(format!("{}.reservation.json", legacy_key(&origin).unwrap()));
         let old_bytes = br#"{"operation_id":"0123456789abcdef0123456789abcdef","version":1}"#;
-        fs::write(&old, old_bytes).unwrap();
+        write_private_new(&old, old_bytes, 0o600).unwrap();
         assert!(start_allowed_at(&global, &origin, &state, None, None).is_err());
-        assert!(reserve_install_at(&global, &origin, &state, id).is_err());
-        assert!(recover_reservation_at(&global, &origin, &state, id).is_err());
+        assert!(reserve_install_at(&global, &origin, None, &state, id).is_err());
+        assert!(recover_reservation_at(&global, &origin, None, &state, id).is_err());
         assert_eq!(fs::read(&old).unwrap(), old_bytes);
         let (_other_dir, other_global, other_state, other_origin) = fixture();
         let marker = profile_marker(&other_state).unwrap();
-        fs::write(&marker, old_bytes).unwrap();
+        write_private_new(&marker, old_bytes, 0o600).unwrap();
         assert!(start_allowed_at(&other_global, &other_origin, &other_state, None, None).is_err());
-        assert!(reserve_install_at(&other_global, &other_origin, &other_state, id).is_err());
+        assert!(reserve_install_at(&other_global, &other_origin, None, &other_state, id).is_err());
         assert!(latest_operation(&other_state).is_err());
         assert_eq!(fs::read(marker).unwrap(), old_bytes);
     }
@@ -1345,6 +2125,42 @@ mod tests {
         assert!(write_operation(&state, &record).is_err());
         assert_eq!(fs::read(&journal).unwrap(), old);
         assert!(read_operation(&state, id).is_err());
+    }
+
+    #[test]
+    fn protocol_two_evidence_stays_blocked_and_byte_preserved() {
+        let (_dir, global, state, source) = fixture();
+        let target = InstallOrigin::Local {
+            root: state.parent().unwrap().join("beta-target"),
+        };
+        let id = "0123456789abcdef0123456789abcdef";
+        let old_marker = br#"{"version":2,"operation_id":"0123456789abcdef0123456789abcdef","installation_key":"legacy","state_dir":"/legacy","stop_generation":0,"control_token":"legacy","startup_token":null}"#;
+        let target_marker = marker_path(&global, &installation_key(&target).unwrap());
+        write_private_new(&target_marker, old_marker, 0o600).unwrap();
+        assert!(start_allowed_at(&global, &target, &state, None, None).is_err());
+        assert!(reservation_exists_at(&global, &source, Some(&target), &state, id).is_err());
+        assert!(reserve_install_at(&global, &source, Some(&target), &state, id).is_err());
+        assert!(recover_reservation_at(&global, &source, Some(&target), &state, id).is_err());
+        assert_eq!(fs::read(&target_marker).unwrap(), old_marker);
+
+        let old_journal = br#"{"version":2,"operation_id":"0123456789abcdef0123456789abcdef","phase":"preparing","execution_fence":"no_spawn","detail":"old","installed":false,"applied":false,"candidate":null}"#;
+        let journal = private_updates(&state)
+            .unwrap()
+            .join(format!("{id}.result.json"));
+        write_private_new(&journal, old_journal, 0o600).unwrap();
+        let record = OperationRecord {
+            version: UPDATER_PROTOCOL,
+            operation_id: id.into(),
+            phase: OperationPhase::Preparing,
+            execution_fence: ExecutionFence::NoSpawn,
+            detail: "new".into(),
+            installed: false,
+            applied: false,
+            candidate: None,
+        };
+        assert!(read_operation(&state, id).is_err());
+        assert!(write_operation(&state, &record).is_err());
+        assert_eq!(fs::read(&journal).unwrap(), old_journal);
     }
 
     #[test]

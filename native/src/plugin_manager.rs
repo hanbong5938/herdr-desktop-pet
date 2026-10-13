@@ -24,10 +24,18 @@ static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 fn request_id() -> u64 {
     NEXT_REQUEST.fetch_add(1, Ordering::Relaxed)
 }
-fn tr(locale: UiLocale, en: &'static str, ko: &'static str) -> &'static str {
+fn tr(
+    locale: UiLocale,
+    en: &'static str,
+    ko: &'static str,
+    zh_hans: &'static str,
+    ja: &'static str,
+) -> &'static str {
     match locale {
         UiLocale::En => en,
         UiLocale::Ko => ko,
+        UiLocale::ZhHans => zh_hans,
+        UiLocale::Ja => ja,
     }
 }
 fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
@@ -296,11 +304,11 @@ fn eligible(action: Action, p: &Plugin) -> bool {
 }
 fn action_name(action: Action, locale: UiLocale) -> &'static str {
     match action {
-        Action::Enable => tr(locale, "Enable", "활성화"),
-        Action::Disable => tr(locale, "Disable", "비활성화"),
-        Action::Unlink => tr(locale, "Unlink", "연결 해제"),
-        Action::Uninstall => tr(locale, "Delete plugin", "플러그인 삭제"),
-        Action::Update => tr(locale, "Update", "업데이트"),
+        Action::Enable => tr(locale, "Enable", "활성화", "启用", "有効にする"),
+        Action::Disable => tr(locale, "Disable", "비활성화", "禁用", "無効にする"),
+        Action::Unlink => tr(locale, "Unlink", "연결 해제", "解除关联", "登録を解除"),
+        Action::Uninstall => tr(locale, "Delete plugin", "플러그인 삭제", "删除插件", "プラグインを削除"),
+        Action::Update => tr(locale, "Update", "업데이트", "更新", "更新"),
     }
 }
 fn set_status(s: &WindowState, message: &str) {
@@ -365,40 +373,36 @@ impl WindowState {
             let source_note = if let Some(path) = managed_checkout(p) {
                 format!(
                     "{}: {path}",
-                    tr(self.locale, "Managed checkout", "관리형 체크아웃")
+                    tr(self.locale, "Managed checkout", "관리형 체크아웃", "托管检出目录", "管理対象チェックアウト")
                 )
             } else if is_github(p) {
-                tr(
-                    self.locale,
-                    "Managed checkout unavailable; deletion and update are disabled.",
-                    "관리형 체크아웃 경로가 없어 삭제 및 업데이트할 수 없습니다.",
-                )
+                tr(self.locale, "Managed checkout unavailable; deletion and update are disabled.", "관리형 체크아웃 경로가 없어 삭제 및 업데이트할 수 없습니다.", "托管检出目录不可用，无法删除或更新。", "管理対象チェックアウトが利用できないため、削除と更新は無効です。")
                 .to_owned()
             } else {
-                tr(self.locale,"Local source remains on disk. Unlink only removes its host registration; update the source yourself.","로컬 원본 파일은 유지됩니다. 연결 해제는 호스트 등록만 제거하며 원본 업데이트는 직접 진행하세요.").to_owned()
+                tr(self.locale, "Local source remains on disk. Unlink only removes its host registration; update the source yourself.", "로컬 원본 파일은 유지됩니다. 연결 해제는 호스트 등록만 제거하며 원본 업데이트는 직접 진행하세요.", "本地源文件会保留在磁盘上。解除关联仅移除其在宿主中的注册；请自行更新源文件。", "ローカルのソースはディスクに残ります。登録解除はホストへの登録のみを削除します。ソースはご自身で更新してください。").to_owned()
             };
             format!(
                 "{} ({}) • {}\nID: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}\n{}",
                 p.name,
                 p.version,
                 if p.enabled {
-                    tr(self.locale, "Enabled", "활성")
+                    tr(self.locale, "Enabled", "활성", "已启用", "有効")
                 } else {
-                    tr(self.locale, "Disabled", "비활성")
+                    tr(self.locale, "Disabled", "비활성", "已禁用", "無効")
                 },
                 p.id,
-                tr(self.locale, "Host", "호스트"),
+                tr(self.locale, "Host", "호스트", "宿主", "ホスト"),
                 i.target
                     .as_ref()
                     .map(|t| t.host.display().to_string())
                     .unwrap_or_default(),
-                tr(self.locale, "Installation", "설치 경로"),
+                tr(self.locale, "Installation", "설치 경로", "安装路径", "インストール先"),
                 p.root.display(),
-                tr(self.locale, "Source", "소스"),
+                tr(self.locale, "Source", "소스", "来源", "ソース"),
                 p.source,
-                tr(self.locale, "Warnings", "경고"),
+                tr(self.locale, "Warnings", "경고", "警告", "警告"),
                 if p.warnings.is_empty() {
-                    tr(self.locale, "None", "없음").to_owned()
+                    tr(self.locale, "None", "없음", "无", "なし").to_owned()
                 } else {
                     p.warnings.join("; ")
                 },
@@ -406,11 +410,7 @@ impl WindowState {
                 i.protection[n].as_deref().unwrap_or("")
             )
         } else {
-            tr(
-                self.locale,
-                "Select a plugin to inspect its read-only details.",
-                "읽기 전용 상세 정보를 보려면 플러그인을 선택하세요.",
-            )
+            tr(self.locale, "Select a plugin to inspect its read-only details.", "읽기 전용 상세 정보를 보려면 플러그인을 선택하세요.", "选择插件以查看其只读详细信息。", "プラグインを選択すると、読み取り専用の詳細情報を確認できます。")
             .to_owned()
         };
         self.details.setStringValue(&NSString::from_str(&value));
@@ -431,11 +431,7 @@ impl WindowState {
         self.show_selection();
         set_status(
             self,
-            tr(
-                self.locale,
-                "Loading inventory and operation evidence…",
-                "플러그인 목록과 작업 기록 불러오는 중…",
-            ),
+            tr(self.locale, "Loading inventory and operation evidence…", "플러그인 목록과 작업 기록 불러오는 중…", "正在加载插件列表和操作记录…", "プラグイン一覧と操作記録を読み込み中…"),
         );
         std::thread::spawn(move || {
             let result = (|| {
@@ -479,7 +475,7 @@ impl WindowState {
                                     s,
                                     &format!(
                                         "{}: {error}",
-                                        tr(s.locale, "Inventory error", "목록 오류")
+                                        tr(s.locale, "Inventory error", "목록 오류", "插件列表错误", "一覧取得エラー")
                                     ),
                                 );
                                 s.controls();
@@ -499,37 +495,29 @@ impl WindowState {
                     p.name,
                     p.id,
                     if p.enabled {
-                        tr(self.locale, "enabled", "활성")
+                        tr(self.locale, "enabled", "활성", "已启用", "有効")
                     } else {
-                        tr(self.locale, "disabled", "비활성")
+                        tr(self.locale, "disabled", "비활성", "已禁用", "無効")
                     },
                     if reason.is_some() || p.protected() {
-                        tr(self.locale, " • read-only", " • 읽기 전용")
+                        tr(self.locale, " • read-only", " • 읽기 전용", " • 只读", " • 読み取り専用")
                     } else {
                         ""
                     }
                 )));
         }
         let evidence = match &inventory.observation {
-            OperationObservation::Idle => tr(
-                self.locale,
-                "No active operation.",
-                "진행 중인 작업이 없습니다.",
-            )
+            OperationObservation::Idle => tr(self.locale, "No active operation.", "진행 중인 작업이 없습니다.", "当前没有进行中的操作。", "実行中の操作はありません。")
             .to_owned(),
             OperationObservation::Running {
                 operation_id,
                 journal,
             } => format!(
                 "{}: {operation_id}. {}: {}. {}",
-                tr(self.locale, "Operation running", "작업 진행 중"),
-                tr(self.locale, "Journal", "기록 경로"),
+                tr(self.locale, "Operation running", "작업 진행 중", "操作进行中", "操作実行中"),
+                tr(self.locale, "Journal", "기록 경로", "日志路径", "記録先"),
                 journal.display(),
-                tr(
-                    self.locale,
-                    "Closing this window does not cancel it.",
-                    "창을 닫아도 작업은 취소되지 않습니다."
-                )
+                tr(self.locale, "Closing this window does not cancel it.", "창을 닫아도 작업은 취소되지 않습니다.", "关闭此窗口不会取消操作。", "このウィンドウを閉じても操作はキャンセルされません。")
             ),
             OperationObservation::Terminal {
                 operation_id,
@@ -537,8 +525,8 @@ impl WindowState {
                 result,
             } => format!(
                 "{} {operation_id}: {result}. {}: {}",
-                tr(self.locale, "Recorded result", "기록된 결과"),
-                tr(self.locale, "Journal", "기록 경로"),
+                tr(self.locale, "Recorded result", "기록된 결과", "已记录的结果", "記録された結果"),
+                tr(self.locale, "Journal", "기록 경로", "日志路径", "記録先"),
                 journal.display()
             ),
             OperationObservation::Unknown {
@@ -548,15 +536,11 @@ impl WindowState {
                 ..
             } => format!(
                 "{} {operation_id}: {detail}. {}",
-                tr(self.locale, "Outcome unknown", "결과 불명"),
+                tr(self.locale, "Outcome unknown", "결과 불명", "结果未知", "結果不明"),
                 if *acknowledged {
-                    tr(self.locale, "Reviewed.", "검토됨.")
+                    tr(self.locale, "Reviewed.", "검토됨.", "已审阅。", "確認済み。")
                 } else {
-                    tr(
-                        self.locale,
-                        "Review evidence before another mutation.",
-                        "다른 변경 전에 기록을 검토하세요.",
-                    )
+                    tr(self.locale, "Review evidence before another mutation.", "다른 변경 전에 기록을 검토하세요.", "再次修改前请先审阅操作记录。", "次の変更を行う前に操作記録を確認してください。")
                 }
             ),
         };
@@ -567,11 +551,7 @@ impl WindowState {
             .map(|e| {
                 format!(
                     " {}: {e}",
-                    tr(
-                        self.locale,
-                        "Read-only; host mutation unavailable",
-                        "읽기 전용: 호스트 변경 불가"
-                    )
+                    tr(self.locale, "Read-only; host mutation unavailable", "읽기 전용: 호스트 변경 불가", "只读；无法修改宿主", "読み取り専用：ホストの変更は利用できません")
                 )
             })
             .unwrap_or_default();
@@ -580,7 +560,7 @@ impl WindowState {
             self,
             &format!(
                 "{}: {}. {evidence}{support}{}",
-                tr(self.locale, "Installed plugins", "설치된 플러그인"),
+                tr(self.locale, "Installed plugins", "설치된 플러그인", "已安装的插件", "インストール済みプラグイン"),
                 self.inventory.as_ref().unwrap().plugins.len(),
                 self.feedback
                     .as_ref()
@@ -599,16 +579,16 @@ fn confirmation(
     mtm: MainThreadMarker,
 ) -> bool {
     let detail = match action {
-        Action::Enable => tr(locale,"Enable in this host context; files and data remain.","이 호스트에서 활성화합니다. 파일과 데이터는 유지됩니다."),
-        Action::Disable => tr(locale,"Disable in this host context; files and data remain.","이 호스트에서 비활성화합니다. 파일과 데이터는 유지됩니다."),
-        Action::Unlink => tr(locale,"Remove host registration only. Local files, configuration and state remain.","호스트 등록만 해제합니다. 로컬 파일과 설정 및 상태는 유지됩니다."),
-        Action::Uninstall => tr(locale,"Delete the entire managed checkout, not the pet. Plugin configuration and state remain.","펫이 아닌 관리형 체크아웃 전체를 삭제합니다. 플러그인 설정과 상태는 유지됩니다."),
-        Action::Update => tr(locale,"Update from the recorded GitHub source. Preserve configuration, state and disabled status. Review partial results before retrying.","기록된 GitHub 소스에서 업데이트합니다. 설정, 상태 및 비활성 상태는 유지됩니다. 부분 실패 시 재시도 전에 결과를 검토하세요."),
+        Action::Enable => tr(locale, "Enable in this host context; files and data remain.", "이 호스트에서 활성화합니다. 파일과 데이터는 유지됩니다.", "在此宿主环境中启用；文件和数据会保留。", "このホスト環境で有効にします。ファイルとデータは保持されます。"),
+        Action::Disable => tr(locale, "Disable in this host context; files and data remain.", "이 호스트에서 비활성화합니다. 파일과 데이터는 유지됩니다.", "在此宿主环境中禁用；文件和数据会保留。", "このホスト環境で無効にします。ファイルとデータは保持されます。"),
+        Action::Unlink => tr(locale, "Remove host registration only. Local files, configuration and state remain.", "호스트 등록만 해제합니다. 로컬 파일과 설정 및 상태는 유지됩니다.", "仅移除宿主注册。本地文件、配置和状态会保留。", "ホストへの登録のみを削除します。ローカルファイル、設定、状態は保持されます。"),
+        Action::Uninstall => tr(locale, "Delete the entire managed checkout, not the pet. Plugin configuration and state remain.", "펫이 아닌 관리형 체크아웃 전체를 삭제합니다. 플러그인 설정과 상태는 유지됩니다.", "删除整个托管检出目录，而非宠物。插件配置和状态会保留。", "ペットではなく、管理対象チェックアウト全体を削除します。プラグインの設定と状態は保持されます。"),
+        Action::Update => tr(locale, "Update from the recorded GitHub source. Preserve configuration, state and disabled status. Review partial results before retrying.", "기록된 GitHub 소스에서 업데이트합니다. 설정, 상태 및 비활성 상태는 유지됩니다. 부분 실패 시 재시도 전에 결과를 검토하세요.", "从记录的 GitHub 来源更新。保留配置、状态以及禁用状态。重试前请审阅部分完成的结果。", "記録された GitHub ソースから更新します。設定、状態、無効化状態は保持されます。再試行する前に部分的な結果を確認してください。"),
     };
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str(&format!(
         "{}: {} ({})",
-        tr(locale, "Confirm", "확인"),
+        tr(locale, "Confirm", "확인", "确认", "確認"),
         action_name(action, locale),
         p.id
     )));
@@ -617,18 +597,18 @@ fn confirmation(
         p.name,
         p.version,
         p.id,
-        tr(locale, "Socket", "소켓"),
+        tr(locale, "Socket", "소켓", "套接字", "ソケット"),
         target.socket.display(),
-        tr(locale, "Authenticated host", "인증된 호스트"),
+        tr(locale, "Authenticated host", "인증된 호스트", "已验证的宿主", "認証済みホスト"),
         target.host.display(),
-        tr(locale, "Root", "설치 경로"),
+        tr(locale, "Root", "설치 경로", "安装路径", "インストール先"),
         p.root.display(),
-        tr(locale, "Source", "소스"),
+        tr(locale, "Source", "소스", "来源", "ソース"),
         p.source,
-        tr(locale, "Managed checkout", "관리형 체크아웃"),
-        managed_checkout(p).unwrap_or(tr(locale, "Not applicable", "해당 없음"))
+        tr(locale, "Managed checkout", "관리형 체크아웃", "托管检出目录", "管理対象チェックアウト"),
+        managed_checkout(p).unwrap_or(tr(locale, "Not applicable", "해당 없음", "不适用", "該当なし"))
     )));
-    alert.addButtonWithTitle(&NSString::from_str(tr(locale, "Cancel", "취소")));
+    alert.addButtonWithTitle(&NSString::from_str(tr(locale, "Cancel", "취소", "取消", "キャンセル")));
     alert.addButtonWithTitle(&NSString::from_str(action_name(action, locale)));
     alert.runModal() == NSAlertSecondButtonReturn
 }
@@ -698,11 +678,7 @@ fn act(action: Action, mtm: MainThreadMarker) {
         let generation = s.generation;
         set_status(
             s,
-            tr(
-                locale,
-                "Rechecking installed metadata and submitting…",
-                "설치 정보를 다시 확인하고 작업 제출 중…",
-            ),
+            tr(locale, "Rechecking installed metadata and submitting…", "설치 정보를 다시 확인하고 작업 제출 중…", "正在重新检查已安装插件的元数据并提交操作…", "インストール済みメタデータを再確認して送信中…"),
         );
         s.controls();
         std::thread::spawn(move || {
@@ -721,22 +697,14 @@ fn act(action: Action, mtm: MainThreadMarker) {
                             && p.registration == plugin.registration
                     })
                     .ok_or_else(|| {
-                        tr(
-                            locale,
-                            "Plugin metadata changed; refresh and confirm again.",
-                            "플러그인 정보가 변경되었습니다. 새로고침 후 다시 확인하세요.",
-                        )
+                        tr(locale, "Plugin metadata changed; refresh and confirm again.", "플러그인 정보가 변경되었습니다. 새로고침 후 다시 확인하세요.", "插件元数据已更改；请刷新后重新确认。", "プラグインのメタデータが変更されました。更新して再度確認してください。")
                         .to_owned()
                     })?;
                 if current.protected()
                     || target.protection_reason(current, &plugins).is_some()
                     || !eligible(action, current)
                 {
-                    return Err(tr(
-                        locale,
-                        "The selected action is no longer permitted.",
-                        "선택한 작업이 더 이상 허용되지 않습니다.",
-                    )
+                    return Err(tr(locale, "The selected action is no longer permitted.", "선택한 작업이 더 이상 허용되지 않습니다.", "所选操作已不再允许。", "選択した操作は許可されなくなりました。")
                     .into());
                 }
                 let handle = store.submit(&target, action, current)?;
@@ -757,18 +725,14 @@ fn act(action: Action, mtm: MainThreadMarker) {
                         s.feedback = Some(match result {
                             Ok((observation, journal)) => format!(
                                 "{}: {}. {}: {}",
-                                tr(locale, "Operation evidence", "작업 기록"),
+                                tr(locale, "Operation evidence", "작업 기록", "操作记录", "操作記録"),
                                 observation_detail(&observation, locale),
-                                tr(locale, "Journal", "기록 경로"),
+                                tr(locale, "Journal", "기록 경로", "日志路径", "記録先"),
                                 journal.display()
                             ),
                             Err(error) => format!(
                                 "{}: {error}",
-                                tr(
-                                    locale,
-                                    "Submission or observation error; review before retrying",
-                                    "작업 제출 또는 확인 오류: 재시도 전 검토하세요"
-                                )
+                                tr(locale, "Submission or observation error; review before retrying", "작업 제출 또는 확인 오류: 재시도 전 검토하세요", "提交或结果检查出错；重试前请先审阅记录", "送信または結果確認のエラー：再試行する前に確認してください")
                             ),
                         });
                         s.refresh();
@@ -780,9 +744,9 @@ fn act(action: Action, mtm: MainThreadMarker) {
 }
 fn observation_detail(value: &OperationObservation, locale: UiLocale) -> String {
     match value {
-        OperationObservation::Idle => tr(locale, "Idle", "대기 중").into(),
+        OperationObservation::Idle => tr(locale, "Idle", "대기 중", "空闲", "待機中").into(),
         OperationObservation::Running { operation_id, .. } => {
-            format!("{} {operation_id}", tr(locale, "Running", "진행 중"))
+            format!("{} {operation_id}", tr(locale, "Running", "진행 중", "进行中", "実行中"))
         }
         OperationObservation::Terminal {
             operation_id,
@@ -822,18 +786,10 @@ fn review_unknown(mtm: MainThreadMarker) {
         return;
     };
     let alert = NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str(tr(
-        locale,
-        "Review unknown operation evidence",
-        "결과 불명 작업 기록 검토",
-    )));
-    alert.setInformativeText(&NSString::from_str(&format!("{}: {id}\n{}: {}\n{}: {detail}\n\n{}",tr(locale,"Operation ID","작업 ID"),tr(locale,"Journal","기록 경로"),journal.display(),tr(locale,"Evidence","기록"),tr(locale,"The result cannot be proven. Inspect the installed plugin and journal before acknowledging. Acknowledgment does not retry or reverse anything; a new confirmation is required for any subsequent change.","결과를 증명할 수 없습니다. 확인 전에 설치된 플러그인과 기록을 검토하세요. 확인은 재시도나 원상 복구가 아니며, 다음 변경에는 새 확인이 필요합니다."))));
-    alert.addButtonWithTitle(&NSString::from_str(tr(locale, "Keep blocked", "차단 유지")));
-    alert.addButtonWithTitle(&NSString::from_str(tr(
-        locale,
-        "I reviewed this operation",
-        "이 작업을 검토했습니다",
-    )));
+    alert.setMessageText(&NSString::from_str(tr(locale, "Review unknown operation evidence", "결과 불명 작업 기록 검토", "审阅结果未知的操作记录", "結果不明の操作記録を確認")));
+    alert.setInformativeText(&NSString::from_str(&format!("{}: {id}\n{}: {}\n{}: {detail}\n\n{}",tr(locale, "Operation ID", "작업 ID", "操作 ID", "操作 ID"),tr(locale, "Journal", "기록 경로", "日志路径", "記録先"),journal.display(),tr(locale, "Evidence", "기록", "操作记录", "操作記録"),tr(locale, "The result cannot be proven. Inspect the installed plugin and journal before acknowledging. Acknowledgment does not retry or reverse anything; a new confirmation is required for any subsequent change.", "결과를 증명할 수 없습니다. 확인 전에 설치된 플러그인과 기록을 검토하세요. 확인은 재시도나 원상 복구가 아니며, 다음 변경에는 새 확인이 필요합니다.", "无法确定操作结果。确认前请检查已安装的插件和日志。确认不会重试或撤销任何操作；后续的任何更改都需要重新确认。", "結果を確認できません。了承する前に、インストール済みプラグインと記録を確認してください。了承しても再試行や取り消しは行われません。その後の変更には新たな確認が必要です。"))));
+    alert.addButtonWithTitle(&NSString::from_str(tr(locale, "Keep blocked", "차단 유지", "继续阻止操作", "ブロックを維持")));
+    alert.addButtonWithTitle(&NSString::from_str(tr(locale, "I reviewed this operation", "이 작업을 검토했습니다", "我已审阅此操作", "この操作を確認しました")));
     if alert.runModal() != NSAlertSecondButtonReturn {
         return;
     }
@@ -846,7 +802,7 @@ fn review_unknown(mtm: MainThreadMarker) {
             DispatchQueue::main().exec_async(move || WINDOW.with(|slot| {
                 if let Some(s)=slot.borrow_mut().as_mut().filter(|s|s.generation==generation){
                     s.busy=false;
-                    if let Err(error)=result{s.feedback=Some(format!("{}: {error}",tr(locale,"Could not acknowledge evidence","기록 확인 실패")));}
+                    if let Err(error)=result{s.feedback=Some(format!("{}: {error}",tr(locale, "Could not acknowledge evidence", "기록 확인 실패", "无法确认操作记录", "操作記録を了承できませんでした")));}
                     s.refresh();
                 }
             }));
@@ -905,11 +861,17 @@ pub(crate) fn open(
     window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     let content = window
         .contentView()
-        .ok_or("manager window has no content view")?;
+        .ok_or(tr(
+            locale,
+            "manager window has no content view",
+            "관리자 창에 콘텐츠 뷰가 없습니다",
+            "管理器窗口没有内容视图",
+            "マネージャーウィンドウにコンテンツビューがありません",
+        ))?;
     let heading = label(
         &format!(
             "{}: {}",
-            tr(locale, "Herdr socket", "Herdr 소켓"),
+            tr(locale, "Herdr socket", "Herdr 소켓", "Herdr 套接字", "Herdr ソケット"),
             socket.display()
         ),
         rect(24.0, 560.0, 710.0, 30.0),
@@ -925,7 +887,7 @@ pub(crate) fn open(
     }
     content.addSubview(&selection);
     let refresh = button(
-        tr(locale, "Refresh", "새로고침"),
+        tr(locale, "Refresh", "새로고침", "刷新", "再読み込み"),
         sel!(refreshPlugins:),
         &target,
         rect(625.0, 510.0, 110.0, 30.0),
@@ -976,14 +938,14 @@ pub(crate) fn open(
         content.addSubview(item);
     }
     let review = button(
-        tr(locale, "Review unknown outcome", "결과 불명 기록 검토"),
+        tr(locale, "Review unknown outcome", "결과 불명 기록 검토", "审阅未知结果", "不明な結果を確認"),
         sel!(reviewPluginEvidence:),
         &target,
         rect(24.0, 117.0, 260.0, 32.0),
         mtm,
     );
     content.addSubview(&review);
-    let notice=label(tr(locale,"Removing the manager feature never deletes plugins. Deleting a managed plugin requires separate confirmation.","관리자 기능을 제거해도 플러그인은 삭제되지 않습니다. 관리형 플러그인 삭제에는 별도 확인이 필요합니다."),rect(24.0,80.0,710.0,32.0),mtm);
+    let notice=label(tr(locale, "Removing the manager feature never deletes plugins. Deleting a managed plugin requires separate confirmation.", "관리자 기능을 제거해도 플러그인은 삭제되지 않습니다. 관리형 플러그인 삭제에는 별도 확인이 필요합니다.", "移除管理器功能不会删除插件。删除托管插件需要单独确认。", "マネージャー機能を削除してもプラグインは削除されません。管理対象プラグインの削除には別途確認が必要です。"),rect(24.0,80.0,710.0,32.0),mtm);
     content.addSubview(&notice);
     let status_field = label("", rect(24.0, 10.0, 710.0, 68.0), mtm);
     content.addSubview(&status_field);

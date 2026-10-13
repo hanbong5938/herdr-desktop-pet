@@ -118,7 +118,7 @@ fn empty_buffer_returns_without_waiting() {
 
 mod prompt {
     use crate::herdr::{PromptError, PromptSender, RequestOrigin};
-    use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata};
+    use crate::session::{AgentRecord, AgentStatus, SessionMetadata};
     use crate::session_view::{SessionFilter, SessionKey, SessionListOptions};
     use crate::sources::{
         remote_source, MachineInfo, MachineStatus, ObservationPreferences, SourceCatalog,
@@ -520,7 +520,7 @@ mod prompt {
         assert_eq!(result.submission.key, key);
         assert_eq!(result.submission.text, "  first\nsecond  ");
         assert_eq!(result.submission.origin, RequestOrigin::Gui);
-        assert_eq!(result.result, Ok(()));
+        assert_eq!(result.result, Ok(crate::herdr::PromptReceipt::Acknowledged));
         assert!(!sender.is_pending());
         worker.join().unwrap();
     }
@@ -638,7 +638,7 @@ mod worktree_remove {
     use crate::herdr::{
         RequestOrigin, WorktreeRemoveError, WorktreeRemoveResult, WorktreeRemoveSender,
     };
-    use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
+    use crate::session::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
     use crate::session_view::{SessionFilter, SessionKey, SessionListOptions};
     use crate::state::{AppState, SourceCounts};
     use serde_json::{json, Value};
@@ -1930,5 +1930,693 @@ mod watcher_lifecycle {
             assert!(!shared.lock().unwrap().scene().shutdown);
             drop(watchers);
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod tern_control_boundary {
+    use crate::character_service::PackService;
+    use crate::control::{send_command, send_tern_exchange, ControlServer};
+    use crate::herdr::{PromptError, PromptReceipt, Watchers};
+    use crate::lifecycle::{LifecycleSettings, Paths};
+    use crate::session_view::{Availability, SessionFilter, SessionListOptions};
+    use crate::state::AppState;
+    use crate::tern::{
+        TernAgent, TernAgentState, TernExchangeErrorCode, TernExchangeRequest, TernResult,
+        TernResultStatus, FRESHNESS, MAX_EXCHANGE_BYTES, MAX_RESPONSE_BYTES,
+    };
+    use herdr_update_coordinator::{ExecutableIdentity, ObservationMode, UpdateContext};
+    use parking_lot::{Condvar, Mutex as GateMutex};
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc;
+    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::thread::{self, JoinHandle};
+    use std::time::{Duration, Instant};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+    // AppState and Watchers expose std mutexes; retain those API types while
+    // keeping fixture-owned coordination on parking_lot.
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct Fixture {
+        root: PathBuf,
+        paths: Paths,
+        context: UpdateContext,
+        shared: Arc<Mutex<AppState>>,
+        watchers: Arc<Mutex<Watchers>>,
+        control: ControlServer,
+    }
+
+    impl Fixture {
+        fn new(mode: ObservationMode) -> Self {
+            let root = PathBuf::from("/tmp").join(format!(
+                "pet-tern-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).expect("isolated fixture directory");
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+            let root = fs::canonicalize(root).unwrap();
+            let paths = Paths {
+                config_dir: root.join("config"),
+                state_dir: root.join("state"),
+                control_socket: root.join("state/control.sock"),
+                log_file: root.join("state/pet.log"),
+            };
+            let executable = root.join("pet");
+            let context = UpdateContext {
+                executable: executable.clone(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                instance_id: format!("fixture-{}", root.display()),
+                config_dir: paths.config_dir.clone(),
+                host_plugin_config_dir: None,
+                state_dir: paths.state_dir.clone(),
+                // Neither the listener nor its parent exists. This is a launch
+                // identity, not an active Herdr observation endpoint.
+                herdr_socket: root.join("not-running/herdr.sock"),
+                running: ExecutableIdentity {
+                    path: executable.clone(),
+                    sha256: "a".repeat(64),
+                },
+                running_origin: None,
+                assets_override: None,
+                environment: Default::default(),
+                locale: "en".into(),
+            };
+            let shared = Arc::new(Mutex::new(AppState::new()));
+            {
+                let mut state = lock(&shared);
+                state.set_observation_mode(mode);
+                state.set_update_context(context.clone());
+                state.set_ui_ready();
+                state.set_lifecycle_settings(LifecycleSettings {
+                    auto_start: true,
+                    exit_with_herdr: false,
+                });
+            }
+            let watchers = Arc::new(Mutex::new(Watchers::new(Arc::clone(&shared))));
+            let packs = PackService::new(paths.config_dir.clone(), root.join("assets"), None);
+            let mut control = ControlServer::bind(
+                Arc::clone(&shared),
+                Arc::clone(&watchers),
+                paths.clone(),
+                None,
+                executable,
+                packs,
+            )
+            .unwrap();
+            control.start().unwrap();
+            Self {
+                root,
+                paths,
+                context,
+                shared,
+                watchers,
+                control,
+            }
+        }
+
+        fn exchange(&self, request: &TernExchangeRequest) -> crate::tern::TernExchangeReply {
+            send_tern_exchange(&self.paths.control_socket, request, REQUEST_TIMEOUT).unwrap()
+        }
+
+        fn status(&self) -> crate::control::ControlResponse {
+            send_command(&self.paths.control_socket, "status", None, REQUEST_TIMEOUT).unwrap()
+        }
+
+        fn availability(&self, pane: &str) -> Option<Availability> {
+            lock(&self.shared)
+                .session_snapshot(&SessionListOptions::with_filter(SessionFilter::All), None)
+                .rows
+                .into_iter()
+                .find(|row| row.pane_id == pane)
+                .map(|row| row.availability)
+        }
+
+        fn raw_exchange(&self, value: &Value) -> Vec<u8> {
+            let mut stream = UnixStream::connect(&self.paths.control_socket).unwrap();
+            stream.set_read_timeout(Some(REQUEST_TIMEOUT)).unwrap();
+            writeln!(stream, "{value}").unwrap();
+            let mut frame = Vec::new();
+            BufReader::new(stream)
+                .read_until(b'\n', &mut frame)
+                .unwrap();
+            assert_eq!(frame.last(), Some(&b'\n'));
+            assert!(frame.len() <= MAX_RESPONSE_BYTES);
+            frame
+        }
+
+        fn peer_reply(&self, reply: Value) -> Result<crate::tern::TernExchangeReply, String> {
+            let path = self.root.join("reply.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let peer = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(REQUEST_TIMEOUT)).unwrap();
+                stream.set_write_timeout(Some(REQUEST_TIMEOUT)).unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: TernExchangeRequest = serde_json::from_str(&line).unwrap();
+                assert_eq!(request.window, "wire");
+                // An oversize rejection can close the receiver while this
+                // write is in progress; that is an expected transport result.
+                let _ = writeln!(stream, "{reply}");
+            });
+            let result = send_tern_exchange(&path, &request("wire", "pane"), REQUEST_TIMEOUT);
+            peer.join().unwrap();
+            fs::remove_file(path).unwrap();
+            result
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.control.shutdown();
+            lock(&self.watchers).shutdown();
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn request(window: &str, pane: &str) -> TernExchangeRequest {
+        TernExchangeRequest {
+            version: 1,
+            kind: "tern".into(),
+            window: window.into(),
+            epoch: 1,
+            sequence: 1,
+            instance_id: None,
+            agents: vec![TernAgent {
+                pane: pane.into(),
+                title: "fixture agent".into(),
+                cwd: "/tmp".into(),
+                session_id: None,
+                session_label: None,
+                tab_id: None,
+                tab_label: None,
+                state: TernAgentState::Idle,
+                delivery_error: None,
+            }],
+            results: vec![],
+        }
+    }
+
+    fn inventory_with_json_bytes(bytes: usize) -> TernExchangeRequest {
+        let mut inventory = request("request-budget", "pane");
+        let template = inventory.agents[0].clone();
+        inventory.agents = (0..128)
+            .map(|index| {
+                let mut agent = template.clone();
+                agent.pane = format!("pane-{index}");
+                agent.title.clear();
+                agent
+            })
+            .collect();
+        let overhead = serde_json::to_vec(&inventory).unwrap().len();
+        let mut remaining = bytes.checked_sub(overhead).unwrap();
+        for agent in &mut inventory.agents {
+            let length = remaining.min(4096);
+            agent.title = "x".repeat(length);
+            remaining -= length;
+        }
+        assert_eq!(remaining, 0);
+        assert_eq!(serde_json::to_vec(&inventory).unwrap().len(), bytes);
+        assert!(
+            inventory.normalize().is_ok(),
+            "inventory must be otherwise valid"
+        );
+        inventory
+    }
+
+    #[test]
+    fn tern_request_json_boundary_excludes_optional_lf_in_helper_decoder_and_ipc() {
+        let inventory = inventory_with_json_bytes(MAX_EXCHANGE_BYTES);
+        let json = serde_json::to_vec(&inventory).unwrap();
+        for terminator in [b"".as_slice(), b"\n".as_slice(), b"\r\n".as_slice()] {
+            let mut input = json.clone();
+            input.extend_from_slice(terminator);
+            assert!(crate::control::decode_tern_exchange_request(&input).is_ok());
+            assert!(crate::read_tern_exchange_request(input.as_slice()).is_ok());
+        }
+        let fixture = Fixture::new(ObservationMode::Tern);
+        assert!(fixture.exchange(&inventory).ok);
+        assert_eq!(fixture.status().sessions, 128);
+        assert_eq!(fixture.status().connected_sources, 1);
+        let fixture = Fixture::new(ObservationMode::Tern);
+        let reply: Value = serde_json::from_slice(
+            &fixture.raw_exchange(&serde_json::to_value(&inventory).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(fixture.status().sessions, 128);
+    }
+
+    #[test]
+    fn oversized_valid_tern_inventory_rejects_before_helper_exchange_or_source_publication() {
+        let fixture = Fixture::new(ObservationMode::Tern);
+        assert!(fixture.exchange(&request("existing", "existing-pane")).ok);
+        let before = fixture.status();
+        for bytes in [MAX_EXCHANGE_BYTES + 1, 411_918] {
+            let inventory = inventory_with_json_bytes(bytes);
+            let json = serde_json::to_vec(&inventory).unwrap();
+            let expected = "Tern exchange request JSON exceeds 256 KiB";
+            for terminator in [b"".as_slice(), b"\n".as_slice(), b"\r\n".as_slice()] {
+                let mut input = json.clone();
+                input.extend_from_slice(terminator);
+                assert_eq!(
+                    crate::control::decode_tern_exchange_request(&input).unwrap_err(),
+                    expected
+                );
+                assert_eq!(
+                    crate::read_tern_exchange_request(input.as_slice()).unwrap_err(),
+                    expected
+                );
+            }
+            // No socket exists here: the sender must reject before connecting.
+            assert_eq!(
+                send_tern_exchange(
+                    &fixture.root.join("absent.sock"),
+                    &inventory,
+                    REQUEST_TIMEOUT
+                )
+                .unwrap_err(),
+                expected
+            );
+            let reply: Value = serde_json::from_slice(
+                &fixture.raw_exchange(&serde_json::to_value(&inventory).unwrap()),
+            )
+            .unwrap();
+            assert_eq!(reply["ok"], false);
+            assert_eq!(reply["error_code"], "rejected");
+            assert_eq!(reply["error"], expected);
+            assert_eq!(reply["generation"], 0);
+            assert_eq!(reply["command"], Value::Null);
+            let after = fixture.status();
+            assert_eq!(after.sessions, before.sessions);
+            assert_eq!(after.connected_sources, before.connected_sources);
+            assert_eq!(after.disconnected_sources, before.disconnected_sources);
+            assert_eq!(after.working, before.working);
+            assert_eq!(after.blocked, before.blocked);
+            assert_eq!(after.done, before.done);
+            assert_eq!(after.unknown, before.unknown);
+            assert_eq!(fixture.availability("pane-0"), None);
+        }
+    }
+
+    #[test]
+    fn tern_only_ipc_status_preserves_configured_identity_without_registration() {
+        let fixture = Fixture::new(ObservationMode::Tern);
+        let status = fixture.status();
+        assert!(status.ok && status.ready && status.control_ready && status.ui_ready);
+        assert_eq!(status.instance_id, fixture.context.instance_id);
+        assert_eq!(status.running_sha256, fixture.context.running.sha256);
+        assert_eq!(
+            status.herdr_socket,
+            fixture.context.herdr_socket.display().to_string()
+        );
+        assert_eq!(
+            status.config_dir,
+            fixture.paths.config_dir.display().to_string()
+        );
+        assert_eq!(
+            status.state_dir,
+            fixture.paths.state_dir.display().to_string()
+        );
+        assert_eq!(status.observation_mode, "tern");
+        assert_eq!(status.connected_sources, 0);
+        assert_eq!(status.disconnected_sources, 0);
+        assert!(!status.data_connected);
+        assert!(!fixture.context.herdr_socket.exists());
+        let ready = send_command(
+            &fixture.paths.control_socket,
+            "ready",
+            None,
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        assert!(ready.ok && ready.ready);
+        let register = send_command(
+            &fixture.paths.control_socket,
+            "register",
+            Some(&fixture.context.herdr_socket),
+            REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        assert!(!register.ok && !register.registration_accepted && !register.ready);
+        assert_eq!(fixture.status().connected_sources, 0);
+    }
+
+    #[test]
+    fn actual_exchange_forwards_typed_rejections_and_preserves_receipts_and_size_admission() {
+        let fixture = Fixture::new(ObservationMode::Tern);
+        let mut poll = request("bound", "pane");
+        let first_wire = fixture.raw_exchange(&serde_json::to_value(&poll).unwrap());
+        let first: Value = serde_json::from_slice(&first_wire).unwrap();
+        assert_eq!(first["ok"], true);
+        assert_eq!(first["command"], Value::Null);
+        assert!(first.get("error_code").is_none());
+        poll.sequence = 2;
+        assert_eq!(
+            fixture.exchange(&poll).error_code,
+            Some(TernExchangeErrorCode::BindingRequired)
+        );
+        poll.instance_id = Some("other-daemon".into());
+        assert_eq!(
+            fixture.exchange(&poll).error_code,
+            Some(TernExchangeErrorCode::InstanceChanged)
+        );
+        poll.instance_id = Some(fixture.context.instance_id.clone());
+        let mut retired = poll.clone();
+        retired.window = "unknown-bound-window".into();
+        assert_eq!(
+            fixture.exchange(&retired).error_code,
+            Some(TernExchangeErrorCode::SourceRetired)
+        );
+        assert_eq!(
+            fixture.status().sessions,
+            1,
+            "retired identity must not publish"
+        );
+        let mut stale = poll.clone();
+        stale.sequence = 1;
+        assert_eq!(
+            fixture.exchange(&stale).error_code,
+            Some(TernExchangeErrorCode::Rejected)
+        );
+        let key = lock(&fixture.shared)
+            .session_snapshot(&SessionListOptions::default(), None)
+            .rows[0]
+            .key
+            .clone();
+        let escaped = "\u{1}".repeat(100_000);
+        assert_eq!(
+            lock(&fixture.shared)
+                .queue_tern_prompt(key.clone(), "bound", 1, "pane", &escaped)
+                .unwrap_err(),
+            PromptError::TooLarge
+        );
+        let text = "✓\n".repeat(60_000);
+        let (operation, receipt) = lock(&fixture.shared)
+            .queue_tern_prompt(key, "bound", 1, "pane", &text)
+            .unwrap();
+        let offered = fixture.exchange(&poll);
+        assert!(offered.ok && offered.error_code.is_none());
+        let command = offered.command.unwrap();
+        assert_eq!(command.operation_id, operation);
+        assert_eq!(command.text, text);
+        poll.sequence = 3;
+        poll.results = vec![TernResult {
+            operation_id: "not-the-offered-operation".into(),
+            pane: "pane".into(),
+            status: TernResultStatus::Accepted,
+            error: None,
+        }];
+        let rejected = fixture.exchange(&poll);
+        assert!(!rejected.ok && rejected.command.is_none() && rejected.generation == 0);
+        assert_eq!(
+            rejected.error_code,
+            Some(TernExchangeErrorCode::ReceiptRejected)
+        );
+        assert!(matches!(receipt.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        poll.results[0].operation_id = operation;
+        assert!(fixture.exchange(&poll).ok);
+        assert_eq!(
+            receipt.recv_timeout(REQUEST_TIMEOUT).unwrap(),
+            Ok(PromptReceipt::Accepted)
+        );
+        poll.sequence = 4;
+        poll.results.clear();
+        assert!(fixture.exchange(&poll).command.is_none());
+
+        let mut invalid = serde_json::to_value(&poll).unwrap();
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .insert("é".repeat(3000), Value::Null);
+        let reply: Value = serde_json::from_slice(&fixture.raw_exchange(&invalid)).unwrap();
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["error_code"], "rejected");
+        assert_eq!(reply["generation"], 0);
+        assert_eq!(reply["command"], Value::Null);
+        let detail = reply["error"].as_str().unwrap();
+        assert!(!detail.is_empty() && detail.len() <= 4096);
+        let oversized = json!({"kind": "tern", "padding": "x".repeat(MAX_EXCHANGE_BYTES)});
+        let reply: Value = serde_json::from_slice(&fixture.raw_exchange(&oversized)).unwrap();
+        assert_eq!(reply["error_code"], "rejected");
+        assert_eq!(reply["generation"], 0);
+        assert_eq!(reply["command"], Value::Null);
+        let mut oversized_poll = poll;
+        oversized_poll.agents[0].title = "x".repeat(MAX_EXCHANGE_BYTES);
+        assert!(send_tern_exchange(
+            &fixture.paths.control_socket,
+            &oversized_poll,
+            REQUEST_TIMEOUT,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn helper_transport_rejects_invalid_error_contract_and_honors_response_lf_limit() {
+        let fixture = Fixture::new(ObservationMode::Tern);
+        let failed = json!({
+            "ok": false, "instance_id": "daemon", "generation": 0,
+            "command": null, "error": "rejected", "error_code": "source_retired"
+        });
+        assert_eq!(
+            fixture.peer_reply(failed.clone()).unwrap().error_code,
+            Some(TernExchangeErrorCode::SourceRetired)
+        );
+        let mut invalid = Vec::new();
+        let mut missing = failed.clone();
+        missing.as_object_mut().unwrap().remove("error_code");
+        invalid.push(missing);
+        for (field, value) in [
+            ("error_code", Value::Null),
+            ("error_code", json!("unknown_code")),
+            ("generation", json!(1)),
+            ("error", json!("")),
+            ("error", json!("e".repeat(4097))),
+            ("command", json!({"operation_id":"o","pane":"p","text":"x"})),
+        ] {
+            let mut candidate = failed.clone();
+            candidate[field] = value;
+            invalid.push(candidate);
+        }
+        let success = json!({
+            "ok": true, "instance_id": "daemon", "generation": 1,
+            "command": null, "error": null
+        });
+        for value in [Value::Null, json!("rejected")] {
+            let mut candidate = success.clone();
+            candidate["error_code"] = value;
+            invalid.push(candidate);
+        }
+        for candidate in invalid {
+            assert!(fixture.peer_reply(candidate).is_err());
+        }
+        let mut largest = success;
+        largest["command"] = json!({"operation_id":"operation","pane":"pane","text":""});
+        largest["command"]["text"] = json!("x".repeat(300 * 1024));
+        assert_eq!(
+            fixture
+                .peer_reply(largest.clone())
+                .unwrap()
+                .command
+                .unwrap()
+                .text
+                .len(),
+            300 * 1024
+        );
+        largest["command"]["text"] = json!("");
+        let overhead = serde_json::to_vec(&largest).unwrap().len() + 1;
+        let text = "x".repeat(MAX_RESPONSE_BYTES - overhead);
+        largest["command"]["text"] = json!(text);
+        assert_eq!(
+            serde_json::to_vec(&largest).unwrap().len() + 1,
+            MAX_RESPONSE_BYTES
+        );
+        assert_eq!(
+            fixture
+                .peer_reply(largest.clone())
+                .unwrap()
+                .command
+                .unwrap()
+                .text,
+            text
+        );
+        largest["command"]["text"] = json!(format!("{text}x"));
+        assert!(fixture.peer_reply(largest).is_err());
+    }
+
+    struct BlockedHerdrPass {
+        gate: Arc<(GateMutex<bool>, Condvar)>,
+        joins: Vec<JoinHandle<()>>,
+        observed: mpsc::Receiver<()>,
+        observations: mpsc::Sender<()>,
+    }
+
+    impl BlockedHerdrPass {
+        fn new() -> Self {
+            let (observations, observed) = mpsc::channel();
+            Self {
+                gate: Arc::new((GateMutex::new(false), Condvar::new())),
+                joins: vec![],
+                observed,
+                observations,
+            }
+        }
+
+        fn register(&mut self, fixture: &Fixture, index: usize) {
+            let path = fixture.root.join(format!("h{index}.sock"));
+            let listener = UnixListener::bind(&path).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let gate = Arc::clone(&self.gate);
+            let observed = self.observations.clone();
+            self.joins.push(thread::spawn(move || {
+                let mut stream = loop {
+                    if *gate.0.lock() {
+                        return;
+                    }
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("fake Herdr accept: {error}"),
+                    }
+                };
+                // Accepted sockets can inherit the listener's nonblocking flag.
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(REQUEST_TIMEOUT)).unwrap();
+                let mut line = String::new();
+                BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                assert!(request["method"].is_string(), "real Herdr RPC expected");
+                observed.send(()).unwrap();
+                // Keep a real request unanswered until cleanup. Every endpoint
+                // consumes its own native deadline, blocking a whole watcher
+                // pass rather than a synthetic copied expiry implementation.
+                let mut released = gate.0.lock();
+                while !*released {
+                    gate.1.wait(&mut released);
+                }
+            }));
+            lock(&fixture.watchers).register(path).unwrap();
+        }
+
+        fn observe(&self) {
+            self.observed.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+    }
+
+    impl Drop for BlockedHerdrPass {
+        fn drop(&mut self) {
+            *self.gate.0.lock() = true;
+            self.gate.1.notify_all();
+            for join in self.joins.drain(..) {
+                let result = join.join();
+                if !thread::panicking() {
+                    result.expect("blocked Herdr fixture thread");
+                }
+            }
+        }
+    }
+
+    struct ClientFlood {
+        stop: Arc<AtomicBool>,
+        join: Option<JoinHandle<()>>,
+    }
+
+    impl ClientFlood {
+        fn new(path: PathBuf) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = Arc::clone(&stop);
+            let join = thread::spawn(move || {
+                let mut held = Vec::new();
+                for _ in 0..32 {
+                    if let Ok(stream) =
+                        crate::socket::connect(&path, Instant::now() + Duration::from_millis(100))
+                    {
+                        held.push(stream);
+                    }
+                }
+                while !worker_stop.load(Ordering::Acquire) {
+                    let _ =
+                        crate::socket::connect(&path, Instant::now() + Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(1));
+                }
+                drop(held);
+            });
+            Self {
+                stop,
+                join: Some(join),
+            }
+        }
+    }
+
+    impl Drop for ClientFlood {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            let _ = self.join.take().unwrap().join();
+        }
+    }
+
+    #[test]
+    fn control_expiry_is_independent_of_blocked_herdr_passes_busy_clients_and_idle() {
+        let fixture = Fixture::new(ObservationMode::Both);
+        let mut peers = BlockedHerdrPass::new();
+        peers.register(&fixture, 0);
+        peers.observe();
+        // Queue the rest while the first peer owns the current watcher pass.
+        // The next pass drains all registrations before starting its serial,
+        // independently bounded Herdr requests.
+        for index in 1..=14 {
+            peers.register(&fixture, index);
+        }
+        peers.observe();
+        assert!(fixture.exchange(&request("busy-window", "busy-pane")).ok);
+        let busy_deadline = Instant::now() + FRESHNESS + Duration::from_millis(750);
+        let flood = ClientFlood::new(fixture.paths.control_socket.clone());
+        thread::sleep(Duration::from_secs(1));
+        // Use AppState's real exchange admission for the second inventory while
+        // client slots are deliberately saturated. No expiry is invoked here.
+        assert!(
+            lock(&fixture.shared)
+                .tern_exchange(request("idle-window", "idle-pane"))
+                .ok
+        );
+        while fixture.availability("busy-pane") != Some(Availability::Offline) {
+            assert!(
+                Instant::now() < busy_deadline,
+                "Tern expiry waited for the Herdr pass"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(fixture.availability("idle-pane"), Some(Availability::Live));
+        drop(flood);
+        let idle_deadline = Instant::now() + Duration::from_secs(2);
+        while fixture.availability("idle-pane") != Some(Availability::Offline) {
+            assert!(
+                Instant::now() < idle_deadline,
+                "idle control listener did not expire Tern"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let status = fixture.status();
+        assert!(status.disconnected_sources >= 2);
+        assert!(!status.shutdown);
+        drop(peers);
+        lock(&fixture.watchers).shutdown();
     }
 }

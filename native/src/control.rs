@@ -12,12 +12,18 @@ use crate::preferences::{PreferencePatch, Preferences};
 use crate::session_view::{SessionCursor, SessionFilter, SessionPageCursor, SessionPageRequest};
 use crate::socket;
 use crate::state::AppState;
+use crate::tern::{
+    serialize_response as tern_response_json, TernExchangeErrorCode, TernExchangeReply,
+    TernExchangeRequest, MAX_EXCHANGE_BYTES, MAX_RESPONSE_BYTES,
+};
 use crate::ui;
 use herdr_update_coordinator::protocol::{
-    record_user_stop, start_allowed, stop_generation, verify_control, UpdateCommand,
+    record_user_stop, start_allowed, stop_generation, verify_control_for, UpdateCommand,
     UpdateControlReply, UpdateControlRequest, UPDATER_PROTOCOL,
 };
-use herdr_update_coordinator::{read_plan, InstallOrigin, UpdateContext, UpdatePlan};
+use herdr_update_coordinator::{
+    read_plan, validate_plan_target, InstallOrigin, UpdateContext, UpdatePlan, UpdatePolicy,
+};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -561,6 +567,8 @@ pub struct ControlResponse {
     pub ready: bool,
     pub running: bool,
     pub phase: String,
+    #[serde(default = "default_observation_mode")]
+    pub observation_mode: String,
     pub ui_ready: bool,
     pub control_ready: bool,
     pub registration_accepted: bool,
@@ -601,6 +609,10 @@ fn default_bubble_visible() -> bool {
     true
 }
 
+fn default_observation_mode() -> String {
+    "herdr".to_owned()
+}
+
 impl ControlResponse {
     fn status(command: impl Into<String>, inner: &ControlInner) -> Self {
         let command = command.into();
@@ -615,9 +627,13 @@ impl ControlResponse {
         let assets_override = context
             .and_then(|value| value.assets_override.as_ref())
             .map(|value| value.display().to_string());
+        let herdr_socket = context
+            .map(|value| value.herdr_socket.display().to_string())
+            .unwrap_or_default();
         let ui_ready = state.is_ui_ready();
         let scene = state.scene();
         let settings = state.lifecycle_settings();
+        let observation_mode = state.observation_mode().as_str().to_owned();
         drop(state);
         let endpoint = lock_unpoisoned(&inner.registered);
         let registration_accepted = inner
@@ -640,6 +656,7 @@ impl ControlResponse {
             ready: ui_ready && !scene.shutdown,
             running: true,
             phase: scene.phase.as_str().to_owned(),
+            observation_mode,
             ui_ready,
             control_ready: true,
             registration_accepted,
@@ -667,11 +684,7 @@ impl ControlResponse {
             executable_path: inner.executable_path.display().to_string(),
             config_dir: inner.paths.config_dir.display().to_string(),
             state_dir: inner.paths.state_dir.display().to_string(),
-            herdr_socket: inner
-                .endpoint
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default(),
+            herdr_socket,
         }
     }
 
@@ -765,6 +778,12 @@ impl ControlServer {
     }
 
     pub fn record_registered_endpoint(&self, endpoint: PathBuf) -> Result<(), String> {
+        if !lock_unpoisoned(&self.inner.shared)
+            .observation_mode()
+            .supports_herdr()
+        {
+            return Err("Herdr endpoint registration is unavailable in Tern mode".into());
+        }
         let canonical = socket::canonical_endpoint(&endpoint)?;
         {
             let _write_guard = lock_unpoisoned(&self.inner.lifecycle_writes);
@@ -820,9 +839,18 @@ impl Drop for ControlServer {
 }
 
 fn accept_loop(listener: UnixListener, inner: Arc<ControlInner>) {
+    let mut next_expiry = Instant::now();
     loop {
         if inner.stopping.load(Ordering::Acquire) {
             return;
+        }
+        let now = Instant::now();
+        if now >= next_expiry {
+            next_expiry = now + Duration::from_millis(100);
+            let changed = lock_unpoisoned(&inner.shared).expire_tern(now);
+            if changed {
+                ui::wake();
+            }
         }
         reap_finished_clients(&inner);
         let (stream, _) = match listener.accept() {
@@ -1145,6 +1173,28 @@ fn handle_client(mut stream: UnixStream, inner: Arc<ControlInner>) {
         let _ = write_sessions_response(&mut stream, &response, deadline);
         return;
     }
+    if frame_kind.kind.as_deref() == Some("tern") {
+        let response = decode_tern_exchange_request(&frame)
+            .map(|request| lock_unpoisoned(&inner.shared).tern_exchange(request))
+            .unwrap_or_else(|message| {
+                let state = lock_unpoisoned(&inner.shared);
+                let instance_id = state
+                    .update_context()
+                    .map(|context| context.instance_id.clone())
+                    .unwrap_or_default();
+                TernExchangeReply::error(instance_id, TernExchangeErrorCode::Rejected, message)
+            });
+        if response.ok {
+            ui::wake();
+        }
+        match tern_response_json(&response) {
+            Ok(bytes) => {
+                let _ = write_frame(&mut stream, &bytes, deadline);
+            }
+            Err(error) => eprintln!("cannot encode admitted Tern exchange response: {error}"),
+        }
+        return;
+    }
     if frame.len() > MAX_FRAME_BYTES {
         return;
     }
@@ -1278,6 +1328,17 @@ fn verify_running_plan(plan: &UpdatePlan, context: &UpdateContext) -> Result<(),
     {
         return Err("updater plan does not match running executable, origin and profile".into());
     }
+    validate_plan_target(plan)?;
+    if let Some(target) = &plan.target {
+        let selected = if Preferences::load(&context.config_dir)?.receive_beta_updates() {
+            UpdatePolicy::StableAndBeta
+        } else {
+            UpdatePolicy::StableOnly
+        };
+        if target.policy != selected {
+            return Err("selected update policy changed since consent".into());
+        }
+    }
     Ok(())
 }
 
@@ -1312,14 +1373,15 @@ fn dispatch_update(
     if matches!(origin, InstallOrigin::Unknown { .. }) {
         return Err("unknown installation cannot be reserved for update".into());
     }
-    verify_control(
+    let plan = read_plan(&context.state_dir, &request.operation_id)?;
+    verify_running_plan(&plan, &context)?;
+    verify_control_for(
         origin,
+        plan.target.as_ref().map(|target| &target.origin),
         &context.state_dir,
         &request.operation_id,
         &request.token,
     )?;
-    let plan = read_plan(&context.state_dir, &request.operation_id)?;
-    verify_running_plan(&plan, &context)?;
     match request.command {
         UpdateCommand::Prepare => {
             let (sender, receiver) = mpsc::channel();
@@ -1347,8 +1409,9 @@ fn dispatch_update(
                     return Err("main-thread update preparation timed out".into());
                 }
             }
-            if let Err(error) = verify_control(
+            if let Err(error) = verify_control_for(
                 origin,
+                plan.target.as_ref().map(|target| &target.origin),
                 &context.state_dir,
                 &request.operation_id,
                 &request.token,
@@ -1364,8 +1427,9 @@ fn dispatch_update(
             let _lifecycle = lock_unpoisoned(&inner.lifecycle_writes);
             // Verify and read the durable generation before taking AppState;
             // ordinary control Stop writes it under the same lifecycle lock.
-            verify_control(
+            verify_control_for(
                 origin,
+                plan.target.as_ref().map(|target| &target.origin),
                 &context.state_dir,
                 &request.operation_id,
                 &request.token,
@@ -2816,6 +2880,12 @@ pub(crate) fn set_lifecycle_setting(
 }
 
 fn register_endpoint(inner: &ControlInner, endpoint: PathBuf) -> Result<(), String> {
+    if !lock_unpoisoned(&inner.shared)
+        .observation_mode()
+        .supports_herdr()
+    {
+        return Err("Herdr endpoint registration is unavailable in Tern mode".into());
+    }
     let canonical_key = socket::canonical_endpoint(&endpoint)?;
     let _write_guard = lock_unpoisoned(&inner.lifecycle_writes);
     mutation_admission(inner)?;
@@ -3081,6 +3151,59 @@ pub fn send_command(
         .map_err(|error| format!("cannot read control response: {error}"))?;
     serde_json::from_slice(&response[..length])
         .map_err(|error| format!("invalid control response: {error}"))
+}
+pub(crate) fn decode_tern_exchange_request(frame: &[u8]) -> Result<TernExchangeRequest, String> {
+    // Socket framing removes LF/CRLF; stdin may still include that terminator.
+    let frame = match frame.strip_suffix(b"\n") {
+        Some(frame) => frame.strip_suffix(b"\r").unwrap_or(frame),
+        None => frame,
+    };
+    if frame.len() > MAX_EXCHANGE_BYTES {
+        return Err("Tern exchange request JSON exceeds 256 KiB".into());
+    }
+    reject_duplicate_json_keys(frame).map_err(|error| format!("invalid Tern exchange: {error}"))?;
+    let request: TernExchangeRequest =
+        serde_json::from_slice(frame).map_err(|error| format!("invalid Tern exchange: {error}"))?;
+    Ok(request)
+}
+
+pub(crate) fn send_tern_exchange(
+    socket_path: &Path,
+    request: &TernExchangeRequest,
+    timeout: Duration,
+) -> Result<TernExchangeReply, String> {
+    if socket_path.as_os_str().is_empty() {
+        return Err("control socket path is empty".into());
+    }
+    let mut bytes = serde_json::to_vec(request)
+        .map_err(|error| format!("cannot encode Tern exchange: {error}"))?;
+    if bytes.len() > MAX_EXCHANGE_BYTES {
+        return Err("Tern exchange request JSON exceeds 256 KiB".into());
+    }
+    bytes.push(b'\n');
+    let deadline = Instant::now() + timeout;
+    let mut stream = connect_private_socket(socket_path, deadline)?;
+    write_frame(&mut stream, &bytes, deadline)
+        .map_err(|error| format!("cannot send Tern exchange: {error}"))?;
+    let frame = read_client_frame(&mut stream, deadline, MAX_RESPONSE_BYTES)
+        .map_err(|error| format!("cannot read Tern exchange: {error}"))?;
+    reject_duplicate_json_keys(&frame)
+        .map_err(|error| format!("invalid Tern exchange response: {error}"))?;
+    let reply: TernExchangeReply = serde_json::from_slice(&frame)
+        .map_err(|error| format!("invalid Tern exchange response: {error}"))?;
+    if reply.instance_id.is_empty()
+        || (reply.ok
+            && (reply.error.is_some() || reply.error_code.is_some() || reply.generation == 0))
+        || (!reply.ok
+            && (reply.error.as_deref().is_none_or(str::is_empty)
+                || reply.error.as_ref().is_some_and(|error| error.len() > 4096)
+                || reply.error_code.is_none()
+                || reply.generation != 0
+                || reply.command.is_some()))
+    {
+        return Err("invalid Tern exchange response fields".into());
+    }
+    Ok(reply)
 }
 
 pub(crate) fn send_presentation_request(
@@ -5195,10 +5318,35 @@ mod tests {
     }
 
     #[test]
+    fn tern_exchange_rejects_nested_duplicate_keys_before_dispatch() {
+        let duplicate = br#"{"version":1,"kind":"tern","window":"w","epoch":1,"sequence":1,"instance_id":null,"agents":[{"pane":"p","pane":"other","title":"a","cwd":"/tmp","session_id":null,"session_label":null,"tab_id":null,"tab_label":null,"state":"idle","delivery_error":null}],"results":[]}"#;
+        assert!(decode_tern_exchange_request(duplicate).is_err());
+        let oversized = vec![b' '; MAX_EXCHANGE_BYTES + 1];
+        assert!(decode_tern_exchange_request(&oversized).is_err());
+    }
+
+    #[test]
     fn ready_reports_requested_registered_endpoint_not_primary_display() {
         let primary = socket::canonical_endpoint(Path::new("/tmp/herdr-primary.sock")).unwrap();
         let secondary = socket::canonical_endpoint(Path::new("/tmp/herdr-secondary.sock")).unwrap();
         let shared = Arc::new(Mutex::new(AppState::new()));
+        lock_unpoisoned(&shared).set_update_context(UpdateContext {
+            executable: PathBuf::from("/tmp/unused-executable"),
+            version: env!("CARGO_PKG_VERSION").into(),
+            instance_id: "ready-fixture".into(),
+            config_dir: PathBuf::from("/tmp/unused-profile"),
+            host_plugin_config_dir: None,
+            state_dir: PathBuf::from("/tmp/unused-state"),
+            herdr_socket: primary.clone(),
+            running: herdr_update_coordinator::ExecutableIdentity {
+                path: PathBuf::from("/tmp/unused-executable"),
+                sha256: "a".repeat(64),
+            },
+            running_origin: None,
+            assets_override: None,
+            environment: Default::default(),
+            locale: "en".into(),
+        });
         lock_unpoisoned(&shared).set_ui_ready();
         let inner = ControlInner {
             stopping: AtomicBool::new(false),
@@ -5270,6 +5418,7 @@ mod tests {
             action: UpdateAction::LocalRebuild,
             running,
             candidate: None,
+            target: None,
         };
         assert!(verify_running_plan(&plan, &context).is_ok());
         let mut tampered = plan.clone();

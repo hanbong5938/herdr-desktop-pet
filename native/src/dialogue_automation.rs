@@ -30,6 +30,9 @@ impl From<&DialogueChoice> for DialogueIdentity {
 pub(crate) enum DialogueLanguage {
     Ko,
     En,
+    #[serde(rename = "zh-Hans")]
+    ZhHans,
+    Ja,
 }
 
 impl DialogueLanguage {
@@ -37,6 +40,8 @@ impl DialogueLanguage {
         match self {
             Self::Ko => "ko",
             Self::En => "en",
+            Self::ZhHans => "zh-Hans",
+            Self::Ja => "ja",
         }
     }
 
@@ -44,6 +49,8 @@ impl DialogueLanguage {
         match self {
             Self::Ko => UiLocale::Ko,
             Self::En => UiLocale::En,
+            Self::ZhHans => UiLocale::ZhHans,
+            Self::Ja => UiLocale::Ja,
         }
     }
 }
@@ -276,6 +283,69 @@ mod tests {
         );
         assert!(empty["authored"].is_null());
         assert!(empty["effective"].is_string());
+    }
+
+    #[test]
+    fn new_locale_overrides_preserve_pack_fallback_and_each_others_drafts() {
+        let metadata = CharacterMetadata {
+            dialogue: Some(BTreeMap::from([(
+                "en".to_owned(),
+                DialogueLocale {
+                    phases: Some(BTreeMap::from([("idle".to_owned(), "pack en".to_owned())])),
+                    reactions: None,
+                },
+            )])),
+        };
+        let mut zh = selection(DialogueSlot::Idle);
+        zh.locale = DialogueLanguage::ZhHans;
+        let mut ja = zh.clone();
+        ja.locale = DialogueLanguage::Ja;
+        let mut overrides = DialogueOverrides::default();
+
+        assert_eq!(
+            read_entry(&zh, Some(&metadata), &overrides)["effective"],
+            "pack en"
+        );
+        assert_eq!(
+            read_entry(&ja, Some(&metadata), &overrides)["effective"],
+            "pack en"
+        );
+        overrides
+            .set_entry(
+                &zh.identity.target,
+                zh.locale.tag(),
+                zh.slot,
+                Some("你好".into()),
+            )
+            .unwrap();
+        overrides
+            .set_entry(
+                &ja.identity.target,
+                ja.locale.tag(),
+                ja.slot,
+                Some("こんにちは".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            read_entry(&zh, Some(&metadata), &overrides)["effective"],
+            "你好"
+        );
+        assert_eq!(
+            read_entry(&ja, Some(&metadata), &overrides)["effective"],
+            "こんにちは"
+        );
+
+        overrides
+            .set_entry(&zh.identity.target, zh.locale.tag(), zh.slot, None)
+            .unwrap();
+        assert_eq!(
+            read_entry(&zh, Some(&metadata), &overrides)["effective"],
+            "pack en"
+        );
+        assert_eq!(
+            read_entry(&ja, Some(&metadata), &overrides)["effective"],
+            "こんにちは"
+        );
     }
 
     #[test]

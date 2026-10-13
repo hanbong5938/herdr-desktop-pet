@@ -118,8 +118,9 @@ jobs:
             echo "error: expected arm64-only update coordinator" >&2
             exit 1
           }
-          [[ "$("$binary" update-capabilities)" == '{"protocol":2}' ]]
-          [[ "$("$helper" update-capabilities)" == '{"protocol":2}' ]]
+          for executable in "$binary" "$helper"; do
+            "$executable" update-capabilities | node -e 'const fs = require("node:fs"); const capabilities = JSON.parse(fs.readFileSync(0, "utf8")); if (capabilities === null || typeof capabilities !== "object" || capabilities.protocol !== 3 || capabilities.observation_mode !== 1) process.exit(1);'
+          done
           [[ "$(otool -l "$helper")" != *"cmd LC_RPATH"* ]]
           dependencies="$(otool -L "$helper")"
           dependencies="${dependencies#*$'\n'}"

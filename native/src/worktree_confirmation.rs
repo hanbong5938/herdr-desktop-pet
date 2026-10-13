@@ -164,7 +164,7 @@ fn random_token() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr_protocol::WorkspaceWorktreeInfo;
+    use crate::session::WorkspaceWorktreeInfo;
     use crate::session_view::SessionKey;
     use serde_json::json;
     use std::sync::Arc;

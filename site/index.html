@@ -5,17 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0D1117">
-  <title>Herdr Desktop Pet — 데스크톱에서 만나는 Herdr 세션의 작은 동반자</title>
-  <meta name="description" content="Apple Silicon Mac을 위한 네이티브 Herdr 데스크톱 캐릭터. 루벨리아와 교감하고 관측된 세션 상태를 말풍선에서 확인하세요.">
+  <title>Herdr Desktop Pet — Herdr 세션 상태 확인과 로컬 답장</title>
+  <meta name="description" content="Apple Silicon Mac용 네이티브 데스크톱 앱. 관측된 Herdr 세션 상태를 말풍선에서 확인하고 선택한 로컬 에이전트에 답장을 제출하세요.">
   <link rel="canonical" href="https://hanbong5938.github.io/herdr-desktop-pet/">
   <link rel="alternate" hreflang="ko" href="https://hanbong5938.github.io/herdr-desktop-pet/">
   <link rel="alternate" hreflang="en" href="https://hanbong5938.github.io/herdr-desktop-pet/en/">
+  <link rel="alternate" hreflang="zh-Hans" href="https://hanbong5938.github.io/herdr-desktop-pet/zh-Hans/">
+  <link rel="alternate" hreflang="ja" href="https://hanbong5938.github.io/herdr-desktop-pet/ja/">
   <link rel="alternate" hreflang="x-default" href="https://hanbong5938.github.io/herdr-desktop-pet/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Herdr Desktop Pet">
   <meta property="og:locale" content="ko_KR">
-  <meta property="og:title" content="Herdr Desktop Pet — 데스크톱에서 만나는 작은 동반자">
-  <meta property="og:description" content="루벨리아와 교감하고 관측된 Herdr 세션 상태를 네이티브 macOS 말풍선에서 확인하세요.">
+  <meta property="og:title" content="Herdr Desktop Pet — Herdr 세션 상태 확인과 로컬 답장">
+  <meta property="og:description" content="Apple Silicon Mac용 네이티브 데스크톱 앱. 관측된 Herdr 세션 상태를 말풍선에서 확인하고 선택한 로컬 에이전트에 답장을 제출하세요.">
   <meta property="og:url" content="https://hanbong5938.github.io/herdr-desktop-pet/">
   <meta property="og:image" content="https://hanbong5938.github.io/herdr-desktop-pet/assets/images/og-ko.png">
   <meta property="og:image:width" content="1200">
@@ -34,16 +36,17 @@
       <nav class="primary-nav" aria-label="주 메뉴">
         <a href="#demo">앱 화면</a><a href="#features">기능</a><a href="#installation">설치</a><a href="#characters">캐릭터</a><a href="#faq">FAQ</a>
       </nav>
-      <nav class="locale-nav" aria-label="언어 선택"><a href="./" lang="ko" hreflang="ko" aria-current="page">KO</a><a href="./en/" lang="en" hreflang="en">EN</a></nav>
+      <nav class="locale-nav" aria-label="언어 선택"><a href="./" lang="ko" hreflang="ko" aria-current="page">KO</a><a href="./en/" lang="en" hreflang="en">EN</a><a href="./zh-Hans/" lang="zh-Hans" hreflang="zh-Hans">简体中文</a><a href="./ja/" lang="ja" hreflang="ja">日本語</a></nav>
     </div>
   </header>
   <main id="main">
     <section class="hero wrap" aria-labelledby="hero-title">
       <div class="hero-copy">
         <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> NATIVE DESKTOP COMPANION</p>
-        <h1 id="hero-title">데스크톱에서 만나는 <em>Herdr 세션의</em> 작은 동반자</h1>
-        <p class="hero-lead">루벨리아가 작업 공간 곁에서 반응하고, 관측된 Herdr 세션 상태를 말풍선으로 보여줍니다.</p>
-        <div class="hero-actions"><a class="button button-primary" href="#installation">설치 방법 보기 <span aria-hidden="true">↗</span></a><a class="button button-secondary" href="https://github.com/hanbong5938/herdr-desktop-pet">GitHub에서 확인 <span aria-hidden="true">↗</span></a></div>
+        <h1 id="hero-title">Herdr 세션을 <em>데스크톱에서 확인하고</em> 로컬 에이전트에 답장하세요.</h1>
+        <p class="hero-lead">루벨리아의 말풍선에서 관측된 세션 상태를 보고 선택한 로컬 에이전트에 메시지를 제출할 수 있습니다. 접수 확인은 작업 완료가 아닙니다.</p>
+        <div class="hero-actions"><a class="button button-primary" href="#connect-herdr">Herdr 연결 방법 <span aria-hidden="true">↗</span></a><a class="button button-secondary" href="#demo">실제 앱 화면 <span aria-hidden="true">↗</span></a></div>
+        <p class="hero-alternative">같은 네이티브 앱을 <a href="#connect-tern">별도 Tern 프로필로 연결</a>하거나 <a href="#standalone-pet">Herdr 없이 캐릭터만 독립 실행</a>할 수 있습니다.</p>
         <p class="hero-spec"><span class="spec-dot" aria-hidden="true"></span> Apple Silicon Mac <span aria-hidden="true">·</span> macOS 13+ <span aria-hidden="true">·</span> 기본 캐릭터 루벨리아 1종</p>
       </div>
       <figure class="hero-art"><span class="hero-art-halo" aria-hidden="true"></span><img src="./assets/images/rubelia-thumbnail.png" width="450" height="525" alt="기본 데스크톱 캐릭터 루벨리아의 전신 일러스트" fetchpriority="high"><figcaption>01 / RUBELIA — 기본 제공 캐릭터</figcaption></figure>
@@ -60,24 +63,54 @@
     </section>
 
     <section id="features" class="section features-section wrap" aria-labelledby="features-title">
-      <div class="section-heading"><div><p class="eyebrow">02 / WHAT IT DOES</p><h2 id="features-title">작은 움직임부터<br>세션의 흐름까지.</h2></div><p>책상 한편의 캐릭터와 Herdr 작업 상태가 만나는 세 가지 방식.</p></div>
+      <div class="section-heading"><div><p class="eyebrow">02 / WHAT IT DOES</p><h2 id="features-title">세션 상태를 보고,<br>로컬에서 답장하고, 함께하기.</h2></div><p>연결된 Herdr 세션의 관측 정보와 데스크톱 캐릭터의 세 가지 사용법.</p></div>
       <div class="feature-grid">
-        <article class="feature feature-first"><span class="feature-number">01 / INTERACT</span><span class="feature-glyph" aria-hidden="true">✳</span><h3>터치에 반응하는 루벨리아</h3><p>머리와 몸통을 탭하고, 머리를 쓰다듬어 보세요. 캐릭터를 드래그해 옮기거나 크기를 조절할 수 있습니다.</p></article>
-        <article class="feature"><span class="feature-number">02 / OBSERVE</span><span class="feature-glyph feature-glyph-circle" aria-hidden="true">◉</span><h3>관측된 상태만 보여주기</h3><p>말풍선의 세션 카드에 유휴·실행 중·입력 대기·상태 불명을 표시합니다. 에이전트의 결과를 추측하지 않습니다.</p></article>
-        <article class="feature"><span class="feature-number">03 / REPLY</span><span class="feature-glyph" aria-hidden="true">↗</span><h3>로컬 세션에 메시지 제출</h3><p>선택한 로컬 에이전트 카드에서 메시지를 보낼 수 있습니다. Herdr의 접수는 작업 완료를 뜻하지 않으며 원격 카드는 읽기 전용입니다.</p></article>
+        <article class="feature feature-first"><span class="feature-number">01 / OBSERVE</span><span class="feature-glyph feature-glyph-circle" aria-hidden="true">◉</span><h3>관측된 상태만 보여주기</h3><p>말풍선의 세션 카드에 유휴·실행 중·입력 대기·상태 불명을 표시합니다. 에이전트의 결과를 추측하지 않습니다.</p></article>
+        <article class="feature"><span class="feature-number">02 / REPLY</span><span class="feature-glyph" aria-hidden="true">↗</span><h3>로컬 세션에 메시지 제출</h3><p>선택한 로컬 에이전트 카드에서 메시지를 보낼 수 있습니다. Herdr의 접수는 작업 완료를 뜻하지 않으며 원격 카드는 읽기 전용입니다.</p></article>
+        <article class="feature"><span class="feature-number">03 / INTERACT</span><span class="feature-glyph" aria-hidden="true">✳</span><h3>터치에 반응하는 루벨리아</h3><p>머리와 몸통을 탭하고, 머리를 쓰다듬어 보세요. 캐릭터를 드래그해 옮기거나 크기를 조절할 수 있습니다.</p></article>
       </div>
     </section>
 
     <section id="installation" class="section install-section" aria-labelledby="installation-title">
       <div class="wrap">
-        <div class="section-heading"><div><p class="eyebrow">03 / GET STARTED</p><h2 id="installation-title">설치는 원하는 경로로.</h2></div><p>Apple Silicon Mac · macOS 13 이상. 아래 명령을 확인하고 사용 중인 환경에 맞는 방법을 선택하세요.</p></div>
+        <div class="section-heading"><div><p class="eyebrow">03 / GET STARTED</p><h2 id="installation-title">하나의 앱, 연결 방식 선택.</h2></div><p>Apple Silicon Mac · macOS 13 이상. Herdr·<a href="#connect-tern">Tern</a>·독립 실행 모두 같은 공개 v0.3.6 Homebrew 네이티브 앱과 CLI를 사용합니다. 설치와 시작은 명시적으로 진행하며 Herdr 연결은 플러그인 없이, Tern은 별도 연결 플러그인과 프로필로 사용합니다.</p></div>
         <div class="install-grid">
-          <article class="install-option"><div class="install-option-head"><span class="option-label">OPTION 01 / HERDR</span><span class="option-badge">플러그인</span></div><h3>Herdr 플러그인</h3><p>Herdr 플러그인 저장소에서 설치하고, 실행 중인 호스트에서 시작 액션을 호출합니다.</p><div class="command-head"><span id="plugin-command-label">Herdr 플러그인 터미널 명령</span><button class="copy-button" type="button" hidden data-copy-target="plugin-command" data-copy-success="명령을 복사했습니다." data-copy-failure="복사할 수 없습니다. 명령을 직접 선택해 복사하세요.">명령 복사</button></div><pre tabindex="0" role="region" aria-labelledby="plugin-command-label"><code id="plugin-command">herdr plugin install hanbong5938/herdr-desktop-pet
-herdr plugin action invoke start --plugin desktop-pet</code></pre><span class="copy-status" role="status" aria-live="polite"></span></article>
-          <article class="install-option"><div class="install-option-head"><span class="option-label">OPTION 02 / HOMEBREW</span><span class="option-badge">앱 + CLI</span></div><h3>Homebrew</h3><p>개인 tap의 포뮬러로 네이티브 앱과 CLI를 설치해 직접 시작합니다.</p><div class="command-head"><span id="brew-command-label">Homebrew 터미널 명령</span><button class="copy-button" type="button" hidden data-copy-target="brew-command" data-copy-success="명령을 복사했습니다." data-copy-failure="복사할 수 없습니다. 명령을 직접 선택해 복사하세요.">명령 복사</button></div><pre tabindex="0" role="region" aria-labelledby="brew-command-label"><code id="brew-command">brew install hanbong5938/tap/herdr-desktop-pet
-herdr-desktop-pet start</code></pre><span class="copy-status" role="status" aria-live="polite"></span></article>
+          <article id="connect-herdr" class="install-option" aria-labelledby="connect-herdr-title">
+            <div class="install-option-head"><span class="option-label">01 / CONNECT HERDR</span><span class="option-badge">로컬 세션</span></div>
+            <h3 id="connect-herdr-title">Herdr 세션 연결</h3>
+            <p>이 Mac에서 실행 중인 Herdr 서버(로컬 세션 관찰은 Herdr 0.9.0 이상)에 네이티브 앱을 수동으로 연결합니다. 서버를 먼저 실행한 뒤 설치·버전 확인·시작·상태 확인 순서로 진행하세요.</p>
+            <div class="command-head"><span id="connect-command-label">Herdr 연결용 Homebrew 명령</span><button class="copy-button" type="button" hidden data-copy-target="connect-command" data-copy-success="명령을 복사했습니다." data-copy-failure="복사할 수 없습니다. 명령을 직접 선택해 복사하세요.">명령 복사</button></div>
+            <pre tabindex="0" role="region" aria-labelledby="connect-command-label"><code id="connect-command">brew install hanbong5938/tap/herdr-desktop-pet
+herdr-desktop-pet --version
+herdr-desktop-pet start
+herdr-desktop-pet status</code></pre><span class="copy-status" role="status" aria-live="polite"></span>
+            <p class="install-followup">CLI 버전과 실행 중인 앱의 <code>status</code> 버전·실행 파일을 함께 확인하세요. Herdr 서버의 실제 소켓이 환경 변수나 기본 경로와 다르면 실제 백엔드 소켓 경로를 확인해 <code>herdr-desktop-pet start --socket PATH</code>의 <code>PATH</code>를 교체해 실행하세요. <code>--socket</code>은 Herdr 백엔드용이며 앱의 제어 소켓이 아닙니다. 카드 답장은 해당 로컬 서버가 <code>agent.prompt</code>를 지원할 때만 가능하고, 접수 ACK는 에이전트 완료가 아닙니다.</p>
+          </article>
+          <article id="standalone-pet" class="install-option" aria-labelledby="standalone-pet-title">
+            <div class="install-option-head"><span class="option-label">02 / INDEPENDENT PET</span><span class="option-badge">Herdr 불필요</span></div>
+            <h3 id="standalone-pet-title">캐릭터만 독립 실행</h3>
+            <p>Herdr 서버 없이 같은 네이티브 앱을 실행합니다. 새 설정의 서버 연결 종료 정책을 첫 시작 전에 끄고 저장 상태를 확인하세요. 세션 카드·답장은 연결 없이 사용할 수 없습니다.</p>
+            <div class="command-head"><span id="standalone-command-label">독립 실행용 Homebrew 명령</span><button class="copy-button" type="button" hidden data-copy-target="standalone-command" data-copy-success="명령을 복사했습니다." data-copy-failure="복사할 수 없습니다. 명령을 직접 선택해 복사하세요.">명령 복사</button></div>
+            <pre tabindex="0" role="region" aria-labelledby="standalone-command-label"><code id="standalone-command">brew install hanbong5938/tap/herdr-desktop-pet
+herdr-desktop-pet --version
+herdr-desktop-pet settings set exit_with_herdr off
+herdr-desktop-pet settings get
+herdr-desktop-pet start
+herdr-desktop-pet status</code></pre><span class="copy-status" role="status" aria-live="polite"></span>
+            <p class="install-followup">말풍선 없이 캐릭터만 보고 싶다면 시작한 뒤 <code>herdr-desktop-pet hide_bubble</code>을 선택적으로 실행하세요. 앱은 계속 실행됩니다. <code>exit_with_herdr off</code>는 이미 등록된 모든 로컬 endpoint의 명시적 플러그인 비활성화·연결 해제에 따른 종료를 막지는 않습니다.</p>
+          </article>
         </div>
-        <aside class="install-notes" aria-label="설치 전 확인 사항"><p><strong>v0.3.3 공개 빌드.</strong> arm64 압축 파일과 체크섬이 공개되어 있으며 개인 tap 포뮬러도 v0.3.3을 가리킵니다. 설치 전에는 <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases">Release 목록</a>과 포뮬러 버전을 확인하세요. 고정된 사전 빌드를 사용할 수 없으면 플러그인 기본 설치는 소스 빌드로 전환할 수 있으며 이때 Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools가 필요합니다. 앱은 ad-hoc 서명·미공증입니다.</p><p><strong>자동 시작은 호스트에 따라 다릅니다.</strong> 클라이언트 attach를 통한 자동 시작에는 공식 Herdr 0.9.3 소스에 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/integrations/herdr/client-attached.patch">제공된 패치</a>를 적용한 호스트 또는 실제로 이 훅을 지원한다고 명시한 호스트 릴리스가 필요합니다. 순정 0.9.0/0.9.3에는 이 훅이 없습니다.</p><p>소스 빌드·업그레이드·플러그인 요구 사항은 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/readme.ko.md">한국어 README</a>에서 자세히 확인하세요.</p></aside>
+        <details id="managed-plugin" class="managed-plugin"><summary>고급 선택 사항: Herdr 플러그인으로 실행 관리</summary><div class="managed-plugin-body"><p>위 네이티브 연결이나 독립 실행에 플러그인은 필요하지 않습니다. 실행 중인 Herdr 호스트에서 플러그인을 설치하고 시작 액션을 호출하려는 경우에만 사용하세요. 기본 설치가 고정 사전 빌드를 사용할 수 없으면 소스 빌드로 전환될 수 있으며 Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools가 필요합니다.</p><pre tabindex="0"><code>herdr plugin install hanbong5938/herdr-desktop-pet
+herdr plugin action invoke start --plugin desktop-pet</code></pre><p>클라이언트 attach 시 자동 시작은 별도 기능입니다. 공식 Herdr 0.9.3 소스에 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/integrations/herdr/client-attached.patch">client.attached 패치</a>를 적용한 호스트나 실제 훅 지원을 명시한 호스트 릴리스가 필요합니다. 순정 0.9.0/0.9.3에는 해당 훅이 없지만 위 수동 네이티브 시작에는 필요하지 않습니다.</p></div></details>
+        <details id="connect-tern" class="managed-plugin"><summary>Tern 연결 — 공개 v0.3.6</summary><div class="managed-plugin-body"><p>네이티브 앱과 stable Homebrew 포뮬러가 게시되었습니다. 앱을 먼저 설치한 뒤 Tern 연결 플러그인을 명시적으로 설치하고 별도 Tern 프로필을 수동으로 시작하세요. 이 사전 빌드 경로에는 Rust가 필요하지 않습니다.</p><pre tabindex="0"><code>brew install hanbong5938/tap/herdr-desktop-pet
+tern plugin install https://github.com/hanbong5938/tern-desktop-pet
+PET="$(command -v herdr-desktop-pet)"
+PET_CONFIG="$HOME/.config/herdr/plugins/config/desktop-pet-tern"
+PET_STATE="$HOME/.local/state/herdr/plugins/desktop-pet-tern"
+"$PET" --version
+"$PET" --host tern --config-dir "$PET_CONFIG" --state-dir "$PET_STATE" start
+"$PET" --host tern --config-dir "$PET_CONFIG" --state-dir "$PET_STATE" status</code></pre><p>플러그인은 앱을 몰래 다운로드·빌드·실행하지 않습니다. 같은 네이티브 앱의 기본 호스트는 Herdr이며 명시적 <code>--host tern</code>은 Herdr 서버·소켓·플러그인이 필요하지 않습니다. 설정 <strong>및</strong> 상태를 Herdr와 분리합니다. 실제 Tern 창에서 <strong>Configure desktop pet connection</strong>을 선택해 위 절대 실행 파일·정확한 설정/상태 경로를 실제 값으로 입력한 뒤 <strong>Connect to desktop pet</strong>을 선택하세요. 창 연결과 같은 프로필의 네이티브 status를 확인하며 플러그인 설치만으로 연결이나 자동 시작을 가정하지 마세요. 실행 파일이나 모드를 바꾸기 전 같은 프로필을 종료하세요. 자세한 내용은 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/usage.ko.md">사용 안내</a>를 참고하세요.</p></div></details>
+        <aside class="install-notes" aria-label="설치 전 확인 사항"><p><strong>공개 안정판 v0.3.6.</strong> 비초안·비프리릴리스 <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6">정확한 Release</a>가 GitHub의 관측된 latest입니다. 앱 전용 arm64 압축 파일·<code>.sha256</code>·<code>SHA256SUMS</code>·별도 rig 출처 사이드카 4개를 익명 대조했고 배포 바이트 식별 68개도 모두 일치했습니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/download/v0.3.6/HerdrDesktopPet-v0.3.6-macos-arm64.tar.gz">정확한 압축 파일 다운로드</a> SHA-256: <code>5d40f6ada23f7d91d967a98331b28ea767202f5d01b7cd7732b2d9e543fdaafa</code>. <a href="https://github.com/hanbong5938/homebrew-tap/commit/c7be4b5">stable tap c7be4b5</a>는 이 URL/해시를 사용하며 베타 포뮬러와 이전 v0.3.5-beta.1은 변경하지 않았고 새 v0.3.6 베타가 아닙니다. 업그레이드 전 기존 데몬을 종료하세요. 앱은 ad-hoc 서명·미공증입니다.</p><p><strong>증거의 범위를 구분합니다.</strong> 실제 Homebrew 업그레이드와 Cargo/Bun/Node/npm 없는 고정 사전 빌드 설치로 네이티브 Tern 전용 시작·유효한 빈 snapshot 교환을 확인했습니다. 공개 Tern 플러그인 CLI 설치도 성공했지만 GUI 창 연결이나 실제 에이전트 전달 주장은 아닙니다. 위 앱 화면은 격리된 오프라인 v0.3.2 촬영이며 v0.3.6 연결 화면이 아닙니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/0.3.md#v036-실제-게시-확인">게시·소비자 증거</a>·동결 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/v0.3.6.md">정본 노트</a>·<a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/readme.ko.md">한국어 README</a>를 참고하세요.</p></aside>
       </div>
     </section>
 
@@ -93,6 +126,6 @@ herdr-desktop-pet start</code></pre><span class="copy-status" role="status" aria
       <details><summary>다른 캐릭터도 기본 제공되나요?</summary><p>아니요. 루벨리아만 기본 제공됩니다. 별도 <a href="https://github.com/hanbong5938/herdr-characters">공식 캐릭터 저장소</a>에서 선택형 팩과 사용 조건을 확인하세요.</p></details>
     </div></div></section>
   </main>
-  <footer class="site-footer"><div class="wrap"><div class="footer-main"><div><a class="footer-brand" href="#main">Herdr Desktop Pet</a><p>작업 공간 한편의 작은 동반자.</p></div><nav aria-label="관련 링크"><a href="https://github.com/hanbong5938/herdr-desktop-pet">소스 저장소</a><a href="https://github.com/hanbong5938/herdr-desktop-pet/releases">릴리스 목록</a><a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/readme.ko.md">사용 안내</a><a href="https://github.com/hanbong5938/herdr-characters">캐릭터 팩</a></nav></div><div class="footer-legal"><p>루벨리아는 소유자가 승인한 AI 기원 그림입니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/LICENSE.txt">그림 라이선스</a> · <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/ATTRIBUTION.txt">출처</a> · <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/owner-approval.json">소유자 승인 기록</a>. 소프트웨어의 MIT 라이선스가 그림의 라이선스를 바꾸지는 않습니다.</p><a href="./en/" lang="en" hreflang="en">Read in English ↗</a></div></div></footer>
+  <footer class="site-footer"><div class="wrap"><div class="footer-main"><div><a class="footer-brand" href="#main">Herdr Desktop Pet</a><p>작업 공간 한편의 작은 동반자.</p></div><nav aria-label="관련 링크"><a href="https://github.com/hanbong5938/herdr-desktop-pet">소스 저장소</a><a href="https://github.com/hanbong5938/herdr-desktop-pet/releases">릴리스 목록</a><a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/usage.ko.md">사용 안내</a><a href="https://github.com/hanbong5938/herdr-characters">캐릭터 팩</a></nav></div><div class="footer-legal"><p>루벨리아는 소유자가 승인한 AI 기원 그림입니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/LICENSE.txt">그림 라이선스</a> · <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/ATTRIBUTION.txt">출처</a> · <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/assets/rubelia-default/owner-approval.json">소유자 승인 기록</a>. 소프트웨어의 MIT 라이선스가 그림의 라이선스를 바꾸지는 않습니다.</p><a href="./en/" lang="en" hreflang="en">English ↗</a> · <a href="./zh-Hans/" lang="zh-Hans" hreflang="zh-Hans">简体中文 ↗</a> · <a href="./ja/" lang="ja" hreflang="ja">日本語 ↗</a></div></div></footer>
 </body>
 </html>

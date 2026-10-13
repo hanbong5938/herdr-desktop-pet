@@ -165,9 +165,11 @@ where
             "system" => Ok(LanguagePreference::System),
             "ko" => Ok(LanguagePreference::Ko),
             "en" => Ok(LanguagePreference::En),
+            "zh-Hans" => Ok(LanguagePreference::ZhHans),
+            "ja" => Ok(LanguagePreference::Ja),
             _ => Err(serde::de::Error::unknown_variant(
                 &token,
-                &["system", "ko", "en"],
+                &["system", "ko", "en", "zh-Hans", "ja"],
             )),
         })
         .transpose()
@@ -467,7 +469,9 @@ pub struct Preferences {
     show_status_indicators: bool,
     plugin_manager_installed: bool,
     auto_update_check: bool,
+    receive_beta_updates: bool,
     last_update_check: Option<u64>,
+    last_beta_update_check: Option<u64>,
     menu_bar_mode: MenuBarMode,
     menu_bar_icon: Option<MenuBarIconPreference>,
     bubble_placement: BubblePlacement,
@@ -500,8 +504,12 @@ struct DiskPreferences {
     plugin_manager_installed: bool,
     #[serde(default = "default_auto_update_check")]
     auto_update_check: bool,
+    #[serde(default)]
+    receive_beta_updates: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_update_check: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_beta_update_check: Option<u64>,
     #[serde(default)]
     menu_bar_mode: MenuBarMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -552,7 +560,9 @@ impl Default for Preferences {
             plugin_manager_installed: false,
             show_status_indicators: true,
             auto_update_check: true,
+            receive_beta_updates: false,
             last_update_check: None,
+            last_beta_update_check: None,
             menu_bar_mode: MenuBarMode::default(),
             menu_bar_icon: None,
             bubble_placement: BubblePlacement::default(),
@@ -664,7 +674,9 @@ impl Preferences {
             plugin_manager_installed: disk.plugin_manager_installed,
             show_status_indicators: disk.show_status_indicators,
             auto_update_check: disk.auto_update_check,
+            receive_beta_updates: disk.receive_beta_updates,
             last_update_check: disk.last_update_check,
+            last_beta_update_check: disk.last_beta_update_check,
             menu_bar_mode: disk.menu_bar_mode,
             menu_bar_icon: disk.menu_bar_icon,
             bubble_placement: disk.bubble_placement,
@@ -939,7 +951,9 @@ impl Preferences {
             show_status_indicators: self.show_status_indicators,
             plugin_manager_installed: self.plugin_manager_installed,
             auto_update_check: self.auto_update_check,
+            receive_beta_updates: self.receive_beta_updates,
             last_update_check: self.last_update_check,
+            last_beta_update_check: self.last_beta_update_check,
             menu_bar_mode: self.menu_bar_mode,
             menu_bar_icon: self.menu_bar_icon.clone(),
             bubble_placement: self.bubble_placement,
@@ -1023,8 +1037,17 @@ impl Preferences {
         self.auto_update_check
     }
 
-    pub fn last_update_check(&self) -> Option<u64> {
-        self.last_update_check
+    pub fn receive_beta_updates(&self) -> bool {
+        self.receive_beta_updates
+    }
+
+    /// The legacy stable-only check time is separate from beta-inclusive checks.
+    pub fn update_check_time(&self, include_beta: bool) -> Option<u64> {
+        if include_beta {
+            self.last_beta_update_check
+        } else {
+            self.last_update_check
+        }
     }
 
     pub(crate) fn menu_bar_mode(&self) -> MenuBarMode {
@@ -1093,8 +1116,16 @@ impl Preferences {
         self.auto_update_check = enabled;
     }
 
-    pub fn set_last_update_check(&mut self, checked_at: Option<u64>) {
-        self.last_update_check = checked_at;
+    pub fn set_receive_beta_updates(&mut self, enabled: bool) {
+        self.receive_beta_updates = enabled;
+    }
+
+    pub fn set_update_check_time(&mut self, include_beta: bool, checked_at: Option<u64>) {
+        if include_beta {
+            self.last_beta_update_check = checked_at;
+        } else {
+            self.last_update_check = checked_at;
+        }
     }
 
     pub fn set_bubble_placement(&mut self, bubble_placement: BubblePlacement) {
@@ -1449,6 +1480,54 @@ mod tests {
     }
 
     #[test]
+    fn update_settings_roundtrip_all_automatic_and_beta_combinations() {
+        let directory = isolated_preferences_directory();
+        let path = directory.join(PREFERENCES_FILE);
+        let mut preferences = Preferences::default();
+        assert!(preferences.auto_update_check());
+        assert!(!preferences.receive_beta_updates());
+        assert_eq!(preferences.update_check_time(false), None);
+        assert_eq!(preferences.update_check_time(true), None);
+
+        // Old settings without either new field keep their prior automatic-check behavior.
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            &path,
+            br#"{"visible":true,"passthrough":false,"scale":1.0}"#,
+        )
+        .unwrap();
+        preferences = Preferences::load_path(&path).unwrap();
+        assert!(preferences.auto_update_check());
+        assert!(!preferences.receive_beta_updates());
+        assert_eq!(preferences.update_check_time(true), None);
+
+        for automatic in [false, true] {
+            for beta in [false, true] {
+                let mut candidate = preferences.candidate();
+                candidate.set_auto_update_check(automatic);
+                candidate.set_receive_beta_updates(beta);
+                candidate.set_update_check_time(false, Some(100));
+                candidate.set_update_check_time(true, Some(200));
+                preferences.save_candidate(candidate, &directory).unwrap();
+                let saved = Preferences::load_path(&path).unwrap();
+                assert_eq!(saved.auto_update_check(), automatic);
+                assert_eq!(saved.receive_beta_updates(), beta);
+                assert_eq!(saved.update_check_time(false), Some(100));
+                assert_eq!(saved.update_check_time(true), Some(200));
+                preferences = saved;
+            }
+        }
+
+        let mut candidate = preferences.candidate();
+        candidate.set_update_check_time(true, None);
+        preferences.save_candidate(candidate, &directory).unwrap();
+        let saved = Preferences::load_path(&path).unwrap();
+        assert_eq!(saved.update_check_time(true), None);
+        assert_eq!(saved.update_check_time(false), Some(100));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn partial_preference_writes_keep_update_settings_and_future_fields() {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
@@ -1459,7 +1538,9 @@ mod tests {
         );
         let mut candidate = preferences.candidate();
         candidate.set_auto_update_check(false);
-        candidate.set_last_update_check(Some(1_738_000_000));
+        candidate.set_update_check_time(false, Some(1_738_000_000));
+        candidate.set_receive_beta_updates(true);
+        candidate.set_update_check_time(true, Some(1_739_000_000));
         preferences
             .save_candidate_in_directory(candidate, &directory)
             .unwrap();
@@ -1480,7 +1561,9 @@ mod tests {
             .unwrap();
         let saved = Preferences::load_path(&path).unwrap();
         assert!(!saved.auto_update_check());
-        assert_eq!(saved.last_update_check(), Some(1_738_000_000));
+        assert!(saved.receive_beta_updates());
+        assert_eq!(saved.update_check_time(false), Some(1_738_000_000));
+        assert_eq!(saved.update_check_time(true), Some(1_739_000_000));
         assert!(!saved.visible());
         assert_eq!(saved.language(), LanguagePreference::En);
         assert_eq!(
@@ -1496,18 +1579,23 @@ mod tests {
         let path = directory.join(PREFERENCES_FILE);
         let blocked = directory.join("not-a-directory");
         let mut preferences = Preferences::default();
-        preferences.set_last_update_check(Some(42));
+        preferences.set_update_check_time(false, Some(42));
+        preferences.set_update_check_time(true, Some(84));
         preferences.save_in_directory(&directory).unwrap();
         let before = fs::read(&path).unwrap();
         fs::write(&blocked, b"sentinel").unwrap();
         let mut candidate = preferences.candidate();
         candidate.set_auto_update_check(false);
-        candidate.set_last_update_check(Some(43));
+        candidate.set_update_check_time(false, Some(43));
+        candidate.set_receive_beta_updates(true);
+        candidate.set_update_check_time(true, Some(85));
         preferences
             .save_candidate_in_directory(candidate, &blocked)
             .expect_err("unwritable candidate must not commit");
         assert!(preferences.auto_update_check());
-        assert_eq!(preferences.last_update_check(), Some(42));
+        assert_eq!(preferences.update_check_time(false), Some(42));
+        assert!(!preferences.receive_beta_updates());
+        assert_eq!(preferences.update_check_time(true), Some(84));
         assert_eq!(fs::read(&path).unwrap(), before);
         preferences
             .apply_patch_in_directory(
@@ -1520,7 +1608,9 @@ mod tests {
             .unwrap();
         let saved = Preferences::load_path(&path).unwrap();
         assert!(saved.auto_update_check());
-        assert_eq!(saved.last_update_check(), Some(42));
+        assert_eq!(saved.update_check_time(false), Some(42));
+        assert!(!saved.receive_beta_updates());
+        assert_eq!(saved.update_check_time(true), Some(84));
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -1534,8 +1624,12 @@ mod tests {
         let valid: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         for (field, malformed) in [
             ("auto_update_check", serde_json::json!("yes")),
+            ("receive_beta_updates", serde_json::json!("yes")),
+            ("receive_beta_updates", serde_json::json!(1)),
             ("last_update_check", serde_json::json!(-1)),
             ("last_update_check", serde_json::json!("yesterday")),
+            ("last_beta_update_check", serde_json::json!(-1)),
+            ("last_beta_update_check", serde_json::json!("yesterday")),
         ] {
             let mut disk = valid.clone();
             disk[field] = malformed;
@@ -1864,7 +1958,9 @@ mod tests {
             show_status_indicators: true,
             plugin_manager_installed: false,
             auto_update_check: true,
+            receive_beta_updates: false,
             last_update_check: None,
+            last_beta_update_check: None,
             menu_bar_mode: MenuBarMode::default(),
             bubble_placement: BubblePlacement::Above,
             scale: f64::NAN,
@@ -2062,6 +2158,11 @@ mod tests {
         .is_err());
         for language in [
             serde_json::json!("future"),
+            serde_json::json!("zh-Hant"),
+            serde_json::json!("zh"),
+            serde_json::json!("zh-hans"),
+            serde_json::json!("JA"),
+            serde_json::json!("ja "),
             serde_json::json!(42),
             serde_json::json!({}),
         ] {
@@ -2072,12 +2173,20 @@ mod tests {
                 .is_err()
             );
         }
-        assert_eq!(
-            serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": "ko"}))
-                .unwrap()
-                .language,
-            Some(LanguagePreference::Ko)
-        );
+        for (token, expected) in [
+            ("system", LanguagePreference::System),
+            ("ko", LanguagePreference::Ko),
+            ("en", LanguagePreference::En),
+            ("zh-Hans", LanguagePreference::ZhHans),
+            ("ja", LanguagePreference::Ja),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": token}))
+                    .unwrap()
+                    .language,
+                Some(expected)
+            );
+        }
         assert_eq!(
             serde_json::from_value::<PreferencePatch>(serde_json::json!({"language": null}))
                 .unwrap()
@@ -2861,9 +2970,9 @@ mod tests {
         let path = directory.join(PREFERENCES_FILE);
         fs::write(
             &path,
-            br#"{"visible":false,"passthrough":true,"scale":0.875,"position":[123.25,456.75],"language":"ja"}"#,
+            br#"{"visible":false,"passthrough":true,"scale":0.875,"position":[123.25,456.75],"language":"zh-Hant"}"#,
         )
-        .expect("preferences with invalid language should be written");
+        .expect("preferences with unsupported language should be written");
 
         let loaded = Preferences::load_path(&path).expect("preferences should load");
         assert_eq!(loaded.language(), LanguagePreference::System);
@@ -2880,27 +2989,32 @@ mod tests {
         let directory = isolated_preferences_directory();
         let path = directory.join(PREFERENCES_FILE);
         let mut preferences = Preferences::default();
-        preferences
-            .apply_patch_in_directory(
-                PreferencePatch {
-                    language: Some(LanguagePreference::En),
-                    ..PreferencePatch::default()
-                },
-                &directory,
-            )
-            .expect("language preference should save");
+        for (token, language) in [
+            ("system", LanguagePreference::System),
+            ("ko", LanguagePreference::Ko),
+            ("en", LanguagePreference::En),
+            ("zh-Hans", LanguagePreference::ZhHans),
+            ("ja", LanguagePreference::Ja),
+        ] {
+            let patch: PreferencePatch =
+                serde_json::from_value(serde_json::json!({"language": token})).unwrap();
+            let snapshot = preferences
+                .apply_patch_in_directory(patch, &directory)
+                .expect("language preference should save");
+            assert_eq!(snapshot.language, language);
 
-        let bytes = fs::read(&path).expect("saved preferences should be readable");
-        let disk: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("saved preferences should be valid JSON");
-        assert_eq!(
-            disk.get("language").and_then(serde_json::Value::as_str),
-            Some("en")
-        );
+            let bytes = fs::read(&path).expect("saved preferences should be readable");
+            let disk: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("saved preferences should be valid JSON");
+            assert_eq!(
+                disk.get("language").and_then(serde_json::Value::as_str),
+                Some(token)
+            );
 
-        let loaded = Preferences::load_path(&path).expect("preferences should load");
-        assert_eq!(loaded.language(), LanguagePreference::En);
-        assert_eq!(preferences.language(), LanguagePreference::En);
+            let loaded = Preferences::load_path(&path).expect("preferences should load");
+            assert_eq!(loaded.language(), language);
+            assert_eq!(preferences.language(), language);
+        }
 
         let _ = fs::remove_dir_all(directory);
     }
@@ -2972,7 +3086,9 @@ mod tests {
             show_status_indicators: valid.show_status_indicators,
             plugin_manager_installed: false,
             auto_update_check: valid.auto_update_check,
+            receive_beta_updates: valid.receive_beta_updates,
             last_update_check: valid.last_update_check,
+            last_beta_update_check: valid.last_beta_update_check,
             menu_bar_mode: valid.menu_bar_mode,
             menu_bar_icon: valid.menu_bar_icon.clone(),
             bubble_placement: valid.bubble_placement,

@@ -1,5 +1,5 @@
 use crate::automation::{lock_automation, DomainAction, DomainOperationState, DomainRequest};
-use crate::herdr::{PromptError, PromptResult, RequestOrigin};
+use crate::herdr::{PromptError, PromptReceipt, PromptResult, RequestOrigin};
 use crate::i18n::{cli_prompt_feedback, CliPromptFeedback};
 
 use super::Ui;
@@ -64,7 +64,11 @@ impl Ui {
                 Some(code.into()),
                 Some(message),
             );
-            self.set_cli_prompt_feedback(CliPromptFeedback::Failed);
+            self.set_cli_prompt_feedback(if state == DomainOperationState::UnknownDelivery {
+                CliPromptFeedback::UnknownDelivery
+            } else {
+                CliPromptFeedback::Failed
+            });
         } else {
             self.set_cli_prompt_feedback(CliPromptFeedback::Sending);
         }
@@ -77,28 +81,40 @@ impl Ui {
         };
         let mut ledger = lock_automation(&self.automation);
         let (state, committed, value, error_code, error) = match &result.result {
-            Ok(()) => (
-                DomainOperationState::AgentPrompted,
-                true,
-                Some(serde_json::json!({
-                    "key": {
-                        "instance_id": ledger.instance(),
-                        "source_id": result.submission.key.source_id,
-                        "generation": result.submission.key.generation,
-                        "terminal_id": &result.submission.key.terminal_id,
-                    },
-                    "delivery": "acknowledged",
-                })),
-                None,
-                None,
-            ),
+            Ok(receipt) => {
+                let (state, committed, delivery) = match receipt {
+                    PromptReceipt::Acknowledged => {
+                        (DomainOperationState::AgentPrompted, true, "acknowledged")
+                    }
+                    PromptReceipt::Accepted => (
+                        DomainOperationState::PromptAccepted,
+                        false,
+                        "accepted_may_be_queued",
+                    ),
+                };
+                (
+                    state,
+                    committed,
+                    Some(serde_json::json!({
+                        "key": {
+                            "instance_id": ledger.instance(),
+                            "source_id": result.submission.key.source_id,
+                            "generation": result.submission.key.generation,
+                            "terminal_id": &result.submission.key.terminal_id,
+                        },
+                        "delivery": delivery,
+                    })),
+                    None,
+                    None,
+                )
+            }
             Err(error) => {
                 let (state, code, message) = cli_prompt_failure(error);
                 (state, false, None, Some(code.into()), Some(message))
             }
         };
         // A shutdown may already have resolved this pending operation to
-        // UnknownDelivery; never turn that uncertainty into a later ACK.
+        // UnknownDelivery; never turn that uncertainty into a later receipt.
         let completed = ledger.finish_domain_operation(
             operation_id,
             state,
@@ -111,6 +127,7 @@ impl Ui {
         let feedback = if completed.is_ok() {
             Some(match state {
                 DomainOperationState::AgentPrompted => CliPromptFeedback::Acknowledged,
+                DomainOperationState::PromptAccepted => CliPromptFeedback::Accepted,
                 DomainOperationState::UnknownDelivery => CliPromptFeedback::UnknownDelivery,
                 _ => CliPromptFeedback::Failed,
             })

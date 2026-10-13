@@ -15,7 +15,20 @@ const assetsSource = join(root, "assets", "rubelia-default");
 const thumbnailSource = join(root, "assets", "rubelia-thumbnail.png");
 const rigBuild = join(root, "native", "target", "rig-native", "release");
 const rigBuildRecord = join(rigBuild, "rig-native.json");
-const appName = process.env.HERDR_PET_APP_NAME?.trim() || "HerdrDesktopPet.app";
+let packageJson: { version?: unknown };
+try {
+  packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version?: unknown };
+} catch {
+  fail("package.json is missing or invalid JSON");
+}
+const packageVersion = typeof packageJson.version === "string"
+  ? packageJson.version
+  : fail("package version must be a stable or beta.N semantic version");
+const beta = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$/.test(packageVersion);
+const stable = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(packageVersion);
+if (!beta && !stable) fail("package version must be a stable or beta.N semantic version");
+const requestedAppName = process.env.HERDR_PET_APP_NAME;
+const appName = requestedAppName ?? (beta ? "HerdrDesktopPetBeta.app" : "HerdrDesktopPet.app");
 const appRoot = join(root, "dist", appName);
 const deployedRecord = join(root, "dist", `${appName}.rig-native.json`);
 const appContents = join(appRoot, "Contents");
@@ -101,17 +114,14 @@ async function runTool(command: string[], label: string, input?: string): Promis
   return stdout;
 }
 
-async function requireProtocolTwo(binary: string, label: string): Promise<void> {
+async function requireProtocolThree(binary: string, label: string): Promise<void> {
   const output = await runTool([binary, "update-capabilities"], `${label} update capabilities`);
-  let capabilities: unknown;
-  try {
-    capabilities = JSON.parse(output);
-  } catch {
-    fail(`${label} did not return JSON update capabilities`);
+  const capabilities: unknown = JSON.parse(output);
+  if (typeof capabilities !== "object" || capabilities === null || !("protocol" in capabilities) || capabilities.protocol !== 3) {
+    fail(`${label} does not support updater protocol 3`);
   }
-  if (typeof capabilities !== "object" || capabilities === null || !("protocol" in capabilities) ||
-      capabilities.protocol !== 2) {
-    fail(`${label} does not support updater protocol 2`);
+  if (!("observation_mode" in capabilities) || capabilities.observation_mode !== 1) {
+    fail(`${label} does not support observation-mode capability 1`);
   }
 }
 
@@ -122,7 +132,7 @@ async function requireArm64(binary: string, label: string): Promise<void> {
 
 async function validateStandaloneHelper(binary: string): Promise<void> {
   await requireArm64(binary, "update coordinator");
-  await requireProtocolTwo(binary, "update coordinator");
+  await requireProtocolThree(binary, "update coordinator");
   const commands = await runTool(["otool", "-l", binary], "inspecting update coordinator loader paths");
   if (/\bcmd LC_RPATH\b/.test(commands)) fail("update coordinator must not contain loader search paths");
   const dependencies = await runTool(["otool", "-L", binary], "inspecting update coordinator dependencies");
@@ -190,8 +200,9 @@ async function runCodesign(identity: string): Promise<void> {
 async function main(): Promise<void> {
   if (process.platform !== "darwin") fail("native packaging requires macOS");
   if (process.arch !== "arm64") fail("native packaging requires macOS arm64");
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\.app$/.test(appName)) {
-    fail("HERDR_PET_APP_NAME must be a plain .app filename inside dist");
+  if (requestedAppName !== undefined &&
+      appName !== "HerdrDesktopPet.app" && appName !== "HerdrDesktopPetBeta.app") {
+    fail("HERDR_PET_APP_NAME must be HerdrDesktopPet.app or HerdrDesktopPetBeta.app");
   }
   if (cargoTarget && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(cargoTarget)) {
     fail(`invalid HERDR_PET_CARGO_TARGET: ${cargoTarget}`);
@@ -202,7 +213,8 @@ async function main(): Promise<void> {
   await requireFile(nativeBinary, "release native binary");
   await requireFile(helperBinary, "release update coordinator");
   await requireArm64(nativeBinary, "release native binary");
-  await requireProtocolTwo(nativeBinary, "release native binary");
+  await requireProtocolThree(nativeBinary, "release native binary");
+  await requireProtocolThree(helperBinary, "release update coordinator");
   await requireDirectory(assetsSource, "Rubelia rig default");
   await requireFile(thumbnailSource, "Rubelia menu thumbnail");
   await requireFile(join(rigBuild, "libherdr_rig.dylib"), "release native rig library");
@@ -246,21 +258,12 @@ async function main(): Promise<void> {
   }
   await validateNativePack(nativeBinary, assetsSource);
 
-  let packageJson: { version?: unknown };
-  try {
-    packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as {
-      version?: unknown;
-    };
-  } catch {
-    fail("package.json is missing or invalid JSON");
+  if (appName !== (beta ? "HerdrDesktopPetBeta.app" : "HerdrDesktopPet.app")) {
+    fail(`HERDR_PET_APP_NAME does not match ${packageVersion}`);
   }
-  if (
-    typeof packageJson.version !== "string" ||
-    !/^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$/.test(packageJson.version)
-  ) {
-    fail("package.json must contain a semantic version");
-  }
-  const version = escapeXml(packageJson.version);
+  const displayName = beta ? "Herdr Desktop Pet Beta" : "Herdr Desktop Pet";
+  const bundleIdentifier = beta ? "dev.herdr.desktop-pet.beta" : "dev.herdr.desktop-pet";
+  const version = escapeXml(packageVersion);
 
   const cargoManifest = Bun.TOML.parse(
     await readFile(join(root, "native", "Cargo.toml"), "utf8"),
@@ -268,7 +271,7 @@ async function main(): Promise<void> {
   const pluginManifest = Bun.TOML.parse(
     await readFile(join(root, "herdr-plugin.toml"), "utf8"),
   ) as { version?: unknown };
-  if (cargoManifest.package?.version !== packageJson.version || pluginManifest.version !== packageJson.version) {
+  if (cargoManifest.package?.version !== packageVersion || pluginManifest.version !== packageVersion) {
     fail("package.json, native/Cargo.toml, and herdr-plugin.toml versions must match");
   }
   const versionProcess = Bun.spawn([nativeBinary, "--version"], {
@@ -280,8 +283,8 @@ async function main(): Promise<void> {
     new Response(versionProcess.stdout).text(),
     new Response(versionProcess.stderr).text(),
   ]);
-  if (versionExit !== 0 || versionOutput.trim() !== `herdr-desktop-pet ${packageJson.version}`) {
-    fail(`release binary version does not match ${packageJson.version}; rebuild before packaging: ${versionError.trim()}`);
+  if (versionExit !== 0 || versionOutput.trim() !== `herdr-desktop-pet ${packageVersion}`) {
+    fail(`release binary version does not match ${packageVersion}; rebuild before packaging: ${versionError.trim()}`);
   }
 
   await rm(appRoot, { recursive: true, force: true });
@@ -326,15 +329,15 @@ async function main(): Promise<void> {
     <string>en</string>
   </array>
   <key>CFBundleDisplayName</key>
-  <string>Herdr Desktop Pet</string>
+  <string>${displayName}</string>
   <key>CFBundleExecutable</key>
   <string>herdr-desktop-pet</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.herdr.desktop-pet</string>
+  <string>${bundleIdentifier}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Herdr Desktop Pet</string>
+  <string>${displayName}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -355,7 +358,7 @@ async function main(): Promise<void> {
     process.env.CODESIGN_IDENTITY?.trim() ||
     "-";
   await runCodesign(identity);
-  await requireProtocolTwo(appBinary, "packaged native binary");
+  await requireProtocolThree(appBinary, "packaged native binary");
   await validateStandaloneHelper(appHelper);
   await validateNativePack(appBinary, appAssets);
   // External post-signing record avoids a signed-bundle self-hash cycle.

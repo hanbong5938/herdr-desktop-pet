@@ -1,9 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 const REMOTE_PREFIX: &str = "machine:";
 const MAX_MACHINES: usize = 64;
 const MAX_MACHINE_ID_BYTES: usize = 4096;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SourceRoute {
+    HerdrLocal(PathBuf),
+    HerdrRemote { machine: String },
+    TernWindow { window: String, epoch: u64 },
+}
+
+impl SourceRoute {
+    /// Worktree removal requires a Herdr-local route, not local-looking metadata.
+    pub(crate) fn can_remove_worktree(&self) -> bool {
+        matches!(self, Self::HerdrLocal(_))
+    }
+}
 
 fn default_local() -> bool {
     true
@@ -89,6 +104,21 @@ pub(crate) struct SourceCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_local_herdr_routes_authorize_worktree_removal() {
+        let herdr = SourceRoute::HerdrLocal(PathBuf::from("/private/herdr.sock"));
+        let remote = SourceRoute::HerdrRemote {
+            machine: "machine-a".to_owned(),
+        };
+        let tern = SourceRoute::TernWindow {
+            window: "window-a".to_owned(),
+            epoch: 1,
+        };
+        assert!(herdr.can_remove_worktree());
+        assert!(!remote.can_remove_worktree());
+        assert!(!tern.can_remove_worktree());
+    }
 
     #[test]
     fn opaque_machine_ids_survive_sanitization_without_remote_enabled() {

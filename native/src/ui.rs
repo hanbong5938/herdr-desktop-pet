@@ -48,7 +48,7 @@ use crate::dialogue_editor::{
 };
 use crate::display_geometry::{DisplayGeometry, BASE_HEIGHT, BASE_WIDTH};
 use crate::herdr::{
-    PromptError, PromptResult, PromptSender, RequestOrigin, WorktreeRemoveError,
+    PromptError, PromptReceipt, PromptResult, PromptSender, RequestOrigin, WorktreeRemoveError,
     WorktreeRemoveSender,
 };
 use crate::i18n::{
@@ -76,6 +76,7 @@ use crate::status_indicator::{
 };
 use block2::RcBlock;
 use dispatch2::DispatchQueue;
+use herdr_update_coordinator::UpdatePolicy;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
@@ -102,7 +103,7 @@ use objc2_foundation::{
     NSArray, NSAttributedString, NSCopying, NSCurrentLocaleDidChangeNotification, NSDate,
     NSDefaultRunLoopMode, NSLocale, NSMutableAttributedString, NSNotification,
     NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSRect,
-    NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+    NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -2267,6 +2268,13 @@ define_class!(
             let enabled = toggle.state() == NSControlStateValueOn;
             with_ui_update_action(move |ui| ui.set_update_auto_check(enabled));
         }
+        #[unsafe(method(toggleUpdateBeta:))]
+        fn toggle_update_beta(&self, sender: Option<&AnyObject>) {
+            let Some(toggle) = sender.and_then(|sender| sender.downcast_ref::<NSSwitch>()) else { return };
+            let enabled = toggle.state() == NSControlStateValueOn;
+            with_ui_update_action(move |ui| ui.set_update_beta(enabled));
+        }
+
 
         #[unsafe(method(checkAppUpdate:))]
         fn check_app_update(&self, _sender: Option<&AnyObject>) {
@@ -2276,6 +2284,19 @@ define_class!(
         #[unsafe(method(applyAppUpdate:))]
         fn apply_app_update(&self, _sender: Option<&AnyObject>) {
             schedule_app_update_confirmation();
+        }
+        #[unsafe(method(downloadAppUpdate:))]
+        fn download_app_update(&self, _sender: Option<&AnyObject>) {
+            with_ui_update_action(|ui| ui.download_app_update());
+        }
+
+
+        #[unsafe(method(toggleUpdateDiagnostics:))]
+        fn toggle_update_diagnostics(&self, _sender: Option<&AnyObject>) {
+            with_ui_internal(|ui| {
+                ui.menu_panel.toggle_update_diagnostics();
+                ui.sync_character_menu_frame();
+            });
         }
 
         #[unsafe(method(toggleLifecycleExit:))]
@@ -2291,6 +2312,8 @@ define_class!(
                 let result = socket.ok_or_else(|| match ui.locale {
                     UiLocale::Ko => "실행 중인 Herdr 소켓을 사용할 수 없습니다".to_owned(),
                     UiLocale::En => "Running Herdr socket unavailable".to_owned(),
+                    UiLocale::ZhHans => "无法使用运行中的 Herdr 套接字".to_owned(),
+                    UiLocale::Ja => "実行中の Herdr ソケットを利用できません".to_owned(),
                 })
                     .and_then(|socket| plugin_manager::open(ui.lifecycle_paths.clone(), socket, ui.locale, self.mtm()));
                 ui.menu_panel.plugin_manager_card().report_error(result.err());
@@ -2326,6 +2349,8 @@ define_class!(
                 0 => LanguagePreference::System,
                 1 => LanguagePreference::Ko,
                 2 => LanguagePreference::En,
+                3 => LanguagePreference::ZhHans,
+                4 => LanguagePreference::Ja,
                 _ => return,
             };
             with_ui_mut(|ui| ui.set_language_preference(preference));
@@ -2549,6 +2574,8 @@ define_class!(
             let locale = match popup.selectedItem().map(|item| item.tag()) {
                 Some(0) => UiLocale::Ko,
                 Some(1) => UiLocale::En,
+                Some(2) => UiLocale::ZhHans,
+                Some(3) => UiLocale::Ja,
                 _ => return,
             };
             with_ui_mut(|ui| ui.dialogue_editor.select_locale(locale));
@@ -4116,11 +4143,15 @@ fn confirm_app_update() {
     // Default-mode scheduling leaves native button tracking first; NSAlert
     // must also never hold UI's RefCell borrow while spinning its modal loop.
     let preflight = with_ui_read(|ui| {
+        if ui.update_frozen.is_some() {
+            return Err("application update is already preparing".into());
+        }
         let plan = ui
             .app_update
             .plan()
             .cloned()
             .ok_or("Check the running installation again before applying")?;
+        let generation = ui.app_update.consent_generation();
         if matches!(
             &plan.action,
             herdr_update_coordinator::UpdateAction::ApplyInstalled
@@ -4146,13 +4177,13 @@ fn confirm_app_update() {
         if !blockers.is_empty() {
             return Err(blockers.join("; "));
         }
-        Ok((ui.mtm, ui.locale, plan))
+        Ok((ui.mtm, ui.locale, plan, generation))
     });
     let Some(preflight) = preflight else {
         schedule_app_update_confirmation();
         return;
     };
-    let (mtm, locale, plan) = match preflight {
+    let (mtm, locale, plan, generation) = match preflight {
         Ok(preflight) => preflight,
         Err(error) => {
             with_ui_update_action(move |ui| {
@@ -4162,19 +4193,28 @@ fn confirm_app_update() {
             return;
         }
     };
-    let source = app_update::source_description(&plan.origin);
-    let ref_note = match (&plan.origin, locale) {
+    let legacy_detail = || {
+        let source = app_update::source_description(&plan.origin);
+        let ref_note = match (&plan.origin, locale) {
         (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::Ko) =>
             format!("저장된 ref '{reference}'를 다시 설치합니다. 고정 ref는 최신 릴리스를 보장하지 않습니다."),
         (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::En) =>
             format!("Reinstalls recorded ref '{reference}'; a pinned ref does not guarantee the latest release."),
+        (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::ZhHans) =>
+            format!("重新安装记录的 ref“{reference}”；固定的 ref 不保证是最新版本。"),
+        (herdr_update_coordinator::InstallOrigin::Herdr { requested_ref: Some(reference), .. }, UiLocale::Ja) =>
+            format!("記録された ref「{reference}」を再インストールします。固定された ref が最新リリースとは限りません。"),
         (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::Ko) =>
             "현재 체크아웃만 빌드합니다. git pull 또는 ref 변경은 하지 않습니다.".into(),
         (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::En) =>
             "Builds the current checkout only. No git pull or ref change.".into(),
+        (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::ZhHans) =>
+            "仅构建当前检出的代码；不会执行 git pull 或更改 ref。".into(),
+        (herdr_update_coordinator::InstallOrigin::Local { .. }, UiLocale::Ja) =>
+            "現在のチェックアウトのみをビルドします。git pull や ref の変更は行いません。".into(),
         _ => String::new(),
     };
-    let action_note = match (&plan.action, locale) {
+        let action_note = match (&plan.action, locale) {
         (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::Ko) => {
             let candidate = plan.candidate.as_ref().expect("verified installed candidate");
             format!("설치 명령 없이 검증된 교체본만 적용합니다: {} · SHA-256 {}",
@@ -4185,29 +4225,77 @@ fn confirm_app_update() {
             format!("Applies only this verified installed image without an installer command: {} · SHA-256 {}",
                 candidate.path.display(), candidate.sha256)
         }
+        (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::ZhHans) => {
+            let candidate = plan.candidate.as_ref().expect("verified installed candidate");
+            format!("不运行安装命令，仅应用此已验证的安装映像：{} · SHA-256 {}",
+                candidate.path.display(), candidate.sha256)
+        }
+        (herdr_update_coordinator::UpdateAction::ApplyInstalled, UiLocale::Ja) => {
+            let candidate = plan.candidate.as_ref().expect("verified installed candidate");
+            format!("インストーラーのコマンドを実行せず、検証済みのインストールイメージのみを適用します：{} · SHA-256 {}",
+                candidate.path.display(), candidate.sha256)
+        }
         (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::Ko) =>
             "동의하면 이 formula에 대해서만 Homebrew 메타데이터 갱신 및 업그레이드를 실행할 수 있습니다.".into(),
         (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::En) =>
             "Only after this consent may Homebrew refresh metadata and upgrade this same formula.".into(),
+        (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::ZhHans) =>
+            "仅在您同意后，Homebrew 才会更新元数据并升级同一个 formula。".into(),
+        (herdr_update_coordinator::UpdateAction::HomebrewUpgrade, UiLocale::Ja) =>
+            "同意後に限り、Homebrew はメタデータを更新し、同じ formula をアップグレードできます。".into(),
         (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::Ko) =>
             "현재 디스크의 소스와 빌드 스크립트를 신뢰해야 합니다. 코드를 받거나 ref를 변경하지 않습니다.".into(),
         (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::En) =>
             "Trust the on-disk source and build scripts. No code is fetched or ref changed.".into(),
+        (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::ZhHans) =>
+            "您需要信任磁盘上的源代码和构建脚本；不会获取代码或更改 ref。".into(),
+        (herdr_update_coordinator::UpdateAction::LocalRebuild, UiLocale::Ja) =>
+            "ディスク上のソースとビルドスクリプトを信頼する必要があります。コードの取得や ref の変更は行いません。".into(),
         (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::Ko) =>
             "등록된 Herdr 관리자와 소스의 빌드 스크립트를 실행합니다. 사전 빌드 파일 설치 실패 후에도 소스 빌드로 전환될 수 있습니다.".into(),
         (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::En) =>
             "Runs the registered Herdr manager and source build scripts. Source fallback may follow even a failed prebuilt replacement.".into(),
+        (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::ZhHans) =>
+            "将运行已注册的 Herdr 管理器和源代码构建脚本。即使预构建映像替换失败，也可能转为从源码构建。".into(),
+        (herdr_update_coordinator::UpdateAction::HerdrReinstall, UiLocale::Ja) =>
+            "登録済みの Herdr マネージャーとソースのビルドスクリプトを実行します。ビルド済みイメージの置き換えに失敗した場合も、ソースからのビルドに移ることがあります。".into(),
     };
-    let detail = format!(
-        "{}\n\n{}: {}\n{}\n{}\n\n{}\n{}",
-        text(locale, Message::AppUpdateConfirmBody),
-        text(locale, Message::AppUpdateSource),
-        source,
-        ref_note,
-        action_note,
-        plan.context.executable.display(),
-        plan.context.state_dir.display(),
-    );
+        format!(
+            "{}\n\n{}: {}\n{}\n{}\n\n{}\n{}",
+            text(locale, Message::AppUpdateConfirmBody),
+            text(locale, Message::AppUpdateSource),
+            source,
+            ref_note,
+            action_note,
+            plan.context.executable.display(),
+            plan.context.state_dir.display(),
+        )
+    };
+    let detail = if let Some(target) = plan.target.as_ref() {
+        let original = app_update::source_description(&plan.origin);
+        let selected = app_update::source_description(plan.target_origin());
+        let label = text(locale, Message::AppUpdateChannelChange);
+        let warning = match locale {
+            UiLocale::Ko => "이 공식 릴리스의 정확한 버전과 설치 대상을 승인합니다. 자동으로 이전 버전으로 되돌리지 않으며, 설치/재시작은 이 동의 후에만 진행됩니다.",
+            UiLocale::En => "You approve this exact official release and installation target. No automatic downgrade occurs; installation and restart require this consent.",
+            UiLocale::ZhHans => "您批准此官方版本的确切版本号和安装目标。不会自动降级；安装和重新启动必须先获得您的同意。",
+            UiLocale::Ja => "この公式リリースの正確なバージョンとインストール先を承認します。自動的なダウングレードは行われず、インストールと再起動にはこの同意が必要です。",
+        };
+        format!(
+            "{label}\n{} → {} ({})\n\n{}:\n{}\n→\n{}\n\n{}\n{}\n{}",
+            plan.context.version,
+            target.release.version,
+            target.release.tag,
+            text(locale, Message::AppUpdateSource),
+            original,
+            selected,
+            warning,
+            plan.context.executable.display(),
+            plan.context.state_dir.display(),
+        )
+    } else {
+        legacy_detail()
+    };
     let alert = NSAlert::new(mtm);
     alert.setMessageText(&NSString::from_str(text(
         locale,
@@ -4226,8 +4314,10 @@ fn confirm_app_update() {
     }
     with_ui_update_action(move |ui| {
         let rechecked = (|| -> Result<(), String> {
-            if ui.app_update.plan() != Some(&plan) {
-                return Err("Checked source or installed candidate changed; check again".into());
+            if ui.update_frozen.is_some() || !ui.app_update.consent_matches(&plan, generation) {
+                return Err(
+                    "Checked release, policy or installed candidate changed; check again".into(),
+                );
             }
             let state = ui
                 .shared
@@ -4242,7 +4332,7 @@ fn confirm_app_update() {
             if !blocked.is_empty() {
                 return Err(blocked.join("; "));
             }
-            ui.app_update.launch(plan)?;
+            ui.app_update.launch(plan, generation)?;
             Ok(())
         })();
         if let Err(error) = rechecked {
@@ -5358,10 +5448,16 @@ impl Ui {
         let native_show_status_indicators = prefs.show_status_indicators();
         let native_menu_bar_mode = prefs.menu_bar_mode();
         let bubble_sizes = prefs.bubble_sizes();
+        let policy = if prefs.receive_beta_updates() {
+            UpdatePolicy::StableAndBeta
+        } else {
+            UpdatePolicy::StableOnly
+        };
         let app_update = AppUpdateService::new(
             update_context,
             prefs.auto_update_check(),
-            prefs.last_update_check(),
+            policy,
+            prefs.update_check_time(prefs.receive_beta_updates()),
         );
         let mut ui = Self {
             mtm,
@@ -7353,7 +7449,7 @@ impl Ui {
         while let Some(result) = self.queued_composer_results.pop_front() {
             let submission = result.submission;
             let status = match result.result {
-                Ok(()) => {
+                Ok(receipt) => {
                     let marked: bool = unsafe { msg_send![&*self.composer_view, hasMarkedText] };
                     let current = !marked
                         && !self.prompt_sender.is_pending()
@@ -7377,7 +7473,14 @@ impl Ui {
                                 && self.composer_pending_key.as_ref() == Some(&submission.key),
                         );
                     }
-                    text(self.locale, Message::ComposerSent).to_owned()
+                    text(
+                        self.locale,
+                        match receipt {
+                            PromptReceipt::Acknowledged => Message::ComposerSent,
+                            PromptReceipt::Accepted => Message::ComposerAccepted,
+                        },
+                    )
+                    .to_owned()
                 }
                 Err(error) => self.composer_error_text(&error),
             };
@@ -7911,23 +8014,51 @@ impl Ui {
         self.app_update.poll_operation();
         while let Some(event) = self.app_update.next_event() {
             match event {
-                app_update::Event::Checked { result, settled } => {
-                    let prior = self.prefs.last_update_check();
-                    if let Some(checked_at) = self.app_update.checked(result, settled) {
+                app_update::Event::Checked {
+                    request_id,
+                    policy_generation,
+                    mut result,
+                    settled,
+                } => {
+                    if !self
+                        .app_update
+                        .accepts_checked(request_id, policy_generation)
+                    {
+                        continue;
+                    }
+                    if let Some(checked_at) =
+                        self.app_update
+                            .checked_at_for_save(request_id, policy_generation, &result)
+                    {
                         let mut candidate = self.prefs.candidate();
-                        candidate.set_last_update_check(Some(checked_at));
+                        candidate.set_update_check_time(
+                            self.app_update.policy() == UpdatePolicy::StableAndBeta,
+                            Some(checked_at),
+                        );
                         if let Err(error) = self
                             .prefs
                             .save_candidate(candidate, &self.lifecycle_paths.config_dir)
                         {
-                            self.app_update.saved_check_failure(prior, error);
+                            self.app_update.mark_check_save_failure(error);
+                            continue;
+                        }
+                        if let Ok(snapshot) = &mut result {
+                            snapshot.checked_at = Some(checked_at);
                         }
                     }
+                    self.app_update
+                        .checked_event(request_id, policy_generation, result, settled);
+                }
+                app_update::Event::LaunchWaiting { operation_id } => {
+                    self.app_update.launch_waiting(&operation_id);
                 }
                 app_update::Event::Launched {
                     operation_id,
                     result,
                 } => {
+                    if !self.app_update.observing(&operation_id) {
+                        continue;
+                    }
                     let ownership_ack = self.app_update.launch_result(&operation_id, result);
                     let (prepared, updater_stopping) =
                         self.shared.lock().map_or((false, false), |state| {
@@ -7941,9 +8072,6 @@ impl Ui {
                             &operation_id,
                             "Coordinator confirmed ownership after preparation expired; do not assume the installation was applied".into(),
                         );
-                    }
-                    if !prepared && !updater_stopping {
-                        self.cancel_update_prepare(&operation_id);
                     }
                     self.app_update.reload_journal(operation_id);
                 }
@@ -7961,6 +8089,7 @@ impl Ui {
                                 state.reconcile_update_prepare(&operation_id, &context)
                             })
                         {
+                            self.app_update.recovery_reconciled(&operation_id);
                             self.cancel_update_prepare(&operation_id);
                         }
                     }
@@ -7981,6 +8110,7 @@ impl Ui {
             let Some(operation_id) = cancellation else {
                 break;
             };
+            self.app_update.preparation_cancelled(&operation_id);
             self.cancel_update_prepare(&operation_id);
         }
         let prepare = self
@@ -8183,29 +8313,98 @@ impl Ui {
         self.refresh();
     }
 
+    fn update_setting_admitted(&self) -> bool {
+        self.update_frozen.is_none()
+            && self.app_update.settings_admitted()
+            && self
+                .shared
+                .lock()
+                .is_ok_and(|state| state.update_mutation_allowed().is_ok())
+    }
+
     fn set_update_auto_check(&mut self, enabled: bool) {
-        let mut candidate = self.prefs.candidate();
-        candidate.set_auto_update_check(enabled);
-        match self
-            .prefs
-            .save_candidate(candidate, &self.lifecycle_paths.config_dir)
-        {
-            Ok(()) => self.app_update.set_auto_check(enabled),
-            Err(error) => {
-                self.app_update
-                    .set_problem(format!("Could not save automatic check setting: {error}"));
-                // NSSwitch changes state before this callback. An identical
-                // failure leaves the service revision unchanged, but still
-                // requires repainting the committed preference.
-                self.painted_app_update = None;
+        if !self.update_setting_admitted() {
+            self.painted_app_update = None;
+            self.refresh_app_update();
+            return;
+        }
+        if self.prefs.auto_update_check() != enabled {
+            let mut candidate = self.prefs.candidate();
+            candidate.set_auto_update_check(enabled);
+            match self
+                .prefs
+                .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+            {
+                Ok(()) => self.app_update.set_auto_check(enabled),
+                Err(error) => self
+                    .app_update
+                    .set_problem(format!("Could not save automatic check setting: {error}")),
             }
         }
+        self.painted_app_update = None;
+        self.refresh_app_update();
+    }
+
+    fn set_update_beta(&mut self, enabled: bool) {
+        if !self.update_setting_admitted() {
+            self.painted_app_update = None;
+            self.refresh_app_update();
+            return;
+        }
+        if self.prefs.receive_beta_updates() != enabled {
+            let mut candidate = self.prefs.candidate();
+            candidate.set_receive_beta_updates(enabled);
+            match self
+                .prefs
+                .save_candidate(candidate, &self.lifecycle_paths.config_dir)
+            {
+                Ok(()) => {
+                    let policy = if enabled {
+                        UpdatePolicy::StableAndBeta
+                    } else {
+                        UpdatePolicy::StableOnly
+                    };
+                    self.app_update
+                        .change_policy(policy, self.prefs.update_check_time(enabled));
+                }
+                Err(error) => self
+                    .app_update
+                    .set_problem(format!("Could not save beta update setting: {error}")),
+            }
+        }
+        self.painted_app_update = None;
         self.refresh_app_update();
     }
 
     fn check_app_update(&mut self) {
-        self.app_update.check_now();
+        if self.update_frozen.is_none()
+            && self
+                .shared
+                .lock()
+                .is_ok_and(|state| state.update_mutation_allowed().is_ok())
+        {
+            self.app_update.check_now();
+        }
         self.refresh_app_update();
+    }
+
+    fn download_app_update(&mut self) {
+        if self.update_frozen.is_some()
+            || !self.app_update.settings_admitted()
+            || !self
+                .shared
+                .lock()
+                .is_ok_and(|state| state.update_mutation_allowed().is_ok())
+        {
+            return;
+        }
+        let Some(url) = self.app_update.download_url() else {
+            return;
+        };
+        let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+            return;
+        };
+        NSWorkspace::sharedWorkspace().openURL(&url);
     }
 
     fn frame_tick(&mut self) {
@@ -11965,6 +12164,8 @@ impl Ui {
             locale: match baseline.locale {
                 UiLocale::Ko => DialogueLanguage::Ko,
                 UiLocale::En => DialogueLanguage::En,
+                UiLocale::ZhHans => DialogueLanguage::ZhHans,
+                UiLocale::Ja => DialogueLanguage::Ja,
             },
             slot: baseline.slot,
         }
@@ -14761,7 +14962,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_gui_result_only_removes_exact_draft_without_new_same_key_send() {
+    fn completed_gui_receipts_only_remove_exact_draft_without_new_same_key_send() {
         let a = SessionKey {
             source_id: 1,
             generation: 2,
@@ -14772,16 +14973,30 @@ mod tests {
             generation: 1,
             terminal_id: "b".into(),
         };
-        let mut drafts = VecDeque::from([
-            (a.clone(), "sent".to_owned()),
-            (b.clone(), "keep".to_owned()),
-        ]);
-        clear_completed_composer_draft(&mut drafts, &a, "sent", true);
-        assert_eq!(drafts.len(), 2);
-        clear_completed_composer_draft(&mut drafts, &a, "edited", false);
-        assert_eq!(drafts.len(), 2);
-        clear_completed_composer_draft(&mut drafts, &a, "sent", false);
-        assert_eq!(drafts, VecDeque::from([(b, "keep".to_owned())]));
+        for receipt in [PromptReceipt::Acknowledged, PromptReceipt::Accepted] {
+            let mut drafts = VecDeque::from([
+                (a.clone(), "sent".to_owned()),
+                (b.clone(), "keep".to_owned()),
+            ]);
+            clear_completed_composer_draft(&mut drafts, &a, "sent", true);
+            assert_eq!(drafts.len(), 2);
+            clear_completed_composer_draft(&mut drafts, &a, "edited", false);
+            assert_eq!(drafts.len(), 2);
+            clear_completed_composer_draft(&mut drafts, &a, "sent", false);
+            assert_eq!(drafts, VecDeque::from([(b.clone(), "keep".to_owned())]));
+            let message = match receipt {
+                PromptReceipt::Acknowledged => Message::ComposerSent,
+                PromptReceipt::Accepted => Message::ComposerAccepted,
+            };
+            assert_ne!(
+                text(UiLocale::En, message),
+                text(UiLocale::En, Message::ComposerUnknownDelivery)
+            );
+        }
+        assert_ne!(
+            text(UiLocale::En, Message::ComposerAccepted),
+            text(UiLocale::En, Message::ComposerSent)
+        );
     }
 
     #[test]
@@ -15219,7 +15434,7 @@ mod tests {
             source: "/local.sock".into(),
             pane_id: "pane".into(),
             workspace_id: "workspace".into(),
-            worktree: Arc::new(crate::herdr_protocol::WorkspaceWorktreeInfo {
+            worktree: Arc::new(crate::session::WorkspaceWorktreeInfo {
                 repo_key: "key".into(),
                 repo_name: repo.clone(),
                 repo_root: "/parent".into(),

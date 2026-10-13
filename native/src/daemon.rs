@@ -9,7 +9,10 @@ use crate::socket;
 use crate::state::AppState;
 use crate::ui;
 use herdr_update_coordinator::protocol::{register_active, start_allowed, unregister_active};
-use herdr_update_coordinator::{detect_origin, executable_identity, InstallOrigin, UpdateContext};
+use herdr_update_coordinator::{
+    detect_origin, executable_identity, InstallOrigin, ObservationMode, UpdateContext,
+    OBSERVATION_MODE_ENV,
+};
 use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
@@ -25,6 +28,7 @@ pub struct DaemonConfig {
     pub startup_token: Option<String>,
     pub automatic_start: bool,
     pub host_plugin_config_dir: Option<PathBuf>,
+    pub observation_mode: ObservationMode,
 }
 
 impl DaemonConfig {
@@ -36,6 +40,7 @@ impl DaemonConfig {
         assets_override: bool,
         automatic_start: bool,
         host_plugin_config_dir: Option<PathBuf>,
+        observation_mode: ObservationMode,
     ) -> Self {
         Self {
             paths,
@@ -45,6 +50,7 @@ impl DaemonConfig {
             startup_token,
             automatic_start,
             host_plugin_config_dir,
+            observation_mode,
         }
     }
 }
@@ -76,13 +82,11 @@ impl Drop for ActiveUpdateGuard {
     }
 }
 
-fn update_context(
-    config: &DaemonConfig,
-    instance_id: String,
-    executable: PathBuf,
-    prefs: &Preferences,
-) -> Result<UpdateContext, String> {
-    let environment = [
+fn update_environment(
+    observation_mode: ObservationMode,
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
+    let mut environment = [
         "HOME",
         "XDG_CONFIG_HOME",
         "XDG_STATE_HOME",
@@ -94,8 +98,25 @@ fn update_context(
         "HERDR_SOCKET_PATH",
     ]
     .into_iter()
-    .filter_map(|key| env::var(key).ok().map(|value| (key.to_owned(), value)))
+    .filter_map(|key| lookup(key).map(|value| (key.to_owned(), value)))
     .collect::<BTreeMap<_, _>>();
+    // Absence is the legacy-compatible Herdr encoding, not an inherited selection.
+    if observation_mode != ObservationMode::Herdr {
+        environment.insert(
+            OBSERVATION_MODE_ENV.to_owned(),
+            observation_mode.as_str().to_owned(),
+        );
+    }
+    environment
+}
+
+fn update_context(
+    config: &DaemonConfig,
+    instance_id: String,
+    executable: PathBuf,
+    prefs: &Preferences,
+) -> Result<UpdateContext, String> {
+    let environment = update_environment(config.observation_mode, |key| env::var(key).ok());
     let locale = ui::current_ui_locale(prefs.language()).tag();
     let mut context = UpdateContext {
         running: executable_identity(&executable)?,
@@ -173,6 +194,7 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
     packs.start()?;
 
     let mut initial_state = AppState::new();
+    initial_state.set_observation_mode(config.observation_mode);
     initial_state.set_lifecycle_settings(settings);
     let prefs = Preferences::load_for_daemon(&config.paths.config_dir)?;
     initial_state.apply_observation_preferences(prefs.observation().clone());
@@ -219,29 +241,38 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
     initial_state.set_automation(automation.clone());
     let shared = Arc::new(Mutex::new(initial_state));
     let watchers = Arc::new(Mutex::new(Watchers::new(Arc::clone(&shared))));
-    let mut remote_watchers = RemoteWatchers::new(Arc::clone(&shared));
-    let launch_endpoint = socket::canonical_endpoint(&config.herdr_socket)?;
-    let mut endpoints = vec![launch_endpoint.clone()];
-    for endpoint in lifecycle::read_endpoints(&config.paths.config_dir)? {
-        if endpoint != launch_endpoint && !endpoints.contains(&endpoint) {
-            endpoints.push(endpoint);
-        }
-    }
+    let mut remote_watchers = config
+        .observation_mode
+        .supports_herdr()
+        .then(|| RemoteWatchers::new(Arc::clone(&shared)));
+    let launch_endpoint = config
+        .observation_mode
+        .supports_herdr()
+        .then(|| socket::canonical_endpoint(&config.herdr_socket))
+        .transpose()?;
     let mut accepted_endpoints = Vec::new();
-    for endpoint in &endpoints {
-        let result = {
-            let watcher = watchers
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            watcher.register(endpoint.clone())
-        };
-        match result {
-            Ok(()) => accepted_endpoints.push(endpoint.clone()),
-            Err(error) => {
-                eprintln!(
-                    "desktop-pet: Herdr registration pending for {}: {error}",
-                    endpoint.display()
-                );
+    if let Some(endpoint) = launch_endpoint.as_ref() {
+        let mut endpoints = vec![endpoint.clone()];
+        for endpoint in lifecycle::read_endpoints(&config.paths.config_dir)? {
+            if !endpoints.contains(&endpoint) {
+                endpoints.push(endpoint);
+            }
+        }
+        for endpoint in endpoints {
+            let result = {
+                let watcher = watchers
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                watcher.register(endpoint.clone())
+            };
+            match result {
+                Ok(()) => accepted_endpoints.push(endpoint),
+                Err(error) => {
+                    eprintln!(
+                        "desktop-pet: Herdr registration pending for {}: {error}",
+                        endpoint.display()
+                    );
+                }
             }
         }
     }
@@ -250,7 +281,7 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
         Arc::clone(&shared),
         Arc::clone(&watchers),
         config.paths.clone(),
-        Some(launch_endpoint),
+        launch_endpoint,
         executable,
         Arc::clone(&packs),
     ) {
@@ -323,9 +354,41 @@ pub fn run(config: DaemonConfig) -> Result<(), String> {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         watcher.shutdown();
     }
-    remote_watchers.shutdown();
+    if let Some(watchers) = remote_watchers.as_mut() {
+        watchers.shutdown();
+    }
     control.shutdown();
     packs.shutdown();
 
     ui_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_capture_omits_default_mode_even_with_inherited_selection() {
+        for inherited in [None, Some("herdr"), Some("tern"), Some("both")] {
+            for mode in [
+                ObservationMode::Herdr,
+                ObservationMode::Tern,
+                ObservationMode::Both,
+            ] {
+                let captured = update_environment(mode, |key| match key {
+                    OBSERVATION_MODE_ENV => inherited.map(str::to_owned),
+                    "HERDR_SOCKET_PATH" => Some("/missing/host.sock".into()),
+                    _ => None,
+                });
+                assert_eq!(
+                    captured.get("HERDR_SOCKET_PATH").map(String::as_str),
+                    Some("/missing/host.sock")
+                );
+                assert_eq!(
+                    captured.get(OBSERVATION_MODE_ENV).map(String::as_str),
+                    (mode != ObservationMode::Herdr).then_some(mode.as_str())
+                );
+            }
+        }
+    }
 }

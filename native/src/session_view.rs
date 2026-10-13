@@ -1,6 +1,6 @@
 use crate::agent_outcome::{AgentOutcome, OutcomeReport};
-use crate::herdr_protocol::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
 use crate::i18n::{session_local_source, text, Message, UiLocale};
+use crate::session::{AgentRecord, AgentStatus, SessionMetadata, WorkspaceWorktreeInfo};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 const MAX_SOURCES: usize = 64;
-const MAX_RECORDS_PER_SOURCE: usize = crate::herdr_protocol::MAX_AGENT_RECORDS;
+const MAX_RECORDS_PER_SOURCE: usize = crate::session::MAX_AGENT_RECORDS;
 const MAX_ROWS: usize = 128;
 /// Maximum number of materialized rows in a single complete-session page.
 pub(crate) const MAX_PAGE_ROWS: usize = MAX_ROWS;
@@ -279,6 +279,13 @@ pub(crate) enum WorktreeRemoveTargetError {
     NotLinkedWorktree,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceAdmission {
+    Allowed,
+    Capacity,
+    Rejected,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct SessionStore {
     sources: Vec<SourceState>,
@@ -295,6 +302,36 @@ impl SessionStore {
         self.revision
     }
 
+    /// Validate admission without consuming an opaque ID or changing retained
+    /// rows. Capacity is reported only when removing a source could help.
+    pub(crate) fn source_admission(&self, source: &str, generation: u64) -> SourceAdmission {
+        if generation == 0 {
+            return SourceAdmission::Rejected;
+        }
+        if let Some(index) = self.source_index(source) {
+            return if generation >= self.sources[index].generation {
+                SourceAdmission::Allowed
+            } else {
+                SourceAdmission::Rejected
+            };
+        }
+        if self.next_source_id.checked_add(1).is_none() {
+            return SourceAdmission::Rejected;
+        }
+        if self.sources.len() >= MAX_SOURCES {
+            SourceAdmission::Capacity
+        } else {
+            SourceAdmission::Allowed
+        }
+    }
+
+    pub(crate) fn is_offline_generation(&self, source: &str, generation: u64) -> bool {
+        self.source_index(source).is_some_and(|index| {
+            self.sources[index].generation == generation
+                && self.sources[index].availability == Availability::Offline
+        })
+    }
+
     /// Begin a source generation. A newer generation keeps cached rows, but
     /// makes them offline until a coherent snapshot replaces them.
     ///
@@ -302,7 +339,7 @@ impl SessionStore {
     /// rather than whether visible rows changed. A duplicate same-generation
     /// begin is accepted and leaves the revision unchanged.
     pub(crate) fn begin_source(&mut self, source: &str, generation: u64) -> bool {
-        if generation == 0 {
+        if self.source_admission(source, generation) != SourceAdmission::Allowed {
             return false;
         }
         if let Some(index) = self.source_index(source) {
@@ -330,9 +367,6 @@ impl SessionStore {
             return true;
         }
 
-        if self.sources.len() >= MAX_SOURCES {
-            return false;
-        }
         let Some(next_source_id) = self.next_source_id.checked_add(1) else {
             return false;
         };
@@ -695,7 +729,9 @@ impl SessionStore {
             .records
             .get(&key.terminal_id)
             .ok_or(WorktreeRemoveTargetError::Stale)?;
-        if crate::sources::remote_machine_id(&source.source).is_some() {
+        if crate::sources::remote_machine_id(&source.source).is_some()
+            || source.source.starts_with("tern:")
+        {
             return Err(WorktreeRemoveTargetError::ReadOnly);
         }
         if source.availability != Availability::Live {
@@ -3239,5 +3275,72 @@ mod tests {
         let disconnected_revision = store.revision();
         assert!(store.mark_offline("socket", 1));
         assert_eq!(store.revision(), disconnected_revision);
+    }
+    #[test]
+    fn admission_queries_preserve_rows_ids_and_exhausted_capacity() {
+        let mut store = SessionStore::new();
+        for index in 0..MAX_SOURCES {
+            let source = format!("source-{index}");
+            assert!(store.begin_source(&source, 1));
+            assert!(store.replace_source(
+                &source,
+                1,
+                [&record("terminal", "pane", AgentStatus::Working)]
+            ));
+        }
+        let before = store.snapshot(&SessionListOptions::default(), None);
+        let revision = store.revision();
+        let next_id = store.next_source_id;
+        assert_eq!(
+            store.source_admission("new-source", 1),
+            SourceAdmission::Capacity
+        );
+        assert_eq!(
+            store.source_admission("source-0", 2),
+            SourceAdmission::Allowed
+        );
+        assert_eq!(
+            store.source_admission("source-0", 0),
+            SourceAdmission::Rejected
+        );
+        assert_eq!(store.revision(), revision);
+        assert_eq!(store.next_source_id, next_id);
+        assert_eq!(
+            store.snapshot(&SessionListOptions::default(), None).rows,
+            before.rows
+        );
+
+        store.next_source_id = u64::MAX;
+        assert_eq!(
+            store.source_admission("new-source", 1),
+            SourceAdmission::Rejected
+        );
+        assert!(!store.begin_source("new-source", 1));
+        assert_eq!(store.revision(), revision);
+        assert_eq!(store.sources.len(), MAX_SOURCES);
+        store.next_source_id = next_id;
+        let old_key = before.rows[0].key.clone();
+        assert!(store.mark_offline("source-0", 1));
+        assert!(!store.is_offline_generation("source-0", 2));
+        assert!(store.is_offline_generation("source-0", 1));
+        assert!(store.remove_source("source-0", 1));
+        assert_eq!(
+            store.source_admission("new-source", 1),
+            SourceAdmission::Allowed
+        );
+        assert!(store.begin_source("new-source", 1));
+        assert!(store.replace_source(
+            "new-source",
+            1,
+            [&record("terminal", "pane", AgentStatus::Working)]
+        ));
+        let added = store
+            .snapshot(&SessionListOptions::default(), None)
+            .rows
+            .into_iter()
+            .find(|row| row.key.source_id == next_id)
+            .unwrap();
+        assert_ne!(added.key.source_id, old_key.source_id);
+        assert!(store.view_for_key(&old_key).is_none());
     }
 }

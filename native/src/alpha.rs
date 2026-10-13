@@ -286,7 +286,10 @@ mod tests {
         let mask = AlphaMask::from_rgba(2, 2, &rgba).expect("valid RGBA mask");
         assert_eq!(mask.display_bounds(), Some((0.0, 0.0, 1.0, 1.0)));
         assert_eq!(mask.visible_bounds(None), Some((0.0, 0.5, 0.5, 1.0)));
-        assert_eq!(mask.sample(0.5, 1.5, (0.0, 0.0, 2.0, 2.0)), Some((false, 0.5, 0.5)));
+        assert_eq!(
+            mask.sample(0.5, 1.5, (0.0, 0.0, 2.0, 2.0)),
+            Some((false, 0.5, 0.5))
+        );
     }
 
     #[test]

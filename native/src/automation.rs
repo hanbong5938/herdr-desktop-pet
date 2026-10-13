@@ -235,6 +235,7 @@ pub(crate) enum DomainOperationState {
     Pending,
     Applied,
     AgentPrompted,
+    PromptAccepted,
     Failed,
     UnknownDelivery,
     Superseded,
@@ -1155,6 +1156,11 @@ impl AutomationState {
         {
             return Err("only acknowledged prompts can be agent_prompted".into());
         }
+        if state == DomainOperationState::PromptAccepted
+            && (kind != "session_prompt" || committed || native_applied)
+        {
+            return Err("only unacknowledged prompts can be prompt_accepted".into());
+        }
         if state == DomainOperationState::UnknownDelivery && committed {
             return Err("acknowledged delivery cannot become unknown".into());
         }
@@ -1666,6 +1672,61 @@ mod tests {
     }
 
     #[test]
+    fn accepted_prompt_is_terminal_without_claiming_delivery_or_losing_idempotency() {
+        let mut state = AutomationState::with_instance("test".into(), target(), None);
+        let request = prompt("queued", "message".into());
+        state.submit_domain(request.clone()).unwrap();
+        state.drain_domain_requests();
+        state.start_domain_request("queued").unwrap();
+        assert!(state
+            .finish_domain_operation(
+                "queued",
+                DomainOperationState::PromptAccepted,
+                true,
+                false,
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        let receipt = serde_json::json!({"delivery": "accepted_may_be_queued"});
+        let accepted = state
+            .finish_domain_operation(
+                "queued",
+                DomainOperationState::PromptAccepted,
+                false,
+                false,
+                Some(receipt.clone()),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(accepted.state.terminal());
+        assert!(!accepted.committed);
+        assert!(!accepted.native_applied);
+        assert_eq!(accepted.result, Some(receipt));
+        assert!(!state.has_pending_update_operations());
+        assert_eq!(
+            state.submit_domain(request).unwrap().state,
+            DomainOperationState::PromptAccepted
+        );
+        assert!(state
+            .submit_domain(prompt("queued", "different".into()))
+            .is_err());
+        assert!(state
+            .finish_domain_operation(
+                "queued",
+                DomainOperationState::AgentPrompted,
+                true,
+                false,
+                None,
+                None,
+                None,
+            )
+            .is_err());
+    }
+
+    #[test]
     fn unknown_prompt_survives_completed_history_churn_and_bounded_admission() {
         let mut state = AutomationState::with_instance("test".into(), target(), None);
         let ambiguous = prompt("ambiguous", "may have been delivered".into());
@@ -1996,9 +2057,13 @@ mod tests {
         state
             .submit_domain(prompt("finished", "hello".into()))
             .unwrap();
+        state
+            .submit_domain(prompt("accepted", "hello".into()))
+            .unwrap();
         state.drain_domain_requests();
         state.start_domain_request("pending").unwrap();
         state.start_domain_request("finished").unwrap();
+        state.start_domain_request("accepted").unwrap();
         state
             .finish_domain_operation(
                 "finished",
@@ -2006,6 +2071,17 @@ mod tests {
                 true,
                 false,
                 None,
+                None,
+                None,
+            )
+            .unwrap();
+        state
+            .finish_domain_operation(
+                "accepted",
+                DomainOperationState::PromptAccepted,
+                false,
+                false,
+                Some(serde_json::json!({"delivery": "accepted_may_be_queued"})),
                 None,
                 None,
             )
@@ -2023,11 +2099,26 @@ mod tests {
             state.domain_status("test", "finished").unwrap().state,
             DomainOperationState::AgentPrompted
         );
+        assert_eq!(
+            state.domain_status("test", "accepted").unwrap().state,
+            DomainOperationState::PromptAccepted
+        );
         assert!(state
             .finish_domain_operation(
                 "pending",
                 DomainOperationState::AgentPrompted,
                 true,
+                false,
+                None,
+                None,
+                None,
+            )
+            .is_err());
+        assert!(state
+            .finish_domain_operation(
+                "pending",
+                DomainOperationState::PromptAccepted,
+                false,
                 false,
                 None,
                 None,

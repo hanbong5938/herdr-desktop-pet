@@ -1,10 +1,10 @@
 use crate::agent_outcome::OutcomeTracker;
 use crate::herdr_protocol::{
-    self, AgentRecord, AgentStatus, PluginAvailability, ProtocolError, SnapshotCounts,
-    SubscriptionEvent, SubscriptionEventRead, SubscriptionReader,
+    self, PluginAvailability, ProtocolError, SubscriptionEvent, SubscriptionEventRead,
+    SubscriptionReader,
 };
 use crate::lifecycle::LifecycleSettings;
-use crate::session::OutcomeObservation;
+use crate::session::{AgentRecord, AgentStatus, OutcomeObservation, Snapshot, SnapshotCounts};
 use crate::session_view::{SessionKey, WorktreeRemoveTarget, WorktreeRemoveTargetError};
 use crate::state::{AppState, SessionStatusUpdate, SourceCounts};
 use std::collections::{HashMap, HashSet};
@@ -55,11 +55,16 @@ pub(crate) enum PromptError {
     UnknownDelivery,
     Other(String),
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PromptReceipt {
+    Acknowledged,
+    Accepted,
+}
 
 #[derive(Debug)]
 pub(crate) struct PromptResult {
     pub(crate) submission: Arc<PromptSubmission>,
-    pub(crate) result: Result<(), PromptError>,
+    pub(crate) result: Result<PromptReceipt, PromptError>,
 }
 
 /// Exactly one request per sender. The dedicated one-shot worker never shares
@@ -93,67 +98,90 @@ impl PromptSender {
         if text.trim().is_empty() {
             return Err(PromptError::Empty);
         }
-        if text.len() > herdr_protocol::MAX_FRAME_BYTES {
-            return Err(PromptError::TooLarge);
-        }
-        let target = {
+        let (target, route) = {
             let state = self.shared.lock().map_err(|_| PromptError::Offline)?;
             state
                 .update_mutation_allowed()
                 .map_err(PromptError::Other)?;
-            state.prompt_target(&key)?
+            state.prompt_route(&key)?
         };
-        #[derive(serde::Serialize)]
-        struct PromptFrame<'a> {
-            id: &'static str,
-            method: &'static str,
-            params: PromptParams<'a>,
-        }
-        #[derive(serde::Serialize)]
-        struct PromptParams<'a> {
-            target: &'a str,
-            text: &'a str,
-        }
-        let frame = PromptFrame {
-            id: "desktop-pet-prompt-4294967295-18446744073709551615",
-            method: "agent.prompt",
-            params: PromptParams {
-                target: &target.pane_id,
-                text: &text,
-            },
-        };
-        if serde_json::to_vec(&frame)
-            .map_err(|error| PromptError::Other(error.to_string()))?
-            .len()
-            .saturating_add(1)
-            > herdr_protocol::MAX_FRAME_BYTES
-        {
-            return Err(PromptError::TooLarge);
+        if matches!(&route, crate::sources::SourceRoute::HerdrLocal(_)) {
+            if text.len() > herdr_protocol::MAX_FRAME_BYTES {
+                return Err(PromptError::TooLarge);
+            }
+            #[derive(serde::Serialize)]
+            struct PromptFrame<'a> {
+                id: &'static str,
+                method: &'static str,
+                params: PromptParams<'a>,
+            }
+            #[derive(serde::Serialize)]
+            struct PromptParams<'a> {
+                target: &'a str,
+                text: &'a str,
+            }
+            let frame = PromptFrame {
+                id: "desktop-pet-prompt-4294967295-18446744073709551615",
+                method: "agent.prompt",
+                params: PromptParams {
+                    target: &target.pane_id,
+                    text: &text,
+                },
+            };
+            let encoded_len = serde_json::to_vec(&frame)
+                .map_err(|error| PromptError::Other(error.to_string()))?
+                .len()
+                .saturating_add(1);
+            if encoded_len > herdr_protocol::MAX_FRAME_BYTES {
+                return Err(PromptError::TooLarge);
+            }
         }
         // Serialize final admission with Prepare's AppState gate. An admitted
         // worker stays pending until its actual delivery outcome is observed.
-        let state = self.shared.lock().map_err(|_| PromptError::Offline)?;
+        let mut state = self.shared.lock().map_err(|_| PromptError::Offline)?;
         state
             .update_mutation_allowed()
             .map_err(PromptError::Other)?;
-        if state.prompt_target(&key)? != target {
+        let (current_target, current_route) = state.prompt_route(&key)?;
+        if current_target != target || current_route != route {
             return Err(PromptError::StaleTarget);
         }
+        let tern_request = match &route {
+            crate::sources::SourceRoute::TernWindow { window, epoch } => {
+                let (operation_id, receipt) =
+                    state.queue_tern_prompt(key.clone(), window, *epoch, &target.pane_id, &text)?;
+                Some((window.clone(), operation_id, receipt))
+            }
+            _ => None,
+        };
+        let cancel_tern = tern_request
+            .as_ref()
+            .map(|(window, operation_id, _)| (window.clone(), operation_id.clone()));
         let submission = Arc::new(PromptSubmission { key, text, origin });
         let (tx, rx) = mpsc::sync_channel(1);
         let shared = Arc::clone(&self.shared);
         let worker_submission = Arc::clone(&submission);
-        thread::Builder::new()
+        let spawned = thread::Builder::new()
             .name("herdr-desktop-pet-prompt".to_owned())
             .spawn(move || {
-                let result = send_prompt(&shared, &worker_submission.key, &worker_submission.text);
+                let result = match tern_request {
+                    Some((window, operation_id, receipt)) => {
+                        wait_tern_prompt(&shared, &window, &operation_id, receipt)
+                    }
+                    None => send_prompt(&shared, &worker_submission.key, &worker_submission.text),
+                };
                 let _ = tx.send(PromptResult {
                     submission: worker_submission,
                     result,
                 });
                 wake_ui();
-            })
-            .map_err(|error| PromptError::Other(error.to_string()))?;
+            });
+        if let Err(error) = spawned {
+            if let Some((window, operation_id)) = cancel_tern {
+                state.cancel_tern_prompt(&window, &operation_id);
+            }
+            return Err(PromptError::Other(error.to_string()));
+        }
         self.pending = Some((rx, submission));
         drop(state);
         Ok(())
@@ -186,16 +214,44 @@ fn prompt_request_id() -> String {
     )
 }
 
+fn wait_tern_prompt(
+    shared: &Arc<Mutex<AppState>>,
+    window: &str,
+    operation_id: &str,
+    receipt: Receiver<Result<PromptReceipt, PromptError>>,
+) -> Result<PromptReceipt, PromptError> {
+    match receipt.recv_timeout(PROMPT_TIMEOUT + crate::tern::FRESHNESS) {
+        Ok(result) => result,
+        Err(_) => {
+            if let Ok(mut state) = shared.lock() {
+                state.cancel_tern_prompt(window, operation_id);
+            }
+            Err(PromptError::UnknownDelivery)
+        }
+    }
+}
+
 fn send_prompt(
     shared: &Arc<Mutex<AppState>>,
     key: &SessionKey,
     text: &str,
-) -> Result<(), PromptError> {
-    let target = shared
+) -> Result<PromptReceipt, PromptError> {
+    let (target, route) = shared
         .lock()
         .map_err(|_| PromptError::Offline)?
-        .prompt_target(key)?;
-    let path = Path::new(&target.source);
+        .prompt_route(key)?;
+    let route_path = match route {
+        crate::sources::SourceRoute::TernWindow { window, epoch } => {
+            let (operation_id, receipt) = shared
+                .lock()
+                .map_err(|_| PromptError::Offline)?
+                .queue_tern_prompt(key.clone(), &window, epoch, &target.pane_id, text)?;
+            return wait_tern_prompt(shared, &window, &operation_id, receipt);
+        }
+        crate::sources::SourceRoute::HerdrLocal(path) => path,
+        crate::sources::SourceRoute::HerdrRemote { .. } => return Err(PromptError::ReadOnly),
+    };
+    let path = route_path.as_path();
     // Watchers register canonical local endpoint identities. Never reinterpret
     // a synthetic or aliased source as a different socket; filesystem
     // resolution happens after releasing the application mutex.
@@ -237,11 +293,16 @@ fn send_prompt(
     {
         return Err(PromptError::StaleTarget);
     }
-    let current = shared
-        .lock()
-        .map_err(|_| PromptError::Offline)?
-        .prompt_target(key)?;
-    if current != target {
+    let current = {
+        let state = shared.lock().map_err(|_| PromptError::Offline)?;
+        state
+            .update_mutation_allowed()
+            .map_err(PromptError::Other)?;
+        state.prompt_route(key)?
+    };
+    if current.0 != target
+        || !matches!(&current.1, crate::sources::SourceRoute::HerdrLocal(latest) if latest == &route_path)
+    {
         return Err(PromptError::StaleTarget);
     }
     let response = herdr_protocol::request_with_delivery(
@@ -286,7 +347,7 @@ fn send_prompt(
             {
                 return Err(PromptError::UnknownDelivery);
             }
-            Ok(())
+            Ok(PromptReceipt::Acknowledged)
         }
     }
 }
@@ -777,6 +838,9 @@ pub(crate) struct Endpoint {
     registry: RegistrationState,
     generation: u64,
     next_generation: u64,
+    // Retry only a denied begin on ordinary coherent snapshots, never an
+    // already-admitted or superseded generation.
+    source_admission_pending: bool,
     agents: HashMap<String, AgentRecord>,
     outcomes: HashMap<String, Vec<TrackedOutcome>>,
     duplicate_agents: Vec<AgentRecord>,
@@ -911,6 +975,7 @@ impl Endpoint {
             registry,
             generation: 0,
             next_generation: 0,
+            source_admission_pending: false,
             ambiguous_terminal_ids: HashSet::new(),
             agents: HashMap::new(),
             duplicate_agents: Vec::new(),
@@ -942,7 +1007,7 @@ impl Endpoint {
     pub(crate) fn remote_snapshot(
         &mut self,
         shared: &Arc<Mutex<AppState>>,
-        snapshot: herdr_protocol::Snapshot,
+        snapshot: Snapshot,
         observed_at: Instant,
         baseline: bool,
     ) {
@@ -972,6 +1037,7 @@ impl Endpoint {
     fn begin_generation(&mut self, shared: &Arc<Mutex<AppState>>) {
         self.next_generation = self.next_generation.saturating_add(1).max(1);
         self.generation = self.next_generation;
+        self.source_admission_pending = true;
         if !self.agents.is_empty() {
             self.last_sessions = self.agents.len();
         }
@@ -984,7 +1050,8 @@ impl Endpoint {
         self.ambiguous_terminal_ids.clear();
         self.pane_ids = Arc::from([]);
         if let Ok(mut state) = shared.lock() {
-            let _ = state.begin_source(self.source.clone(), self.generation);
+            self.source_admission_pending =
+                !state.begin_source(self.source.clone(), self.generation);
         }
         wake_ui();
     }
@@ -1050,23 +1117,47 @@ impl Endpoint {
     ) {
         let counts = self.counts();
         if let Ok(mut state) = shared.lock() {
-            if !self.epoch_matches(&state)
-                || !state.publish_source_snapshot(
-                    &self.source,
-                    self.generation,
-                    self.agents.values(),
-                    SourceCounts {
-                        sessions: counts.sessions,
-                        working: counts.working,
-                        blocked: counts.blocked,
-                        done: counts.done,
-                        unknown: counts.unknown,
-                    },
-                    Arc::clone(&self.pane_ids),
-                    completions,
-                    observed_at,
-                )
-            {
+            if !self.epoch_matches(&state) {
+                return;
+            }
+            let baseline = self.source_admission_pending;
+            if baseline {
+                match state.source_generation(&self.source) {
+                    Some(generation) if generation == self.generation => {}
+                    Some(_) => {
+                        // A different registered generation owns this source.
+                        // Never let a later removal revive this stale endpoint.
+                        self.source_admission_pending = false;
+                        return;
+                    }
+                    None => {
+                        if !state.begin_source(self.source.clone(), self.generation) {
+                            return;
+                        }
+                    }
+                }
+                self.source_admission_pending = false;
+                // Observations made while admission was denied are a baseline,
+                // not completion transitions or fresh outcome reports.
+                self.outcomes.clear();
+                self.pending_prime.clear();
+                self.outcome_snapshot_unix_ms = None;
+            }
+            if !state.publish_source_snapshot(
+                &self.source,
+                self.generation,
+                self.agents.values(),
+                SourceCounts {
+                    sessions: counts.sessions,
+                    working: counts.working,
+                    blocked: counts.blocked,
+                    done: counts.done,
+                    unknown: counts.unknown,
+                },
+                Arc::clone(&self.pane_ids),
+                if baseline { &[] } else { completions },
+                observed_at,
+            ) {
                 return;
             }
             let mut pane_counts = HashMap::<&str, usize>::new();
@@ -1219,7 +1310,7 @@ impl Endpoint {
         wake_ui();
     }
 
-    fn replace_snapshot(&mut self, snapshot: herdr_protocol::Snapshot) {
+    fn replace_snapshot(&mut self, snapshot: Snapshot) {
         let mut terminal_counts = HashMap::<&str, usize>::new();
         for record in &snapshot.agents {
             *terminal_counts
@@ -1301,7 +1392,7 @@ impl Endpoint {
     /// Compare a coherent same-stream snapshot with the previous observation.
     /// Only an unchanged, uniquely identified terminal/pane pair can produce a
     /// completion.  All other snapshot changes become the new baseline.
-    fn reconcile_snapshot(&mut self, snapshot: herdr_protocol::Snapshot) -> Vec<(String, String)> {
+    fn reconcile_snapshot(&mut self, snapshot: Snapshot) -> Vec<(String, String)> {
         let pane_ids = snapshot.pane_ids();
         let completions = if pane_ids.as_slice() != self.pane_ids.as_ref() {
             Vec::new()
@@ -1463,6 +1554,14 @@ fn claim_shutdown(
     if policy.finalized {
         return true;
     }
+    if shared
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .observation_mode()
+        .supports_tern()
+    {
+        return false;
+    }
     if !all_disabled && policy.connected == 0 {
         let remote_connected = shared
             .lock()
@@ -1615,23 +1714,21 @@ fn connect_endpoint(
     now: Instant,
 ) {
     endpoint.begin_generation(shared);
-    let result =
-        (|| -> Result<Option<(SubscriptionReader, herdr_protocol::Snapshot)>, ProtocolError> {
-            let ping =
-                request(endpoint, request_counter, "ping", serde_json::json!({}))?.result()?;
-            if ping.get("type").and_then(serde_json::Value::as_str) != Some("pong") {
-                return Err(ProtocolError::InvalidResponse(
-                    "expected pong result".to_owned(),
-                ));
-            }
-            let first = herdr_snapshot(endpoint, request_counter)?;
-            endpoint.replace_snapshot(first.clone());
-            let availability = herdr_plugin(endpoint, request_counter)?;
-            if !plugin_allows_observation(endpoint, availability) {
-                return Ok(None);
-            }
-            converge_subscription(endpoint, request_counter, first).map(Some)
-        })();
+    let result = (|| -> Result<Option<(SubscriptionReader, Snapshot)>, ProtocolError> {
+        let ping = request(endpoint, request_counter, "ping", serde_json::json!({}))?.result()?;
+        if ping.get("type").and_then(serde_json::Value::as_str) != Some("pong") {
+            return Err(ProtocolError::InvalidResponse(
+                "expected pong result".to_owned(),
+            ));
+        }
+        let first = herdr_snapshot(endpoint, request_counter)?;
+        endpoint.replace_snapshot(first.clone());
+        let availability = herdr_plugin(endpoint, request_counter)?;
+        if !plugin_allows_observation(endpoint, availability) {
+            return Ok(None);
+        }
+        converge_subscription(endpoint, request_counter, first).map(Some)
+    })();
 
     match result {
         Ok(Some((stream, snapshot))) => {
@@ -1688,8 +1785,8 @@ fn reconcile_endpoint(
 fn converge_subscription(
     endpoint: &Endpoint,
     request_counter: &mut u64,
-    mut snapshot: herdr_protocol::Snapshot,
-) -> Result<(SubscriptionReader, herdr_protocol::Snapshot), ProtocolError> {
+    mut snapshot: Snapshot,
+) -> Result<(SubscriptionReader, Snapshot), ProtocolError> {
     for _ in 0..=MAX_PANE_CONVERGENCE {
         let target_panes = snapshot.pane_ids();
         let stream = subscribe(endpoint, request_counter, &target_panes)?;
@@ -1739,7 +1836,7 @@ fn request(
 fn herdr_snapshot(
     endpoint: &Endpoint,
     request_counter: &mut u64,
-) -> Result<herdr_protocol::Snapshot, ProtocolError> {
+) -> Result<Snapshot, ProtocolError> {
     let response = request(
         endpoint,
         request_counter,
@@ -1826,7 +1923,7 @@ mod tests {
             source: "/virtual/socket".into(),
             pane_id: "pane".into(),
             workspace_id: "workspace".into(),
-            worktree: Arc::new(herdr_protocol::WorkspaceWorktreeInfo {
+            worktree: Arc::new(crate::session::WorkspaceWorktreeInfo {
                 repo_key: "repo".into(),
                 repo_name: "Repo".into(),
                 repo_root: "/virtual/repo".into(),
@@ -1860,7 +1957,7 @@ mod tests {
         let mut state = AppState::new();
         let mut row = record("terminal", "pane", AgentStatus::Working);
         row.metadata.workspace_id = Some("workspace".into());
-        row.metadata.worktree = Some(Arc::new(herdr_protocol::WorkspaceWorktreeInfo {
+        row.metadata.worktree = Some(Arc::new(crate::session::WorkspaceWorktreeInfo {
             repo_key: "repo".into(),
             repo_name: "Repo".into(),
             repo_root: "/repo".into(),
@@ -2318,17 +2415,344 @@ mod tests {
             terminal_id: terminal_id.to_owned(),
             pane_id: pane_id.to_owned(),
             status,
-            metadata: herdr_protocol::SessionMetadata::default(),
+            metadata: crate::session::SessionMetadata::default(),
             outcome_authoritative: false,
             outcome: None,
         }
     }
 
-    fn snapshot(panes: &[&str], agents: Vec<AgentRecord>) -> herdr_protocol::Snapshot {
-        herdr_protocol::Snapshot {
+    fn snapshot(panes: &[&str], agents: Vec<AgentRecord>) -> Snapshot {
+        Snapshot {
             panes: panes.iter().map(|pane| (*pane).to_owned()).collect(),
             agents,
         }
+    }
+
+    fn install_test_subscription(endpoint: &mut Endpoint) -> std::os::unix::net::UnixStream {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = PathBuf::from(format!(
+            "/tmp/herdr-admission-{}-{nonce}.sock",
+            std::process::id()
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        // This bounded fixture thread only acknowledges the subscription; no
+        // watcher, retry worker or timer is started by these consumer tests.
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(
+                    b"{\"id\":\"admission\",\"result\":{\"type\":\"subscription_started\"}}\n",
+                )
+                .unwrap();
+            stream
+        });
+        endpoint.stream = Some(
+            herdr_protocol::subscribe(&path, "admission", &[], Duration::from_secs(1)).unwrap(),
+        );
+        let peer = server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+        peer
+    }
+
+    #[test]
+    fn connected_herdr_admits_on_next_snapshot_after_tern_capacity_expires() {
+        use crate::session_view::Availability;
+        use crate::state::tests::{age_tern_test_source, tern_test_request, tern_test_state};
+        use herdr_update_coordinator::ObservationMode;
+
+        // Cover both a store full of Tern and the reviewer's mixed-source case.
+        for existing_herdr in [false, true] {
+            let mut state = tern_test_state(ObservationMode::Both);
+            if existing_herdr {
+                assert!(state.begin_source("/tmp/protected-herdr.sock".into(), 1));
+                assert!(state.publish_source_snapshot(
+                    "/tmp/protected-herdr.sock",
+                    1,
+                    [&record("protected", "protected-pane", AgentStatus::Working)],
+                    SourceCounts {
+                        sessions: 1,
+                        working: 1,
+                        ..SourceCounts::default()
+                    },
+                    Arc::from(vec!["protected-pane".to_owned()]),
+                    &[],
+                    Instant::now(),
+                ));
+            }
+            for index in 0..(64 - usize::from(existing_herdr)) {
+                assert!(
+                    state
+                        .tern_exchange(tern_test_request(&format!("window-{index}")))
+                        .ok
+                );
+            }
+            let before = state.session_snapshot(&SessionListOptions::default(), None);
+            assert_eq!(before.rows.len(), 64);
+            let shared = Arc::new(Mutex::new(state));
+            let mut endpoint = Endpoint::with_registry(
+                PathBuf::from("/tmp/capacity-recovery.sock"),
+                Arc::new(Mutex::new(HashMap::new())),
+            );
+            endpoint.begin_generation(&shared);
+            assert!(endpoint.source_admission_pending);
+            let generation = endpoint.generation;
+            let _peer = install_test_subscription(&mut endpoint);
+            endpoint.replace_snapshot(snapshot(
+                &["pane"],
+                vec![record("terminal", "pane", AgentStatus::Working)],
+            ));
+            endpoint.mark_connected(&shared, Instant::now());
+            {
+                let state = shared.lock().unwrap();
+                assert_eq!(state.source_generation(&endpoint.source), None);
+                assert_eq!(
+                    state.session_snapshot(&SessionListOptions::default(), None),
+                    before
+                );
+                assert_eq!(state.scene().working, 64);
+            }
+
+            let receipt = {
+                let mut state = shared.lock().unwrap();
+                let key = before
+                    .rows
+                    .iter()
+                    .find(|row| row.metadata.title.as_deref() == Some("window-0"))
+                    .unwrap()
+                    .key
+                    .clone();
+                let (_, receipt) = state
+                    .queue_tern_prompt(key, "window-0", 1, "pane-a", "pending")
+                    .unwrap();
+                let mut request = tern_test_request("window-0");
+                request.instance_id = Some("daemon-a".into());
+                request.sequence = 2;
+                assert!(state.tern_exchange(request).command.is_some());
+                age_tern_test_source(&mut state, "window-0");
+                assert!(state.expire_tern(Instant::now()));
+                receipt
+            };
+            assert_eq!(receipt.try_recv(), Ok(Err(PromptError::UnknownDelivery)));
+
+            // The same subscription's ordinary full-snapshot publication
+            // recovers admission, but its denied Working -> Done is baseline.
+            let completions = endpoint.reconcile_snapshot(snapshot(
+                &["pane"],
+                vec![record("terminal", "pane", AgentStatus::Done)],
+            ));
+            assert_eq!(completions.len(), 1);
+            endpoint.mark_connected_with_completions(&shared, Instant::now(), completions);
+            assert!(endpoint.stream.is_some());
+            assert_eq!(endpoint.generation, generation);
+            assert!(!endpoint.source_admission_pending);
+            let admitted_key = {
+                let mut state = shared.lock().unwrap();
+                let view = state.session_snapshot(&SessionListOptions::default(), None);
+                assert_eq!(view.rows.len(), 64);
+                assert_eq!(state.scene().sessions, 64);
+                assert_eq!(state.scene().working, 63);
+                assert_eq!(state.scene().done, 1);
+                assert_eq!(state.scene().unknown, 0);
+                assert_eq!(state.source_generation(&endpoint.source), Some(generation));
+                assert_eq!(
+                    state.source_generation(&crate::tern::source_id("window-0")),
+                    None
+                );
+                assert!(state.take_completions().is_empty());
+                assert!(state.take_outcomes().is_empty());
+                let admitted = view
+                    .rows
+                    .iter()
+                    .find(|row| row.key.terminal_id == "terminal")
+                    .unwrap();
+                assert_eq!(admitted.availability, Availability::Live);
+                assert_eq!(admitted.status, AgentStatus::Done);
+                assert!(before
+                    .rows
+                    .iter()
+                    .all(|row| row.key.source_id != admitted.key.source_id));
+                for old in before
+                    .rows
+                    .iter()
+                    .filter(|row| row.metadata.title.as_deref() != Some("window-0"))
+                {
+                    assert!(view.rows.iter().any(|row| row.key == old.key));
+                }
+                admitted.key.clone()
+            };
+            endpoint.publish_snapshot(&shared, &[], Instant::now());
+            {
+                let state = shared.lock().unwrap();
+                let view = state.session_snapshot(&SessionListOptions::default(), None);
+                assert!(view.rows.iter().any(|row| row.key == admitted_key));
+                assert_eq!(state.scene().working, 63);
+            }
+            // New observations after admission still produce completion once.
+            endpoint.reconcile_snapshot(snapshot(
+                &["pane"],
+                vec![record("terminal", "pane", AgentStatus::Working)],
+            ));
+            endpoint.publish_snapshot(&shared, &[], Instant::now());
+            let completions = endpoint.reconcile_snapshot(snapshot(
+                &["pane"],
+                vec![record("terminal", "pane", AgentStatus::Done)],
+            ));
+            endpoint.publish_snapshot(&shared, &completions, Instant::now());
+            assert_eq!(shared.lock().unwrap().take_completions().len(), 1);
+        }
+    }
+
+    #[test]
+    fn denied_admission_never_replaces_newer_generation_or_revives_removed_source() {
+        use crate::state::tests::{age_tern_test_source, tern_test_request, tern_test_state};
+        use herdr_update_coordinator::ObservationMode;
+
+        let mut state = tern_test_state(ObservationMode::Both);
+        for index in 0..64 {
+            assert!(
+                state
+                    .tern_exchange(tern_test_request(&format!("window-{index}")))
+                    .ok
+            );
+        }
+        let shared = Arc::new(Mutex::new(state));
+        let mut old = Endpoint::with_registry(
+            PathBuf::from("/tmp/stale-admission.sock"),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        old.begin_generation(&shared);
+        assert!(old.source_admission_pending);
+        {
+            let mut state = shared.lock().unwrap();
+            age_tern_test_source(&mut state, "window-0");
+            assert!(state.begin_source(old.source.clone(), old.generation + 1));
+        }
+        old.replace_snapshot(snapshot(
+            &["pane"],
+            vec![record("terminal", "pane", AgentStatus::Done)],
+        ));
+        old.publish_snapshot(&shared, &[], Instant::now());
+        assert!(!old.source_admission_pending);
+        {
+            let mut state = shared.lock().unwrap();
+            assert_eq!(
+                state.source_generation(&old.source),
+                Some(old.generation + 1)
+            );
+            assert!(state.remove_source(&old.source, old.generation + 1));
+        }
+        old.publish_snapshot(&shared, &[], Instant::now());
+        let mut state = shared.lock().unwrap();
+        assert_eq!(state.source_generation(&old.source), None);
+        assert!(state.take_completions().is_empty());
+        assert!(state.take_outcomes().is_empty());
+    }
+
+    #[test]
+    fn denied_remote_admission_cannot_cross_observation_epoch_or_selection() {
+        use crate::sources::ObservationPreferences;
+
+        let (shared, source, epoch) = selected_remote();
+        {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for index in 0..64 {
+                assert!(state.begin_source(format!("/tmp/live-{index}.sock"), 1));
+            }
+        }
+        let mut old = Endpoint::remote(source.clone(), 10, epoch);
+        old.begin_generation(&shared);
+        assert!(old.source_admission_pending);
+        let working = || {
+            snapshot(
+                &["pane"],
+                vec![record("terminal", "pane", AgentStatus::Working)],
+            )
+        };
+        {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(state.remove_source("/tmp/live-0.sock", 1));
+            state.apply_observation_preferences(ObservationPreferences {
+                local: true,
+                remote: false,
+                machines: vec!["machine-one".to_owned()],
+            });
+        }
+        old.remote_snapshot(&shared, working(), Instant::now(), false);
+        {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(state.source_generation(&source), None);
+            state.apply_observation_preferences(ObservationPreferences {
+                local: true,
+                remote: true,
+                machines: vec!["machine-one".to_owned()],
+            });
+        }
+        old.remote_snapshot(&shared, working(), Instant::now(), false);
+        let new_epoch = {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert_eq!(state.source_generation(&source), None);
+            assert!(state.take_completions().is_empty());
+            assert!(state.take_outcomes().is_empty());
+            assert!(state.begin_source(source.clone(), old.generation + 1));
+            state.observation_epoch()
+        };
+        assert!(new_epoch > epoch);
+        let mut current = Endpoint::remote(source.clone(), old.generation + 1, new_epoch);
+        current.remote_snapshot(&shared, working(), Instant::now(), true);
+        old.remote_offline(&shared);
+        let state = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.scene().working, 1);
+        assert_eq!(state.source_generation(&source), Some(current.generation));
+    }
+
+    #[test]
+    fn admitted_endpoint_never_readmits_a_removed_generation() {
+        let shared = Arc::new(Mutex::new(AppState::new()));
+        let mut endpoint = Endpoint::with_registry(
+            PathBuf::from("/tmp/removed-admission.sock"),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        endpoint.begin_generation(&shared);
+        assert!(!endpoint.source_admission_pending);
+        endpoint.replace_snapshot(snapshot(
+            &["pane"],
+            vec![record("terminal", "pane", AgentStatus::Working)],
+        ));
+        endpoint.publish_snapshot(&shared, &[], Instant::now());
+        {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            assert!(state.remove_source(&endpoint.source, endpoint.generation));
+        }
+        let completions = endpoint.reconcile_snapshot(snapshot(
+            &["pane"],
+            vec![record("terminal", "pane", AgentStatus::Done)],
+        ));
+        endpoint.publish_snapshot(&shared, &completions, Instant::now());
+        let mut state = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.source_generation(&endpoint.source), None);
+        assert_eq!(state.scene().sessions, 0);
+        assert!(state.take_completions().is_empty());
+        assert!(state.take_outcomes().is_empty());
     }
 
     fn selected_remote() -> (Arc<Mutex<AppState>>, String, u64) {
@@ -3304,7 +3728,7 @@ mod tests {
                 terminal_id: "terminal-a".to_owned(),
                 pane_id: "pane-a".to_owned(),
                 status: AgentStatus::Working,
-                metadata: herdr_protocol::SessionMetadata::default(),
+                metadata: crate::session::SessionMetadata::default(),
                 outcome_authoritative: false,
                 outcome: None,
             },
@@ -3315,7 +3739,7 @@ mod tests {
                 terminal_id: "terminal-b".to_owned(),
                 pane_id: "pane-b".to_owned(),
                 status: AgentStatus::Done,
-                metadata: herdr_protocol::SessionMetadata::default(),
+                metadata: crate::session::SessionMetadata::default(),
                 outcome_authoritative: false,
                 outcome: None,
             },

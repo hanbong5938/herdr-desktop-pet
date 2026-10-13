@@ -10,7 +10,7 @@ Reviewed Markdown in this repository is the canonical version documentation. The
 | --- | --- |
 | Current app controls, characters, observation and troubleshooting | [Usage guide](../usage.md) · [CLI contract](../cli.md#english) |
 | Source builds, character authoring and the promotional website | [Development guide](../development.md) |
-| v0.3.5 stable source, pointer recovery, attached bubble/reply placement and safe upgrade | [0.3 release line and bilingual migration](0.3.md) · [v0.3.5 bilingual release note](v0.3.5.md) |
+| Published v0.3.6 stable, Tern integration, four languages and protocol-3 beta opt-in | [v0.3.6 canonical release note and upgrade guidance](v0.3.6.md) · [0.3 publication evidence](0.3.md#observed-v036-publication) |
 | v0.2.1 public stable compatibility patch, Arin archive import | [0.2 release line](0.2.md) · [v0.2.1 bilingual notes](v0.2.1.md) · [v0.1.11 → v0.2.0 migration (English/한국어)](../migrations/v0.1.11-to-v0.2.0.md) |
 | Historical published 0.1 binaries, last at v0.1.11 | [0.1 release line](0.1.md) · [v0.1.11 Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.1.11) |
 | Other historical transition: composer to inline reply | [v0.1.4 → v0.1.6 migration](../migrations/v0.1.4-to-v0.1.6.md) |
@@ -18,15 +18,15 @@ Reviewed Markdown in this repository is the canonical version documentation. The
 | How reviewed notes reach Wiki and new Release bodies | [Publishing](publishing.md) |
 | Current public release/asset state | [GitHub Releases](https://github.com/hanbong5938/herdr-desktop-pet/releases); the generated Wiki's **Release-Status** and **Older-Releases** pages |
 
-**Source and publication authority differ.** This checkout selects v0.3.5 as its stable source/default-prebuilt target, retaining [v0.3.4 eye ownership, ABI and provenance changes](v0.3.4.md), [v0.3.3 fixes](v0.3.3.md), [v0.3.2 capabilities](v0.3.2.md) and the v0.2.1 Arin compatibility fix. The new [bilingual note](v0.3.5.md) covers pointer capture recovery, attached bubble placement and composing replies. `--source` builds this checkout; default/`--prebuilt` requires the exact non-draft v0.3.5 Release, complete uploaded assets and installer/formula cutover. A source note or historical [Unreleased record](unreleased.md) does not prove publication.
+**v0.3.6 is public stable, non-draft, non-prerelease and GitHub's observed `latest`.** Its [exact Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) has all four assets; [current publication and consumer evidence](0.3.md#observed-v036-publication) records anonymous download verification, the archive SHA-256, the published stable tap cutover, an actual v0.3.5 → v0.3.6 Homebrew upgrade and a pinned-prebuilt install without Cargo/Bun/Node/npm. The frozen [canonical note](v0.3.6.md) covers Tern integration, all four languages and protocol-3 beta opt-in; its pre-publication wording remains historical. The consumer route installs the native prebuilt app with `brew install hanbong5938/tap/herdr-desktop-pet`, without Rust, then explicitly installs the Tern connector with `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`. The same native app defaults to Herdr; Tern requires explicit `--host tern` startup and separate config **and** state paths as shown in the [usage guide](../usage.md#tern-installation-and-separate-profile). The plugin does not silently download, build or execute the app. Consumer smoke exercised native Tern-only startup and empty-snapshot exchange; the actual public plugin CLI install proves discovery, not a GUI window connection or populated-agent delivery. The [previous v0.3.5 publication record](0.3.md) and all old beta records remain historical.
 
-The generated Wiki derives publication status from GitHub's actual Release catalog and complete uploaded assets, **not** from a Markdown file or tag. This source index is not a live API-status report and does not by itself establish that the stable archive was published. In the historical 0.1 line, **v0.1.5 is a tag only, not a published binary release**.
+The generated Wiki derives publication status from GitHub's actual Release catalog and complete uploaded assets, **not** from a Markdown file or tag. The linked v0.3.6 evidence is an observed publication record, not a continuously refreshed API report. In the historical 0.1 line, **v0.1.5 is a tag only, not a published binary release**.
 
 ## Release lines
 
 | Line | Notes and upgrade context |
 | --- | --- |
-| [0.3](0.3.md) | v0.3.5 stable source/default-prebuilt target [bilingual note](v0.3.5.md) and upgrade guidance; consult the Release catalog for actual publication |
+| [0.3](0.3.md) | Published stable v0.3.6 [publication evidence](0.3.md#observed-v036-publication) and frozen [canonical note/upgrade guidance](v0.3.6.md); previous v0.3.5 and separate beta evidence remain historical and immutable |
 | [0.2](0.2.md) | Historical v0.2.1 stable compatibility patch [canonical notes](v0.2.1.md); v0.2.0 [stable notes](v0.2.0.md) and [bilingual upgrade guidance](../migrations/v0.1.11-to-v0.2.0.md) |
 | [0.1](0.1.md) | Historical published v0.1.4 and v0.1.6–v0.1.11; tagged-only v0.1.5 |
 

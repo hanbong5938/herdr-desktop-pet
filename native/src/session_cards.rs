@@ -1,10 +1,10 @@
-use crate::herdr_protocol::AgentStatus;
 use crate::i18n::{
     display_status_label, offline_status, session_empty, session_filter_label,
     session_list_summary, session_pane, session_sort_title, session_source, session_status_label,
     text, Message, SessionFilterLabel, SessionStatusLabel, UiLocale,
 };
 use crate::preferences::{BubbleAppearance, BubbleColor, BubblePalette, SessionListPreferences};
+use crate::session::AgentStatus;
 use crate::session_view::{
     display_value, Availability, CardDisplay, DisplayStatus, SessionFilter, SessionKey,
     SessionListOptions, SessionSnapshot, SessionSort, SessionStatusSummary, SessionView,
@@ -2503,7 +2503,7 @@ fn localized_status(locale: UiLocale, status: AgentStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::herdr_protocol::SessionMetadata;
+    use crate::session::SessionMetadata;
     use crate::session_view::card_displays;
 
     #[test]

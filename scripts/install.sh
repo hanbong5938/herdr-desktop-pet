@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SCRIPT_PATH="$ROOT_DIR/scripts/$(basename -- "${BASH_SOURCE[0]}")"
-APP_ROOT="$ROOT_DIR/dist/HerdrDesktopPet.app"
+APP_ROOT=""
 MANIFEST_PATH="$ROOT_DIR/herdr-plugin.toml"
 DEFAULT_REPOSITORY="hanbong5938/herdr-desktop-pet"
 
@@ -18,8 +18,9 @@ Usage: scripts/install.sh [--prebuilt | --source]
 
 Modes:
   (default)   Download the release pinned to the manifest version over HTTPS,
-              verify it, and install it to dist/HerdrDesktopPet.app. If the
-              prebuilt release is unavailable or invalid, build from source.
+              verify it, and install it to dist/HerdrDesktopPet.app (or the
+              separate HerdrDesktopPetBeta.app for a beta manifest). An
+              unpinned stable download may fall back to a local source build.
   --prebuilt  Install the pinned prebuilt release only; any failure is fatal.
   --source    Build from local sources only (cargo, bun, npm); never download.
               --local-build is an alias.
@@ -31,13 +32,16 @@ Environment:
                               checkout's GitHub origin, else
                               hanbong5938/herdr-desktop-pet).
   HERDR_PET_VERSION           Release version; must match the manifest version.
+  HERDR_PET_RELEASE_TAG       v<version> for stable or beta/<version> for beta.
+  HERDR_PET_APP_NAME          HerdrDesktopPet.app for stable or
+                              HerdrDesktopPetBeta.app for beta.
   HERDR_PET_RELEASE_URL       Explicit HTTPS URL of the release archive.
-  HERDR_PET_RELEASE_BASE_URL  HTTPS base URL; the asset name is appended.
+  HERDR_PET_RELEASE_BASE_URL  HTTPS base URL; the pinned asset name is appended.
   HERDR_PET_CHECKSUM_URL      HTTPS URL of the SHA-256 checksum file
                               (default: <release URL>.sha256).
   HERDR_PET_SHA256            Expected archive SHA-256; skips the checksum download.
-  HERDR_PET_ASSET_NAME        Release archive filename
-                              (default: HerdrDesktopPet-v<version>-macos-arm64.tar.gz).
+  HERDR_PET_ASSET_NAME        Exact release archive filename
+                              (HerdrDesktopPet-v<version>-macos-arm64.tar.gz).
 EOF
 }
 
@@ -113,17 +117,6 @@ infer_github_repository() {
   fi
 }
 
-read_manifest_version() {
-  [[ -f "$MANIFEST_PATH" ]] || fail "missing plugin manifest: $MANIFEST_PATH"
-  awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' "$MANIFEST_PATH"
-}
-
-validate_version() {
-  local version="$1"
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] ||
-    fail "release version must be a semantic version, got '$version'"
-}
-
 validate_repository() {
   local repository="$1"
   [[ "$repository" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
@@ -134,6 +127,41 @@ validate_https_url() {
   local url="$1"
   [[ "$url" == https://* ]] || fail "release URL must use https://"
   [[ "$url" != *[[:space:]]* ]] || fail "release URL contains whitespace"
+}
+
+read_manifest_version() {
+  [[ -f "$MANIFEST_PATH" ]] || fail "missing plugin manifest: $MANIFEST_PATH"
+  awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' "$MANIFEST_PATH"
+}
+
+select_bundle() {
+  local manifest_version version
+  manifest_version="$(read_manifest_version)"
+  [[ -n "$manifest_version" ]] || fail "plugin manifest has no version"
+  version="${HERDR_PET_VERSION-$manifest_version}"
+  [[ "$version" == "$manifest_version" ]] ||
+    fail "HERDR_PET_VERSION '$version' does not match manifest version '$manifest_version'"
+  if [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    APP_NAME="HerdrDesktopPet.app"
+    EXPECTED_TAG="v$version"
+    BUNDLE_ID="dev.herdr.desktop-pet"
+  elif [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$ ]]; then
+    APP_NAME="HerdrDesktopPetBeta.app"
+    EXPECTED_TAG="beta/$version"
+    BUNDLE_ID="dev.herdr.desktop-pet.beta"
+  else
+    fail "manifest version must be a stable or beta.N semantic version, got '$version'"
+  fi
+  [[ "${HERDR_PET_APP_NAME-$APP_NAME}" == "$APP_NAME" ]] ||
+    fail "HERDR_PET_APP_NAME does not match manifest version '$version'"
+  APP_ROOT="$ROOT_DIR/dist/$APP_NAME"
+  SELECTED_VERSION="$version"
+}
+
+official_release_url() {
+  local repository="$1" tag="$2" asset="$3"
+  # GitHub encodes the slash inside prerelease tags in asset download URLs.
+  printf 'https://github.com/%s/releases/download/%s/%s' "$repository" "${tag//\//%2F}" "$asset"
 }
 
 validate_native_pack() {
@@ -158,7 +186,7 @@ validate_native_pack() {
 
 
 validate_app() {
-  local app="$1" allow_legacy="${2:-0}" archs binary helper main_capabilities helper_capabilities commands dependencies library line
+  local app="$1" allow_legacy="${2:-0}" archs binary helper main_capabilities helper_capabilities main_protocol="" helper_protocol main_observation="" helper_observation="" commands dependencies library line bundle_id
   [[ -d "$app" ]] || fail "packaged app is missing: $app"
   binary="$app/Contents/MacOS/herdr-desktop-pet"
   [[ -x "$binary" ]] ||
@@ -169,9 +197,18 @@ validate_app() {
   command -v codesign >/dev/null 2>&1 || fail "packaged app validation requires codesign"
   codesign --verify --deep --strict "$app" >/dev/null 2>&1 ||
     fail "packaged app has an invalid or missing code signature"
+  [[ "$("$binary" --version 2>/dev/null)" == "herdr-desktop-pet $SELECTED_VERSION" ]] ||
+    fail "packaged app binary does not match expected version $SELECTED_VERSION"
+  [[ -f "$app/Contents/Info.plist" ]] || fail "packaged app is missing Contents/Info.plist"
+  [[ "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist" 2>/dev/null)" == "$SELECTED_VERSION" ]] ||
+    fail "packaged app bundle does not match expected version $SELECTED_VERSION"
+  bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null)" ||
+    fail "packaged app has no bundle identifier"
   if main_capabilities="$("$binary" update-capabilities 2>/dev/null)"; then
-    [[ "$main_capabilities" == '{"protocol":2}' ]] ||
-      fail "packaged app does not advertise updater protocol 2"
+    main_protocol="$(plutil -extract protocol raw -expect integer -o - - <<< "$main_capabilities" 2>/dev/null)" ||
+      fail "packaged app does not advertise a numeric updater protocol"
+    [[ "$main_protocol" == 2 || "$main_protocol" == 3 ]] ||
+      fail "packaged app does not advertise supported updater protocol 2 or 3"
     helper="$app/Contents/MacOS/herdr-update-coordinator"
     [[ -x "$helper" && -f "$helper" && ! -L "$helper" ]] ||
       fail "updater-capable app is missing its standalone executable update coordinator"
@@ -183,8 +220,24 @@ validate_app() {
       fail "packaged update coordinator has an invalid or missing code signature"
     helper_capabilities="$("$helper" update-capabilities 2>/dev/null)" ||
       fail "packaged update coordinator cannot advertise updater capabilities"
-    [[ "$helper_capabilities" == '{"protocol":2}' ]] ||
-      fail "packaged update coordinator does not advertise updater protocol 2"
+    helper_protocol="$(plutil -extract protocol raw -expect integer -o - - <<< "$helper_capabilities" 2>/dev/null)" ||
+      fail "packaged update coordinator does not advertise a numeric updater protocol"
+    [[ "$helper_protocol" == "$main_protocol" ]] ||
+      fail "packaged update coordinator protocol does not match packaged app"
+    if plutil -type observation_mode - <<< "$main_capabilities" >/dev/null 2>&1; then
+      main_observation="$(plutil -extract observation_mode raw -expect integer -o - - <<< "$main_capabilities" 2>/dev/null)" ||
+        fail "packaged app does not advertise numeric observation-mode support"
+      [[ "$main_observation" == 1 ]] ||
+        fail "packaged app advertises unsupported observation-mode support"
+    fi
+    if plutil -type observation_mode - <<< "$helper_capabilities" >/dev/null 2>&1; then
+      helper_observation="$(plutil -extract observation_mode raw -expect integer -o - - <<< "$helper_capabilities" 2>/dev/null)" ||
+        fail "packaged update coordinator does not advertise numeric observation-mode support"
+      [[ "$helper_observation" == 1 ]] ||
+        fail "packaged update coordinator advertises unsupported observation-mode support"
+    fi
+    [[ "$helper_observation" == "$main_observation" ]] ||
+      fail "packaged update coordinator observation-mode support does not match packaged app"
     commands="$(otool -l "$helper")" ||
       fail "unable to inspect packaged update coordinator loader paths"
     [[ "$commands" != *"cmd LC_RPATH"* ]] ||
@@ -201,11 +254,17 @@ validate_app() {
         *) fail "packaged update coordinator has a non-system dependency: $library" ;;
       esac
     done <<< "$dependencies"
-  elif [[ "$allow_legacy" != 1 || "$("$binary" --version 2>/dev/null)" != "herdr-desktop-pet 0.2.0" ||
-    "$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist" 2>/dev/null)" != "0.2.0" ]]; then
-    fail "packaged app does not support updater protocol 2"
+  elif [[ "$allow_legacy" != 1 || "$SELECTED_VERSION" != "0.2.0" || "$APP_NAME" != "HerdrDesktopPet.app" ]]; then
+    fail "packaged app does not support updater protocol 2 or 3"
   fi
-  [[ -f "$app/Contents/Info.plist" ]] || fail "packaged app is missing Contents/Info.plist"
+  if [[ "$main_protocol" == 2 && "$APP_NAME" == "HerdrDesktopPetBeta.app" ]]; then
+    # Published protocol-2 beta bundles predate the separate beta identifier.
+    [[ "$bundle_id" == "dev.herdr.desktop-pet" || "$bundle_id" == "$BUNDLE_ID" ]] ||
+      fail "packaged beta app has an unexpected bundle identifier"
+  else
+    [[ "$bundle_id" == "$BUNDLE_ID" ]] ||
+      fail "packaged app has an unexpected bundle identifier"
+  fi
   [[ -f "$app/Contents/Resources/default/manifest.json" ]] ||
     fail "packaged app is missing the default asset manifest"
   [[ "$(plutil -extract id raw -o - "$app/Contents/Resources/default/manifest.json" 2>/dev/null)" == "rubelia-at12-multi-pose" ]] ||
@@ -248,12 +307,12 @@ source_build() {
   (cd "$ROOT_DIR" && cargo "${cargo_args[@]}" --manifest-path native/Cargo.toml)
   printf 'Building standalone update coordinator from local Rust sources...\n'
   (cd "$ROOT_DIR" && cargo "${cargo_args[@]}" --manifest-path native/update-coordinator/Cargo.toml)
-  (cd "$ROOT_DIR" && HERDR_PET_APP_NAME=HerdrDesktopPet.app bun "$ROOT_DIR/scripts/package-native.ts")
+  (cd "$ROOT_DIR" && HERDR_PET_APP_NAME="$APP_NAME" bun "$ROOT_DIR/scripts/package-native.ts")
   validate_app "$APP_ROOT"
 }
 
 prebuilt_install() {
-  local repository version manifest_version release_tag asset_name release_url checksum_url
+  local repository version release_tag asset_name release_url checksum_url
   local temp_dir archive checksum_file expected expected_candidate name actual
   local archive_list archive_details extract_dir staging entry has_app allow_legacy
 
@@ -261,34 +320,27 @@ prebuilt_install() {
   repository="${HERDR_PET_REPOSITORY:-${INFERRED_REPOSITORY:-$DEFAULT_REPOSITORY}}"
   validate_repository "$repository"
 
-  manifest_version="$(read_manifest_version)"
-  version="${HERDR_PET_VERSION:-$manifest_version}"
-  [[ -n "$version" ]] || fail "prebuilt installation needs HERDR_PET_VERSION or a manifest version"
-  validate_version "$version"
-  if [[ -n "$manifest_version" && "$version" != "$manifest_version" ]]; then
-    fail "HERDR_PET_VERSION '$version' does not match manifest version '$manifest_version'"
-  fi
-
-  release_tag="${HERDR_PET_RELEASE_TAG:-v$version}"
-  [[ "$release_tag" == "v$version" ]] ||
-    fail "release tag '$release_tag' is not the pinned version tag v$version"
-  [[ "$release_tag" != */* && "$release_tag" != *[[:space:]]* ]] ||
-    fail "release tag contains an invalid character"
-
-  asset_name="${HERDR_PET_ASSET_NAME:-HerdrDesktopPet-v${version}-macos-arm64.tar.gz}"
-  [[ "$asset_name" != */* && "$asset_name" != .* && "$asset_name" != *[[:space:]]* ]] ||
-    fail "release asset name must be a simple filename"
-
+  version="$SELECTED_VERSION"
+  release_tag="${HERDR_PET_RELEASE_TAG-$EXPECTED_TAG}"
+  [[ "$release_tag" == "$EXPECTED_TAG" ]] ||
+    fail "release tag '$release_tag' is not the pinned version tag $EXPECTED_TAG"
+  asset_name="HerdrDesktopPet-v${version}-macos-arm64.tar.gz"
+  [[ "${HERDR_PET_ASSET_NAME-$asset_name}" == "$asset_name" ]] ||
+    fail "release asset name must match pinned version $version"
   if [[ -n "${HERDR_PET_RELEASE_URL:-}" ]]; then
     release_url="$HERDR_PET_RELEASE_URL"
   elif [[ -n "${HERDR_PET_RELEASE_BASE_URL:-}" ]]; then
     release_url="${HERDR_PET_RELEASE_BASE_URL%/}/$asset_name"
   else
-    release_url="https://github.com/$repository/releases/download/$release_tag/$asset_name"
+    release_url="$(official_release_url "$repository" "$release_tag" "$asset_name")"
   fi
   checksum_url="${HERDR_PET_CHECKSUM_URL:-$release_url.sha256}"
   validate_https_url "$release_url"
   validate_https_url "$checksum_url"
+  if [[ "${HERDR_PET_SHA256+x}" == x ]]; then
+    [[ "$HERDR_PET_SHA256" =~ ^[[:xdigit:]]{64}$ ]] ||
+      fail "HERDR_PET_SHA256 must be a 64-character SHA-256 hex digest"
+  fi
 
   command -v curl >/dev/null 2>&1 || fail "prebuilt installation requires curl for HTTPS release downloads"
   command -v shasum >/dev/null 2>&1 || fail "prebuilt installation requires shasum"
@@ -350,11 +402,11 @@ prebuilt_install() {
     [[ -n "$entry" ]] || continue
     case "$entry" in
       */../*|../*|/*) fail "release archive contains an unsafe path '$entry'" ;;
-      HerdrDesktopPet.app|HerdrDesktopPet.app/*) has_app=1 ;;
+      "$APP_NAME"|"$APP_NAME"/*) has_app=1 ;;
       *) fail "release archive contains unexpected path '$entry'" ;;
     esac
   done < "$archive_list"
-  [[ "$has_app" == 1 ]] || fail "release archive does not contain HerdrDesktopPet.app"
+  [[ "$has_app" == 1 ]] || fail "release archive does not contain $APP_NAME"
 
   archive_details="$temp_dir/archive.details"
   tar -tvzf "$archive" > "$archive_details" || fail "unable to inspect release archive entries"
@@ -368,13 +420,13 @@ prebuilt_install() {
   extract_dir="$temp_dir/extract"
   mkdir -p "$extract_dir" || fail "unable to create the extraction directory"
   tar -xzf "$archive" -C "$extract_dir" || fail "unable to extract verified release asset"
-  validate_app "$extract_dir/HerdrDesktopPet.app" "$allow_legacy"
+  validate_app "$extract_dir/$APP_NAME" "$allow_legacy"
 
   mkdir -p "$ROOT_DIR/dist" || fail "unable to create $ROOT_DIR/dist"
-  staging="$ROOT_DIR/dist/.HerdrDesktopPet.install.$$.app"
+  staging="$ROOT_DIR/dist/.$APP_NAME.install.$$.app"
   STAGING_DIR="$staging"
   rm -rf "$staging" || fail "unable to clear the staging directory $staging"
-  cp -R "$extract_dir/HerdrDesktopPet.app" "$staging" ||
+  cp -R "$extract_dir/$APP_NAME" "$staging" ||
     fail "unable to stage the verified app bundle"
   validate_app "$staging" "$allow_legacy"
   rm -rf "$APP_ROOT" || fail "unable to remove the previous app at $APP_ROOT"
@@ -384,13 +436,20 @@ prebuilt_install() {
   printf 'Installed Herdr Desktop Pet at %s\n' "$APP_ROOT"
 }
 
+select_bundle
+
 case "$mode" in
   auto)
-    # Run the prebuilt attempt as a child process rather than a subshell: the
-    # child keeps errexit active, runs its own EXIT trap (cleaning its temp and
-    # staging dirs on success and failure), and any `fail` only aborts the
-    # attempt so the source build can take over.
-    if ! bash "$SCRIPT_PATH" --prebuilt; then
+    # An explicit release selection (including a beta manifest) must never
+    # turn into an unrelated local source build on a failed download.
+    if [[ "$APP_NAME" == "HerdrDesktopPetBeta.app" ||
+      "${HERDR_PET_REPOSITORY+x}" == x || "${HERDR_PET_VERSION+x}" == x ||
+      "${HERDR_PET_RELEASE_TAG+x}" == x || "${HERDR_PET_APP_NAME+x}" == x ||
+      "${HERDR_PET_ASSET_NAME+x}" == x || "${HERDR_PET_RELEASE_URL+x}" == x ||
+      "${HERDR_PET_RELEASE_BASE_URL+x}" == x || "${HERDR_PET_CHECKSUM_URL+x}" == x ||
+      "${HERDR_PET_SHA256+x}" == x ]]; then
+      prebuilt_install
+    elif ! bash "$SCRIPT_PATH" --prebuilt; then
       printf 'herdr desktop pet install: prebuilt release unavailable or invalid; building from source instead.\n' >&2
       source_build
     fi

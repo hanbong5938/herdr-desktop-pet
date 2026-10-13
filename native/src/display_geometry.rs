@@ -17,14 +17,11 @@ pub(crate) struct DisplayGeometry {
 }
 
 impl DisplayGeometry {
-    pub(crate) fn new(
-        bounds: (f64, f64, f64, f64), canvas: (u32, u32), png_motion: bool,
-    ) -> Self {
+    pub(crate) fn new(bounds: (f64, f64, f64, f64), canvas: (u32, u32), png_motion: bool) -> Self {
         let (x0, y0, x1, y1) = bounds;
         // Packs need not have the UI's 3:4 aspect ratio. Match the existing
         // contain transform before removing both source padding and letterbox.
-        let fit = (BASE_WIDTH / f64::from(canvas.0))
-            .min(BASE_HEIGHT / f64::from(canvas.1));
+        let fit = (BASE_WIDTH / f64::from(canvas.0)).min(BASE_HEIGHT / f64::from(canvas.1));
         let width = f64::from(canvas.0) * fit;
         let height = f64::from(canvas.1) * fit;
         let left = (BASE_WIDTH - width) * 0.5;
@@ -42,7 +39,11 @@ impl DisplayGeometry {
             let edge = |value: f64, center: f64, minimum: bool| {
                 let a = center + (value - center) * 0.972;
                 let b = center + (value - center) * 1.055;
-                if minimum { a.min(b) } else { a.max(b) }
+                if minimum {
+                    a.min(b)
+                } else {
+                    a.max(b)
+                }
             };
             result.left = edge(result.left, BASE_WIDTH * 0.5, true) - 7.0;
             result.right = edge(result.right, BASE_WIDTH * 0.5, false) + 7.0;
@@ -85,9 +86,11 @@ impl DisplayGeometry {
         );
         NSRect::new(
             NSPoint::new(
-                canvas.origin.x + (canvas.size.width - size.width) * 0.5
+                canvas.origin.x
+                    + (canvas.size.width - size.width) * 0.5
                     + presentation.offset_x * scale,
-                canvas.origin.y + (canvas.size.height - size.height) * 0.5
+                canvas.origin.y
+                    + (canvas.size.height - size.height) * 0.5
                     + presentation.offset_y * scale,
             ),
             size,
@@ -102,7 +105,11 @@ impl DisplayGeometry {
     pub(crate) fn resize_delta(self, dx: f64, dy: f64) -> f64 {
         let horizontal = dx / self.width();
         let vertical = -dy / self.height();
-        if horizontal.abs() >= vertical.abs() { horizontal } else { vertical }
+        if horizontal.abs() >= vertical.abs() {
+            horizontal
+        } else {
+            vertical
+        }
     }
 
     pub(crate) fn fitting_scale(self, available_width: f64, available_height: f64) -> f64 {
@@ -117,8 +124,12 @@ mod tests {
 
     fn presentation(x: f64, y: f64, scale: f64) -> Presentation {
         Presentation {
-            offset_x: x, offset_y: y, scale,
-            dialogue: None, animate: false, effect: None,
+            offset_x: x,
+            offset_y: y,
+            scale,
+            dialogue: None,
+            animate: false,
+            effect: None,
         }
     }
 
@@ -130,10 +141,18 @@ mod tests {
             let origin = geometry.window_origin(old_origin, scale);
             let canvas = geometry.canvas_frame(scale);
             for source in [NSPoint::new(0.0, 0.0), NSPoint::new(192.0, 340.0)] {
-                assert!((origin.x + canvas.origin.x + source.x * scale
-                    - (old_origin.x + source.x * scale)).abs() < 1e-9);
-                assert!((origin.y + canvas.origin.y + source.y * scale
-                    - (old_origin.y + source.y * scale)).abs() < 1e-9);
+                assert!(
+                    (origin.x + canvas.origin.x + source.x * scale
+                        - (old_origin.x + source.x * scale))
+                        .abs()
+                        < 1e-9
+                );
+                assert!(
+                    (origin.y + canvas.origin.y + source.y * scale
+                        - (old_origin.y + source.y * scale))
+                        .abs()
+                        < 1e-9
+                );
             }
             let size = geometry.size(scale);
             assert!((size.width - geometry.width() * scale - 12.0).abs() < 1.0);
@@ -150,7 +169,8 @@ mod tests {
             for transform_scale in [0.972, 1.055] {
                 for x in [-7.0, 7.0] {
                     for y in [-11.5, 3.5] {
-                        let frame = geometry.presented_frame(scale, presentation(x, y, transform_scale));
+                        let frame =
+                            geometry.presented_frame(scale, presentation(x, y, transform_scale));
                         let left = frame.origin.x + frame.size.width * bounds.0;
                         let right = frame.origin.x + frame.size.width * bounds.2;
                         let bottom = frame.origin.y + frame.size.height * (1.0 - bounds.3);
