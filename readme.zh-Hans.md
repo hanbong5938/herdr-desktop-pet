@@ -8,7 +8,7 @@
 
 [浏览可选角色与服装图库](https://hanbong5938.github.io/herdr-characters/)（网站默认英语，可选择 KO 查看韩语）· [角色包源码与许可](https://github.com/hanbong5938/herdr-characters)。**仅露贝莉娅（`default@0`）随应用附带。**
 
-v0.3.6 是新的稳定源码／预构建目标，不表示已经发布。准确的非草稿 v0.3.6 arm64 资产、校验和及稳定 Homebrew 配方发布后，预构建安装无需 Rust 或源码工具链。以实际[发布资产](https://github.com/hanbong5938/herdr-desktop-pet/releases)为准；参阅 [v0.3.6 发行说明](docs/releases/v0.3.6.md)。历史 v0.3.5 和 beta 资产保持不变。
+[v0.3.6](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) 是已公开的最新稳定版，公开 arm64 资产、校验和与更新的稳定 Homebrew 配方已验证。匹配的应用／辅助程序报告 `protocol: 3` 和 `observation_mode: 1`。历史 v0.3.5 和 beta 资产保持不变。
 
 ## 功能
 
@@ -26,7 +26,7 @@ v0.3.6 是新的稳定源码／预构建目标，不表示已经发布。准确�
 
 ## 使用 Homebrew 安装：首次连接
 
-v0.3.6 是新的稳定源码／预构建目标，不表示已经发布。准确的非草稿 v0.3.6 arm64 资产、校验和及稳定 Homebrew 配方发布后，预构建安装无需 Rust 或源码工具链。以实际[发布资产](https://github.com/hanbong5938/herdr-desktop-pet/releases)为准；参阅 [v0.3.6 发行说明](docs/releases/v0.3.6.md)。历史 v0.3.5 和 beta 资产保持不变。
+使用下面的稳定配方安装公开预构建包，无需 Rust/Cargo、Bun、Node.js 或源码检出。已有 Brew 用户请使用下方升级命令。现有配置档与偏好设置会保留。
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -54,7 +54,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-确认 CLI 报告 `0.3.6`，并且重启后 `status` 同时显示 `app_version: 0.3.6` **和预期的运行中可执行文件**。配方把应用安装在 Homebrew 前缀中，**不是** `/Applications`，并把 CLI 放在 `PATH` 上；它既不安装 Herdr 插件，也不提供打过补丁的主程序。旧守护进程必须先停止。有关配置隔离和旧 cask 迁移，参阅 [0.3 升级说明（英语）](docs/releases/0.3.md#upgrade-from-v021-or-beta)。配方能否安装取决于实际发布情况，而不是此源码目标。
+确认 CLI 报告 `0.3.6`，并且重启后 `status` 同时显示 `app_version: 0.3.6` **和预期的运行中可执行文件**。配方把应用安装在 Homebrew 前缀中，**不是** `/Applications`，并把 CLI 放在 `PATH` 上；它既不安装 Herdr 插件，也不提供打过补丁的主程序。旧守护进程必须先停止。有关配置隔离和旧 cask 迁移，参阅 [0.3 升级说明（英语）](docs/releases/0.3.md#upgrade-from-v021-or-beta)。
 
 ### 不连接 Herdr 的独立角色
 
@@ -78,7 +78,7 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-管理式安装运行 `bash scripts/install.sh`：先尝试清单指定的 v0.3.6 仅含 `.app` 的压缩包，并验证校验和、归档条目、arm64 签名及内置角色。必须有**非草稿的 v0.3.6 Release，包含完整压缩包／校验和及已更新的安装器**；单独上传的来源证明附属文件不在安装器归档中。预构建资产缺失或无效时，默认安装器会报告问题并从当前检出源码构建；显式 `--prebuilt` 则会失败，不会回退；`--source` 构建当前检出。安装插件不会为 Herdr 打补丁或构建 Herdr。要使用连接自动启动，请依照[指南（英语）](integrations/herdr/README.md#build-in-separate-checkouts)准备打过补丁的主程序；上述手动原生观察均不需要它。
+管理式安装运行 `bash scripts/install.sh`：先尝试清单指定的 v0.3.6 仅含 `.app` 的压缩包，并验证校验和、归档条目、arm64 签名及内置角色。使用**已公开 v0.3.6 Release 的完整压缩包／校验和及匹配安装器**；单独上传的来源证明附属文件不在安装器归档中。预构建资产缺失或无效时，默认安装器会报告问题并从当前检出源码构建；显式 `--prebuilt` 则会失败，不会回退；`--source` 构建当前检出。安装插件不会为 Herdr 打补丁或构建 Herdr。要使用连接自动启动，请依照[指南（英语）](integrations/herdr/README.md#build-in-separate-checkouts)准备打过补丁的主程序；上述手动原生观察均不需要它。
 
 ## 从此检出源码安装，供管理式集成使用
 
@@ -96,7 +96,7 @@ bash scripts/install.sh --source
 
 ## Tern 安装与独立配置档
 
-满足上述发布条件后，先安装原生应用，再显式安装独立的公开插件。插件不会暗中下载、构建或启动应用。
+先安装原生应用，再显式安装独立的公开插件。插件不会下载、构建或启动应用。
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet

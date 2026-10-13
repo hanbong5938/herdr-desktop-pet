@@ -8,7 +8,7 @@
 
 [追加キャラクター・衣装ギャラリー](https://hanbong5938.github.io/herdr-characters/)（最初は英語表示、韓国語は KO を選択）· [キャラクターパックのソースとライセンス](https://github.com/hanbong5938/herdr-characters)。**同梱されるのはルベリア（`default@0`）だけです。**
 
-v0.3.6 は新しい安定版ソース／ビルド済み対象であり、公開済みという意味ではありません。正確な非ドラフト v0.3.6 arm64 資産・チェックサムと安定版 Homebrew formula の公開後は Rust やソースのツールチェーンなしで導入できます。実際の[リリース資産](https://github.com/hanbong5938/herdr-desktop-pet/releases)を基準とし、[v0.3.6 ノート](docs/releases/v0.3.6.md)を参照してください。過去の v0.3.5 とベータ資産は変更しません。
+[v0.3.6](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) は公開済みの最新安定版で、公開 arm64 資産・チェックサムと更新済み安定版 Homebrew formula は検証済みです。対応するアプリ／ヘルパーの能力は `protocol: 3` と `observation_mode: 1` です。過去の v0.3.5 とベータ資産は変更しません。
 
 ## 機能
 
@@ -26,7 +26,7 @@ v0.3.6 は新しい安定版ソース／ビルド済み対象であり、公開�
 
 ## Homebrew でのインストール：最初の接続
 
-v0.3.6 は新しい安定版ソース／ビルド済み対象であり、公開済みという意味ではありません。正確な非ドラフト v0.3.6 arm64 資産・チェックサムと安定版 Homebrew formula の公開後は Rust やソースのツールチェーンなしで導入できます。実際の[リリース資産](https://github.com/hanbong5938/herdr-desktop-pet/releases)を基準とし、[v0.3.6 ノート](docs/releases/v0.3.6.md)を参照してください。過去の v0.3.5 とベータ資産は変更しません。
+以下の安定版 formula で公開済みビルドを導入します。Rust/Cargo、Bun、Node.js、ソースチェックアウトは不要です。既存の Brew 利用者は下記の更新コマンドを使います。既存のプロファイルと設定は保持されます。
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -54,7 +54,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-CLI が `0.3.6` を報告し、再起動後の `status` に `app_version: 0.3.6` **と想定した実行中の実行ファイル**が表示されることを確認します。formula はアプリを Homebrew のプレフィックス以下に置き、**`/Applications` には置きません**。CLI は `PATH` 上に配置されます。Herdr プラグインやパッチ済みホストは導入されません。古いデーモンは先に停止してください。プロファイルの分離と旧 cask からの移行については [0.3 更新ガイド（英語）](docs/releases/0.3.md#upgrade-from-v021-or-beta)を参照してください。formula の利用可否はソースの対象バージョンではなく実際の公開状況によります。
+CLI が `0.3.6` を報告し、再起動後の `status` に `app_version: 0.3.6` **と想定した実行中の実行ファイル**が表示されることを確認します。formula はアプリを Homebrew のプレフィックス以下に置き、**`/Applications` には置きません**。CLI は `PATH` 上に配置されます。Herdr プラグインやパッチ済みホストは導入されません。古いデーモンは先に停止してください。プロファイルの分離と旧 cask からの移行については [0.3 更新ガイド（英語）](docs/releases/0.3.md#upgrade-from-v021-or-beta)を参照してください。
 
 ### Herdr を使わない単独のキャラクター
 
@@ -78,7 +78,7 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-管理下でのインストールは `bash scripts/install.sh` を実行します。まずマニフェスト指定の v0.3.6 の `.app` 専用アーカイブを試し、チェックサム、アーカイブのエントリー、arm64 署名、同梱キャラクターを検証します。**完全なアーカイブ／チェックサムと更新済みインストーラーがある非ドラフト v0.3.6 Release** が必要です。別途アップロードされる来歴サイドカーはインストーラーのアーカイブに含まれません。ビルド済み資産が存在しないか無効なら、標準のインストーラーはその旨を報告し、このチェックアウトをソースからビルドします。明示的な `--prebuilt` はフォールバックせず失敗し、`--source` はこのチェックアウトをビルドします。プラグインの導入は Herdr へのパッチ適用も Herdr のビルドも行いません。接続時の自動起動には[こちら（英語）](integrations/herdr/README.md#build-in-separate-checkouts)のパッチ済みホストを用意してください。前述の手動によるネイティブ観測には不要です。
+管理下でのインストールは `bash scripts/install.sh` を実行します。まずマニフェスト指定の v0.3.6 の `.app` 専用アーカイブを試し、チェックサム、アーカイブのエントリー、arm64 署名、同梱キャラクターを検証します。**公開済み v0.3.6 Release の完全なアーカイブ／チェックサムと対応インストーラー**を使用します。別途アップロードされる来歴サイドカーはインストーラーのアーカイブに含まれません。ビルド済み資産が存在しないか無効なら、標準のインストーラーはその旨を報告し、このチェックアウトをソースからビルドします。明示的な `--prebuilt` はフォールバックせず失敗し、`--source` はこのチェックアウトをビルドします。プラグインの導入は Herdr へのパッチ適用も Herdr のビルドも行いません。接続時の自動起動には[こちら（英語）](integrations/herdr/README.md#build-in-separate-checkouts)のパッチ済みホストを用意してください。前述の手動によるネイティブ観測には不要です。
 
 ## 管理下の連携用にこのチェックアウトをソースからインストール
 
@@ -96,7 +96,7 @@ bash scripts/install.sh --source
 
 ## Tern の導入と独立プロファイル
 
-上記の公開条件を満たした後、まずネイティブアプリ、次に独立した公開プラグインを明示的に導入します。プラグインがアプリを密かにダウンロード、ビルド、起動することはありません。
+まずネイティブアプリ、次に独立した公開プラグインを明示的に導入します。プラグインはアプリをダウンロード、ビルド、起動しません。
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet

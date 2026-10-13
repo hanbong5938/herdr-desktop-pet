@@ -8,7 +8,7 @@ A native macOS companion for [Herdr](https://herdr.dev). Rubelia reacts to touch
 
 [Browse the optional character and outfit gallery](https://hanbong5938.github.io/herdr-characters/) (opens in English; choose KO for Korean) · [Character pack source and licenses](https://github.com/hanbong5938/herdr-characters). **Only Rubelia (`default@0`) is bundled.**
 
-v0.3.6 is the new stable source/prebuilt target, not a claim of publication. Once the exact non-draft v0.3.6 arm64 assets/checksums and stable Homebrew formula are published, the prebuilt route needs no Rust or source toolchain. Actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) are authoritative; see [v0.3.6 release notes](docs/releases/v0.3.6.md). Historical v0.3.5 and beta assets remain unchanged.
+[v0.3.6](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) is the published latest stable release, with verified public arm64 assets/checksums and the updated stable Homebrew formula. The matched app/helper pair reports `protocol: 3` and `observation_mode: 1`. Historical v0.3.5 and beta assets remain unchanged.
 
 ## Features
 
@@ -26,7 +26,7 @@ v0.3.6 is the new stable source/prebuilt target, not a claim of publication. Onc
 
 ## Install with Homebrew: first connection
 
-v0.3.6 is the new stable source/prebuilt target, not a claim of publication. Once the exact non-draft v0.3.6 arm64 assets/checksums and stable Homebrew formula are published, the prebuilt route needs no Rust or source toolchain. Actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) are authoritative; see [v0.3.6 release notes](docs/releases/v0.3.6.md). Historical v0.3.5 and beta assets remain unchanged.
+Install the published prebuilt with the stable formula below; Rust/Cargo, Bun, Node.js and a source checkout are not required. Existing Brew users should use the upgrade commands below. Existing profiles and preferences are preserved.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -54,7 +54,7 @@ herdr-desktop-pet start
 herdr-desktop-pet status
 ```
 
-Verify the CLI reports `0.3.6` and, after restart, `status` shows `app_version: 0.3.6` **and the expected running executable**. The formula puts the app under Homebrew's prefix, **not** `/Applications`, and the CLI on `PATH`; it installs neither Herdr plugin nor patched host. Stop older daemons first; `start` otherwise reuses one. See [0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) for profile isolation and older cask migration. Formula availability depends on actual publication, not this source target.
+Verify the CLI reports `0.3.6` and, after restart, `status` shows `app_version: 0.3.6` **and the expected running executable**. The formula puts the app under Homebrew's prefix, **not** `/Applications`, and the CLI on `PATH`; it installs neither Herdr plugin nor patched host. Stop older daemons first; `start` otherwise reuses one. See [0.3 upgrade guidance](docs/releases/0.3.md#upgrade-from-v021-or-beta) for profile isolation and older cask migration.
 
 ### Pet without Herdr
 
@@ -78,7 +78,7 @@ herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet
 ```
 
-Managed installation runs `bash scripts/install.sh`: it tries the manifest-pinned v0.3.6 `.app`-only archive, validating checksums, archive entries, arm64 signature and bundled character. Require a **non-draft v0.3.6 Release with complete archive/checksums and updated installer**; the separately uploaded provenance sidecar does not enter the installer archive. If prebuilt assets are unavailable or invalid, the default installer reports this and builds the checkout from source. Explicit `--prebuilt` fails instead of falling back; `--source` builds the checkout. Plugin installation does not patch or build Herdr. For attach auto-start, prepare the patched host described [here](integrations/herdr/README.md#build-in-separate-checkouts); native manual observation above needs neither.
+Managed installation runs `bash scripts/install.sh`: it tries the manifest-pinned v0.3.6 `.app`-only archive, validating checksums, archive entries, arm64 signature and bundled character. The **published v0.3.6 Release includes the complete archive/checksums and matching installer**; the separately uploaded provenance sidecar does not enter the installer archive. If prebuilt assets are unavailable or invalid, the default installer reports this and builds the checkout from source. Explicit `--prebuilt` fails instead of falling back; `--source` builds the checkout. Plugin installation does not patch or build Herdr. For attach auto-start, prepare the patched host described [here](integrations/herdr/README.md#build-in-separate-checkouts); native manual observation above needs neither.
 
 ## Install this checkout from source for managed integration
 
@@ -95,7 +95,7 @@ Manifest lifecycle and action commands use `scripts/run-native.sh`, selecting `H
 
 ## Tern installation and separate profile
 
-After publication as described above, install the native app first, then explicitly install the separate public plugin. The plugin never silently downloads, builds or starts the app.
+Install the native app first, then explicitly install the separate public plugin. The plugin never downloads, builds or starts the app.
 
 ```sh
 brew install hanbong5938/tap/herdr-desktop-pet
@@ -121,7 +121,7 @@ The plugin observes only agents in its **local Tern window VM**, not remote host
 
 ## First use
 
-### In-app updates (protocol 3 in this checkout)
+### In-app updates (published protocol 3)
 
 **Settings → App updates** offers independent **Automatic checking** (on by default) and **Receive beta updates** (off by default), **Check now**, the running version/origin, policy-specific last successful check, and an explicit action. Stable-only checks select official stable releases; opting in selects the highest eligible stable or beta by semantic version (a final release outranks its same-base beta). Opting out never downgrades an installed beta. Automatic checks run at most daily while the app is open, with separate stable-only and beta-inclusive timestamps. Switching beta policy invalidates the old candidate and checks under the new policy only when automatic checking is on; otherwise use **Check now**. Checks are read-only: neither toggle nor a check installs, restarts, refreshes Brew metadata or changes Git. Moving between release/channel/source and target requires separate native consent for the exact proposal.
 
@@ -129,7 +129,7 @@ The card distinguishes current check or handoff activity from the retained **Pre
 
 Native consent and Prepare recheck pending edits, IME composition and interactions before freezing mutating controls; the original keeps running through the handoff. An ownership ACK is not installation or permission to Stop: only the matching final visible/prepared ACK after accepted Prepare transfers consent, and only a fully delivered accepted reserved Stop commits updater shutdown. Staging runs on a worker so the helper window stays responsive; crossing the native 30-second handoff deadline means **waiting, not cancellation**. The helper checks replacement readiness and records installed and applied separately. Candidate startup uses the exact verified **image and installed origin** pair in the journal/reservation, never an origin inferred from current disk or the original source token. Uncertain or old-protocol reservations remain blocked with evidence intact; recovery does not replay an installer, silently delete a journal, or restart an original automatically. A user Stop prevents revival, but a proven safely stopped transaction can finish reconciliation and release its own reservation. See [update behavior and recovery](docs/usage.md#in-app-updates) and [CLI status and recovery](docs/cli.md#app-update-status-and-recovery) before retrying an uncertain operation.
 
-The published stable `v0.3.3` and paired `0.3.3-beta.1` archives remain immutable matched-protocol-2 app/helper packages: they do **not** gain this checkout's protocol-3 beta setting merely through a check. This checkout's source version or native CLI version alone is not proof of a published protocol-3 release. Adoption requires an explicit source build of this protocol-3 checkout or a separately verified published protocol-3 package. App/helper protocol pairs cannot be mixed; legacy protocol-1/2 records require their matching retained helper, not conversion by the new updater. Check actual [Release assets](https://github.com/hanbong5938/herdr-desktop-pet/releases) for published versions.
+Historical stable `v0.3.3` and paired `0.3.3-beta.1` archives remain immutable matched-protocol-2 app/helper packages; a check alone does not upgrade them. Adopt the published [v0.3.6](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) matched protocol-3/observation-mode-1 pair through the stable Brew install/upgrade or the pinned prebuilt installer; no source build is required. Never mix app/helper protocols. Legacy protocol-1/2 records remain preserved and blocked; inspect and explicitly recover them only with their retained signed matching helper, not the new updater.
 
 ## Controls
 

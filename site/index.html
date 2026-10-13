@@ -46,7 +46,7 @@
         <h1 id="hero-title">Herdr 세션을 <em>데스크톱에서 확인하고</em> 로컬 에이전트에 답장하세요.</h1>
         <p class="hero-lead">루벨리아의 말풍선에서 관측된 세션 상태를 보고 선택한 로컬 에이전트에 메시지를 제출할 수 있습니다. 접수 확인은 작업 완료가 아닙니다.</p>
         <div class="hero-actions"><a class="button button-primary" href="#connect-herdr">Herdr 연결 방법 <span aria-hidden="true">↗</span></a><a class="button button-secondary" href="#demo">실제 앱 화면 <span aria-hidden="true">↗</span></a></div>
-        <p class="hero-alternative">Herdr 없이 캐릭터만 쓰려면 <a href="#standalone-pet">독립 실행 안내</a>를 확인하세요.</p>
+        <p class="hero-alternative">같은 네이티브 앱을 <a href="#connect-tern">별도 Tern 프로필로 연결</a>하거나 <a href="#standalone-pet">Herdr 없이 캐릭터만 독립 실행</a>할 수 있습니다.</p>
         <p class="hero-spec"><span class="spec-dot" aria-hidden="true"></span> Apple Silicon Mac <span aria-hidden="true">·</span> macOS 13+ <span aria-hidden="true">·</span> 기본 캐릭터 루벨리아 1종</p>
       </div>
       <figure class="hero-art"><span class="hero-art-halo" aria-hidden="true"></span><img src="./assets/images/rubelia-thumbnail.png" width="450" height="525" alt="기본 데스크톱 캐릭터 루벨리아의 전신 일러스트" fetchpriority="high"><figcaption>01 / RUBELIA — 기본 제공 캐릭터</figcaption></figure>
@@ -73,7 +73,7 @@
 
     <section id="installation" class="section install-section" aria-labelledby="installation-title">
       <div class="wrap">
-        <div class="section-heading"><div><p class="eyebrow">03 / GET STARTED</p><h2 id="installation-title">하나의 앱, 두 가지 시작 목적.</h2></div><p>Apple Silicon Mac · macOS 13 이상. 두 경로 모두 같은 Homebrew 네이티브 앱과 CLI를 설치합니다. Herdr 연결은 플러그인 설치 없이 시작할 수 있습니다.</p></div>
+        <div class="section-heading"><div><p class="eyebrow">03 / GET STARTED</p><h2 id="installation-title">하나의 앱, 연결 방식 선택.</h2></div><p>Apple Silicon Mac · macOS 13 이상. Herdr·<a href="#connect-tern">Tern</a>·독립 실행 모두 같은 공개 v0.3.6 Homebrew 네이티브 앱과 CLI를 사용합니다. 설치와 시작은 명시적으로 진행하며 Herdr 연결은 플러그인 없이, Tern은 별도 연결 플러그인과 프로필로 사용합니다.</p></div>
         <div class="install-grid">
           <article id="connect-herdr" class="install-option" aria-labelledby="connect-herdr-title">
             <div class="install-option-head"><span class="option-label">01 / CONNECT HERDR</span><span class="option-badge">로컬 세션</span></div>
@@ -102,9 +102,15 @@ herdr-desktop-pet status</code></pre><span class="copy-status" role="status" ari
         </div>
         <details id="managed-plugin" class="managed-plugin"><summary>고급 선택 사항: Herdr 플러그인으로 실행 관리</summary><div class="managed-plugin-body"><p>위 네이티브 연결이나 독립 실행에 플러그인은 필요하지 않습니다. 실행 중인 Herdr 호스트에서 플러그인을 설치하고 시작 액션을 호출하려는 경우에만 사용하세요. 기본 설치가 고정 사전 빌드를 사용할 수 없으면 소스 빌드로 전환될 수 있으며 Rust/Cargo, Bun, Node.js/npm, Xcode Command Line Tools가 필요합니다.</p><pre tabindex="0"><code>herdr plugin install hanbong5938/herdr-desktop-pet
 herdr plugin action invoke start --plugin desktop-pet</code></pre><p>클라이언트 attach 시 자동 시작은 별도 기능입니다. 공식 Herdr 0.9.3 소스에 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/integrations/herdr/client-attached.patch">client.attached 패치</a>를 적용한 호스트나 실제 훅 지원을 명시한 호스트 릴리스가 필요합니다. 순정 0.9.0/0.9.3에는 해당 훅이 없지만 위 수동 네이티브 시작에는 필요하지 않습니다.</p></div></details>
-        <details id="connect-tern" class="managed-plugin"><summary>v0.3.6 대상: Tern 연결</summary><div class="managed-plugin-body"><p>정확한 비초안 v0.3.6 Release 자산과 stable Homebrew 포뮬러가 게시된 뒤에만 이 경로를 사용하세요. 네이티브 앱을 먼저 설치한 뒤 Tern 연결 플러그인을 명시적으로 설치합니다. 게시된 사전 빌드 경로에는 Rust가 필요하지 않습니다.</p><pre tabindex="0"><code>brew install hanbong5938/tap/herdr-desktop-pet
-tern plugin install https://github.com/hanbong5938/tern-desktop-pet</code></pre><p>플러그인은 앱을 몰래 다운로드·빌드·실행하지 않습니다. 같은 네이티브 앱의 기본 호스트는 Herdr이며 명시적 <code>--host tern</code> 모드는 Herdr 서버·소켓·플러그인 없이 별도 설정과 상태 및 자체 플러그인 연결을 사용합니다. 명시적 시작 방법은 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/v0.3.6.md">정본 릴리스·업그레이드 노트</a>와 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/usage.ko.md">사용 안내</a>를 참고하세요.</p></div></details>
-        <aside class="install-notes" aria-label="설치 전 확인 사항"><p><strong>안정판 대상 v0.3.6 — 아직 미게시.</strong> 이전 v0.3.5 압축 파일·체크섬·tap 전환은 과거 게시 증거로 보존합니다. 정확한 비초안 v0.3.6 자산과 stable 포뮬러 게시 전에는 Homebrew가 v0.3.6을 설치한다고 가정하지 마세요. <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases">Release 목록</a>과 공개 tap을 확인하고 기존 데몬을 먼저 종료한 뒤 업그레이드하세요. 앱은 ad-hoc 서명·미공증이며 기존 베타 자산/포뮬러는 변경하지 않습니다.</p><p><strong>화면 캡처와 배포판은 별개입니다.</strong> 위 실제 앱 화면은 격리된 오프라인 v0.3.2 촬영이며 v0.3.6 연결 화면이 아닙니다. 소스 버전과 4개 언어 지원은 공개 바이너리의 증거가 아닙니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/v0.3.6.md">v0.3.6 노트</a>와 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/readme.ko.md">한국어 README</a>를 참고하세요.</p></aside>
+        <details id="connect-tern" class="managed-plugin"><summary>Tern 연결 — 공개 v0.3.6</summary><div class="managed-plugin-body"><p>네이티브 앱과 stable Homebrew 포뮬러가 게시되었습니다. 앱을 먼저 설치한 뒤 Tern 연결 플러그인을 명시적으로 설치하고 별도 Tern 프로필을 수동으로 시작하세요. 이 사전 빌드 경로에는 Rust가 필요하지 않습니다.</p><pre tabindex="0"><code>brew install hanbong5938/tap/herdr-desktop-pet
+tern plugin install https://github.com/hanbong5938/tern-desktop-pet
+PET="$(command -v herdr-desktop-pet)"
+PET_CONFIG="$HOME/.config/herdr/plugins/config/desktop-pet-tern"
+PET_STATE="$HOME/.local/state/herdr/plugins/desktop-pet-tern"
+"$PET" --version
+"$PET" --host tern --config-dir "$PET_CONFIG" --state-dir "$PET_STATE" start
+"$PET" --host tern --config-dir "$PET_CONFIG" --state-dir "$PET_STATE" status</code></pre><p>플러그인은 앱을 몰래 다운로드·빌드·실행하지 않습니다. 같은 네이티브 앱의 기본 호스트는 Herdr이며 명시적 <code>--host tern</code>은 Herdr 서버·소켓·플러그인이 필요하지 않습니다. 설정 <strong>및</strong> 상태를 Herdr와 분리합니다. 실제 Tern 창에서 <strong>Configure desktop pet connection</strong>을 선택해 위 절대 실행 파일·정확한 설정/상태 경로를 실제 값으로 입력한 뒤 <strong>Connect to desktop pet</strong>을 선택하세요. 창 연결과 같은 프로필의 네이티브 status를 확인하며 플러그인 설치만으로 연결이나 자동 시작을 가정하지 마세요. 실행 파일이나 모드를 바꾸기 전 같은 프로필을 종료하세요. 자세한 내용은 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/usage.ko.md">사용 안내</a>를 참고하세요.</p></div></details>
+        <aside class="install-notes" aria-label="설치 전 확인 사항"><p><strong>공개 안정판 v0.3.6.</strong> 비초안·비프리릴리스 <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6">정확한 Release</a>가 GitHub의 관측된 latest입니다. 앱 전용 arm64 압축 파일·<code>.sha256</code>·<code>SHA256SUMS</code>·별도 rig 출처 사이드카 4개를 익명 대조했고 배포 바이트 식별 68개도 모두 일치했습니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/releases/download/v0.3.6/HerdrDesktopPet-v0.3.6-macos-arm64.tar.gz">정확한 압축 파일 다운로드</a> SHA-256: <code>5d40f6ada23f7d91d967a98331b28ea767202f5d01b7cd7732b2d9e543fdaafa</code>. <a href="https://github.com/hanbong5938/homebrew-tap/commit/c7be4b5">stable tap c7be4b5</a>는 이 URL/해시를 사용하며 베타 포뮬러와 이전 v0.3.5-beta.1은 변경하지 않았고 새 v0.3.6 베타가 아닙니다. 업그레이드 전 기존 데몬을 종료하세요. 앱은 ad-hoc 서명·미공증입니다.</p><p><strong>증거의 범위를 구분합니다.</strong> 실제 Homebrew 업그레이드와 Cargo/Bun/Node/npm 없는 고정 사전 빌드 설치로 네이티브 Tern 전용 시작·유효한 빈 snapshot 교환을 확인했습니다. 공개 Tern 플러그인 CLI 설치도 성공했지만 GUI 창 연결이나 실제 에이전트 전달 주장은 아닙니다. 위 앱 화면은 격리된 오프라인 v0.3.2 촬영이며 v0.3.6 연결 화면이 아닙니다. <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/0.3.md#v036-실제-게시-확인">게시·소비자 증거</a>·동결 <a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/docs/releases/v0.3.6.md">정본 노트</a>·<a href="https://github.com/hanbong5938/herdr-desktop-pet/blob/main/readme.ko.md">한국어 README</a>를 참고하세요.</p></aside>
       </div>
     </section>
 
