@@ -1,16 +1,16 @@
 {
   "version": 1,
   "repository": "hanbong5938/desktop-pet",
-  "tag": "v0.4.1",
-  "app_version": "0.4.1",
-  "core_revision": "9a63751b4de1b9a2f6fc7a7570a906b59568bafc",
-  "release_id": 412210158,
+  "tag": "v0.4.2",
+  "app_version": "0.4.2",
+  "core_revision": "cb10ce2c3cc65402cbb914d60301f7627d5546d5",
+  "release_id": 412241744,
   "protocol": 4,
   "observation_mode": 2,
   "integration_api": 1,
-  "installer_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.1/desktop-pet-install-v0.4.1.sh",
-  "checksum_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.1/desktop-pet-install-v0.4.1.sh.sha256",
-  "installer_sha256": "2a8fd8a8ca31de10413f6bbbd0f9daebd19af1f814f3014c2dc4ca859a451f17",
-  "checksum_sha256": "666dbcf3756db42269153d743be8d9b0a32fb44c4b46ddefe3cb9d12773cd018",
-  "release_record_sha256": "32901deab5ca8ccb1e777a4383b1f07ab5a0e4fe247fe0788525d5865b03f466"
+  "installer_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.2/desktop-pet-install-v0.4.2.sh",
+  "checksum_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.2/desktop-pet-install-v0.4.2.sh.sha256",
+  "installer_sha256": "a0ec644c3baecc7b81baddd29fbbbd3a8f25777e804a6d9940b78820bacc08ec",
+  "checksum_sha256": "aac1436d2a17d18ed6902f0dee5f3cb4c30296d8d3cdcf4441c91c26cc22e2ee",
+  "release_record_sha256": "474a52d57e81e384931db31dccdda30bbf4f999bc83caa58b2584a36b68cd318"
 }

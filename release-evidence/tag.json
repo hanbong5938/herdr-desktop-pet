@@ -1,10 +1,1 @@
-{
-  "ref": "refs/tags/v0.4.1",
-  "node_id": "REF_kwDOVG1Ac7ByZWZzL3RhZ3MvdjAuNC4x",
-  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/refs/tags/v0.4.1",
-  "object": {
-    "sha": "25c20f7299e18e2d3a496497e8d874dd45b88a54",
-    "type": "tag",
-    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/tags/25c20f7299e18e2d3a496497e8d874dd45b88a54"
-  }
-}
+{"ref":"refs/tags/v0.4.2","node_id":"REF_kwDOVG1Ac7ByZWZzL3RhZ3MvdjAuNC4y","url":"https://api.github.com/repos/hanbong5938/desktop-pet/git/refs/tags/v0.4.2","object":{"sha":"dc13b92d978db8911fce6b7bc609ac6704b6f7ad","type":"tag","url":"https://api.github.com/repos/hanbong5938/desktop-pet/git/tags/dc13b92d978db8911fce6b7bc609ac6704b6f7ad"}}

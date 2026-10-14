@@ -2,11 +2,11 @@
 
 [English](README.md) · **한국어**
 
-현재 공통 앱 릴리스·설치·사용법·개발·4개 언어 Pages·앱 Wiki는 독립 [Desktop Pet core](https://github.com/hanbong5938/desktop-pet) 소유입니다. 이 저장소는 Herdr 연동만 출시합니다. [수정 연동 v0.4.1 후보](v0.4.1.md)·[소비자 게시 절차](publishing.md)·[Herdr action / 훅 / 패치 / link / OMP](../../integrations/herdr/README.md)를 확인하세요. 공개 [v0.4.0](v0.4.0.md) 소스에 남은 생성 네이티브 `dist`는 과거 closure 오류이며 공개 태그·본문·자산은 그대로 보존합니다. Core v0.4.2는 이 기록에서 아직 공개되지 않았고 보존된 Core v0.4.1 메타데이터·증거는 과거 기록이지 새 릴리스 검증 완료 증거가 아닙니다.
+현재 앱 릴리스·설치·사용법·개발·4개 언어 Pages·Wiki는 독립 [Desktop Pet core](https://github.com/hanbong5938/desktop-pet) 소유입니다. [Core v0.4.2](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.2)는 실제 공개됐으며 소스 `cb10ce2c3cc65402cbb914d60301f7627d5546d5`, Release `412241744`, capability 4/2/1입니다. 현재 메타데이터·증거는 익명으로 작성·검토한 실제 v0.4.2이며 v0.4.1은 과거 기록만입니다. 이 저장소는 Herdr 연동만 출시합니다. [수정 v0.4.1 후보](v0.4.1.md)·[소비자 게시 절차](publishing.md)·[action / 훅 / 패치 / link / OMP](../../integrations/herdr/README.md)를 확인하세요. source·TypeScript·adapter 105개 검증은 통과했지만 수정 후보는 아직 태그·릴리스가 없고 Herdr ID·최종 SHA도 모릅니다. 공개 [v0.4.0](v0.4.0.md)의 생성 네이티브 소스 오류와 불변 태그·본문·자산은 보존합니다.
 
-실제 게시 후 앱 명령은 `brew install hanbong5938/tap/desktop-pet`, 선택형 연동은 `herdr plugin install hanbong5938/herdr-desktop-pet`와 `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`입니다. [기존 A → B 이전](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md)은 기존 두 프로필 경로를 보존하고 각각 동의를 요구합니다.
+실제 공개 중립 v0.4.2 포뮬러 명령은 `brew install hanbong5938/tap/desktop-pet`입니다. 부모는 소유한 v0.4.1 → v0.4.2 Brew 업그레이드와 동일/default 프로필 Auto UI/control readiness(호스트 0개)를 실제 확인했습니다. 선택형 공개 연동은 `herdr plugin install hanbong5938/herdr-desktop-pet`와 `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`이며 첫 명령은 아직 미공개 수정 Herdr 후보를 선택하지 않습니다. Bridge v0.3.7은 미공개이고 실제 Core v0.4.2·향후 실제 수정 Herdr ref가 필요합니다. Tern v0.2.0은 과거 호환 Core v0.4.1 pin 그대로입니다. [기존 이전](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md)은 두 프로필 경로와 별도 동의를 보존합니다. standalone 갱신·이전·retirement-resume·두 호스트 완료는 증명되지 않았습니다.
 
-[Core 릴리스 기록](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/README.ko.md) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki). 링크나 문서는 실제 공개·배포 검증을 대신하지 않습니다.
+[Core 릴리스 기록](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/README.ko.md) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki). Core Pages는 실제 `cb10ce2`, Herdr thin site는 아직 과거 `f65f123`입니다. Core Release는 성공했지만 후속 Wiki 작업은 전용 `WIKI_PUBLISH_TOKEN` 부재로 실패했습니다. Linux 전체 catalog 렌더링은 Wiki 게시가 아닙니다. v0.4.1 Brew·standalone·Manager 증거는 과거 기록이며 실제 Tern keychain-provider와 OMP 모델 SDK는 사용할 수 없습니다.
 
 <details>
 <summary>v0.3.6까지의 과거 공통 앱 인덱스 (보존 기록; 현재 설치 지침 아님)</summary>

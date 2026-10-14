@@ -1,28 +1,28 @@
 {
-  "sha": "9a63751b4de1b9a2f6fc7a7570a906b59568bafc",
-  "node_id": "C_kwDOVG1Ac9oAKDlhNjM3NTFiNGRlMWI5YTJmNmZjN2E3NTcwYTkwNmI1OTU2OGJhZmM",
-  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/9a63751b4de1b9a2f6fc7a7570a906b59568bafc",
-  "html_url": "https://github.com/hanbong5938/desktop-pet/commit/9a63751b4de1b9a2f6fc7a7570a906b59568bafc",
+  "sha": "cb10ce2c3cc65402cbb914d60301f7627d5546d5",
+  "node_id": "C_kwDOVG1Ac9oAKGNiMTBjZTJjM2NjNjU0MDJjYmI5MTRkNjAzMDFmNzYyN2Q1NTQ2ZDU",
+  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/cb10ce2c3cc65402cbb914d60301f7627d5546d5",
+  "html_url": "https://github.com/hanbong5938/desktop-pet/commit/cb10ce2c3cc65402cbb914d60301f7627d5546d5",
   "author": {
     "name": "배한봉",
     "email": "han@baehanbong-ui-MacStudio.local",
-    "date": "2026-10-13T23:57:07Z"
+    "date": "2026-10-14T01:03:42Z"
   },
   "committer": {
     "name": "배한봉",
     "email": "han@baehanbong-ui-MacStudio.local",
-    "date": "2026-10-13T23:57:07Z"
+    "date": "2026-10-14T01:03:42Z"
   },
   "tree": {
-    "sha": "0842aa89aaf732ce4eecdf7d6ad9ce2f34fc8293",
-    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/trees/0842aa89aaf732ce4eecdf7d6ad9ce2f34fc8293"
+    "sha": "e706a1b535279e9eec8eb7522c3a1e9d35097302",
+    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/trees/e706a1b535279e9eec8eb7522c3a1e9d35097302"
   },
-  "message": "chore: remove unused imports from generalized preference race tests",
+  "message": "style: format strict managed retirement validation",
   "parents": [
     {
-      "sha": "9e76661ab76fb2289c2ca8fe7e48a50e344ec15d",
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/9e76661ab76fb2289c2ca8fe7e48a50e344ec15d",
-      "html_url": "https://github.com/hanbong5938/desktop-pet/commit/9e76661ab76fb2289c2ca8fe7e48a50e344ec15d"
+      "sha": "a22b1b0e8df1042ecfb12176d0af319ca58888a6",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/a22b1b0e8df1042ecfb12176d0af319ca58888a6",
+      "html_url": "https://github.com/hanbong5938/desktop-pet/commit/a22b1b0e8df1042ecfb12176d0af319ca58888a6"
     }
   ],
   "verification": {

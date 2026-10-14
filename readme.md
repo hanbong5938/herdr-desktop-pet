@@ -2,7 +2,7 @@
 
 [English](readme.md) · [한국어](readme.ko.md) · [日本語](readme.ja.md) · [简体中文](readme.zh-Hans.md)
 
-**Publication boundary:** [Core v0.4.1](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.1) is valid and immutable; its retained metadata and verified Brew readiness are historical evidence. Published Herdr v0.4.0 erroneously retained a generated native `dist` source closure; its public tag/body/assets remain unchanged. The [corrected Herdr v0.4.1 candidate](docs/releases/v0.4.1.md) requires real Core v0.4.2 (protocol 4 / observation capability 2 / integration API 1), not yet public in this record. Bridge stays v0.3.7 with exact new Core/corrected Herdr pins; Tern v0.2.0 stays unchanged. No completed current installation/migration matrix is asserted, and old evidence is not rewritten as future release metadata.
+**Publication boundary:** [Core v0.4.2](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.2) is public: source `cb10ce2c3cc65402cbb914d60301f7627d5546d5`, release `412241744`, protocol 4 / observation capability 2 / integration API 1. Current metadata/evidence are anonymously materialized, reviewed v0.4.2 authority; v0.4.1 standalone/Manager evidence remains history only. Published Herdr v0.4.0 retained a generated native `dist` source fault; its tag/body/assets remain unchanged. The [corrected Herdr v0.4.1 candidate](docs/releases/v0.4.1.md) passed source/TypeScript/105 adapter gates but is still untagged/unpublished; no new Herdr ID/final SHA is known. Bridge v0.3.7 is also unpublished and must use exact published Core plus the actual corrected Herdr ref once available. Tern v0.2.0 is unchanged with its historical compatible Core v0.4.1 pin. Real owned Brew v0.4.1 → v0.4.2 reached same/default-profile Auto UI/control readiness at PID `6863` with zero hosts; standalone native-update and migration/two-host completion remain unproved.
 
 Install only the integrations you want. Herdr is a thin consumer; Tern does not download, build, install or auto-start the native app. Plugin updates/removal affect integrations only, never the shared app, profile or characters. Native updates do not reinstall Herdr plugins.
 
@@ -10,7 +10,9 @@ Install only the integrations you want. Herdr is a thin consumer; Tern does not 
 
 [Core app site](https://hanbong5938.github.io/desktop-pet/en/) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki) · [Herdr integration landing site](https://hanbong5938.github.io/herdr-desktop-pet/en/). The original site contains only integration/migration entrypoints, not duplicate app UI or artwork.
 
-After the neutral release and formula are actually published, the public command is:
+Core Pages actually deployed `cb10ce2`; this Herdr thin-site candidate is not yet deployed (the public source remains historical `f65f123`). Core's Release job succeeded, but its later Wiki job failed for missing dedicated `WIKI_PUBLISH_TOKEN`. Complete catalog rendering is not Wiki publication; the Wiki link is not a claim of initialized/published Core Wiki.
+
+The neutral formula now targets the actual published Core v0.4.2 ([tap commit](https://github.com/hanbong5938/homebrew-tap/commit/32919c745864b54a2e716fcc5a3714d0d38d3e84)). The parent observed real Brew upgrade, signature/receipt/derivation validation, `brew test` and published-wrapper native readiness, scoped to zero hosts above. The optional Herdr commands install the repository's public integration, **not this still-unpublished corrected v0.4.1 candidate**:
 
 ```sh
 brew install hanbong5938/tap/desktop-pet
@@ -24,7 +26,7 @@ For prebuilt or source installation, use the **core** checkout, not a Herdr inte
 
 ## Herdr consumer contract
 
-This repository does not build or copy `DesktopPet.app`, native packages or character assets. Its integration-only manifest, wrappers and adapter now live in this checkout; native source/artwork/tooling belong to core. The consumer pin still requires actual public core installer/checksum and reviewed release API metadata before materialization/public installation. Destination links and local source are not publication proof.
+This repository does not build or copy `DesktopPet.app`, native packages or character assets. Its integration-only manifest, wrappers and adapter live here; native source/artwork/tooling belong to core. Current `core-release.json` / `release-evidence/` contain reviewed actual Core v0.4.2 authority. The pinned installer SHA-256 is `a0ec644c3baecc7b81baddd29fbbbd3a8f25777e804a6d9940b78820bacc08ec`; [exact installer/checksum/API evidence and limits](docs/releases/v0.4.1.md#actual-core-v042-authority-and-limits) distinguish publication proof from runtime acceptance. Default consumer scripts require that actual v0.4.2 authority; links and local source alone are not proof.
 
 The consumer discovers the exact compatible shared native installation in this order: explicit absolute executable → validated account-home shared locator → native `desktop-pet` on PATH → actual Brew prefix → account-home `Applications/DesktopPet.app`. Invalid explicit selection or locator fails closed. Only an absent installation permits bootstrap from the pinned, digest-verified **core** installer; incompatible installs require explicit native upgrade/repair, never a product build or silent fallback here.
 
@@ -34,7 +36,7 @@ The [Herdr guide](integrations/herdr/README.md) retains all 21 action IDs and th
 
 ## Source / link
 
-Install or build the core first (`bash scripts/install.sh --source` in the **desktop-pet core** checkout). Then link **this integration checkout**, not the core, using the selected compatible app. `plugin link` does not run a build. Public/bootstrap use remains gated on actual consumer pin materialization. See [separate checkouts](integrations/herdr/README.md#build-in-separate-checkouts); plugin installation does not patch Herdr.
+Install or build the core first (`bash scripts/install.sh --source` in the **desktop-pet core** checkout). Then link **this integration checkout**, not the core, using the selected compatible app. `plugin link` does not run a build. Actual v0.4.2 consumer pin materialization is complete in this candidate; corrected public integration/bootstrap acceptance still awaits the parent's gates and publication. See [separate checkouts](integrations/herdr/README.md#build-in-separate-checkouts); plugin installation does not patch Herdr.
 
 Common [usage](https://github.com/hanbong5938/desktop-pet/blob/main/docs/usage.md), [CLI](https://github.com/hanbong5938/desktop-pet/blob/main/docs/cli.md), [development](https://github.com/hanbong5938/desktop-pet/blob/main/docs/development.md) and native feature/provider details belong to the independent core, not this source tree.
 
