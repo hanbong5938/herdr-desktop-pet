@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "source_core_revision": "51dcf22415b1ff0faf07651cb83c1c696c980f43",
+  "herdr_migration_revision": "6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8",
+  "distribution": "legacy-0.3.10",
+  "app_version": "0.3.10",
+  "protocol": 3,
+  "observation_mode": 1,
+  "integration_api": 1,
+  "archive": "HerdrDesktopPet-v0.3.10-macos-arm64.tar.gz",
+  "archive_sha256": "a75f4219f1d8bc7ef8c3bee29c030b0cd6c06853bab4e193e40838ef5d49b927",
+  "provenance": "HerdrDesktopPet-v0.3.10-rig-native.json"
+}
