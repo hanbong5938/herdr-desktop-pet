@@ -1,6 +1,12 @@
 # Herdr Desktop Pet 0.3.8 migration ingress
 
-This dedicated tag contains only legacy integration metadata, verified prebuilt download/validation scripts and release provenance. It does not own or copy the native app/helper implementation, UI, adapters, artwork, rig library or worker. The common implementation belongs to [Desktop Pet](https://github.com/hanbong5938/desktop-pet).
+This dedicated working metadata candidate contains only legacy integration metadata, verified prebuilt download/validation scripts and release provenance. It is not a new release and does not replace the immutable published v0.3.8 tag. It does not own or copy the native app/helper implementation, UI, adapters, artwork, rig library or worker. The common implementation belongs to [Desktop Pet](https://github.com/hanbong5938/desktop-pet).
+
+## Working generated-product admission correction
+
+The published v0.3.8 managed A completed on its original profile, but B preparation refused its 68 generated app files as untracked source changes before any B consent or Stop. This candidate adds only the narrowly scoped `/dist/HerdrDesktopPet.app/` ignore declaration; tracked source edits and unrelated untracked files, including other `dist` files, remain protected. The native dirty-worktree guard is unchanged. The actual public v0.3.8 native archive and compiled source remain unchanged.
+
+This authentic official Git branch is for prepublication qualification through the real Herdr manager, including separate B and explicit definite-failure retirement-resume consent. It is not published-v0.3.8 B acceptance. Approved final corrective Core v0.4.4 / genuine bridge v0.3.9 publication remains pending that qualification and final source gates. No `git clean`, source reset or manual installation-origin substitution is authorized.
 
 ## Exact build authority
 
@@ -18,7 +24,7 @@ The [v0.3.8 Release](https://github.com/hanbong5938/herdr-desktop-pet/releases/t
 2. After that safe outcome is independently verified, use the separate **Move to Desktop Pet** preview and independently visible protocol-4 coordinator consent for **B**. The verified Core v0.4.3 target may reuse an existing authenticated neutral owner. Exact old config/state and saved host selection remain in place; no merge or source reset is authorized.
 3. Only after actual neutral readiness and Commit may the owning manager retire the old installation. Managed Herdr refresh is a one-time migration to the exact immutable integration ref above, not a normal native-app update. Definite failed retirement and Unknown remain distinct. Never replay a manager automatically or clear evidence; an eligible explicit resume requires the exact bound plan and new native consent.
 
-Core v0.4.2 / bridge v0.3.7 Brew A→B succeeded separately. The immutable v0.3.7 **managed ingress** failed because logical `/tmp` was passed to strict native profile validation; its actual failed VM/Unknown journal remain preserved. This v0.3.8 producer uses physical `/private/tmp` for download and validation workspaces rather than weakening profile admission. Existing tags, Release bodies and assets were not replaced. New public managed A/B and explicit-resume acceptance must be observed independently; this source note does not claim them.
+Core v0.4.2 / bridge v0.3.7 Brew A→B succeeded separately. The immutable v0.3.7 **managed ingress** failed because logical `/tmp` was passed to strict native profile validation; its actual failed VM/Unknown journal remain preserved. The public v0.3.8 producer uses physical `/private/tmp` for download and validation workspaces, and its genuine managed A completed with a strictly verified original helper. Its B preparation then rejected the generated app files as described above. Existing tags, Release bodies and assets were not replaced. Candidate B and explicit-resume acceptance must be observed independently; this source note does not claim them.
 
 ## Protocol-2 beta retained route
 
