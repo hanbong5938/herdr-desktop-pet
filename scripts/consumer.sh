@@ -39,13 +39,13 @@ validate_release_metadata() {
   [[ "$(/usr/bin/stat -f '%l' "$metadata")" == 1 ]] || fail 'linked core release metadata'
   require_value "$metadata" version 1
   require_value "$metadata" repository hanbong5938/desktop-pet
-  require_value "$metadata" tag v0.4.1
-  require_value "$metadata" app_version 0.4.1
+  require_value "$metadata" tag v0.4.2
+  require_value "$metadata" app_version 0.4.2
   require_value "$metadata" protocol 4
   require_value "$metadata" observation_mode 2
   require_value "$metadata" integration_api 1
-  require_value "$metadata" installer_url https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.1/desktop-pet-install-v0.4.1.sh
-  require_value "$metadata" checksum_url https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.1/desktop-pet-install-v0.4.1.sh.sha256
+  require_value "$metadata" installer_url https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.2/desktop-pet-install-v0.4.2.sh
+  require_value "$metadata" checksum_url https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.2/desktop-pet-install-v0.4.2.sh.sha256
   for field in installer_sha256 checksum_sha256 release_record_sha256; do
     digest="$(json_value "$metadata" "$field")"
     [[ "$digest" =~ ^[0-9a-f]{64}$ && "$digest" != "$(printf '%064d' 0)" ]] || fail "invalid observed digest $field"

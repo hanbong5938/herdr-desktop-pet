@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -30,10 +30,63 @@ function run(command: string, args: string[], cwd = root): string {
   requireCondition(!result.error && result.status === 0, `${command} ${args.join(" ")} failed: ${result.error?.message ?? result.stderr.trim()}`);
   return result.stdout.trim();
 }
+const obsoleteOwners = ["dist", "native", "web", "assets", "tools", ".agents/skills/character-creator", ".agents/skills/create-pet-character", "scripts/package-native.ts", "scripts/build-rig-native.mjs", "scripts/release-docs.ts", "scripts/release-docs.test.ts", "scripts/wiki-docs.ts", "scripts/wiki-docs.test.ts", "scripts/publish-wiki.sh", ".github/workflows/wiki.yml"];
+function ownedPath(relative: string): void {
+  requireCondition(!obsoleteOwners.some((owner) => relative === owner || relative.startsWith(`${owner}/`)), `Obsolete common product owner remains: ${relative}`);
+  requireCondition(!/(^|\/)(?:dist|target|node_modules|Contents|_CodeSignature|rig|rig-native|creator)(?:\/|$)|(^|\/)[^/]+\.(?:app|framework|bundle)(?:\/|$)/i.test(relative), `Generated native/product closure is not integration source: ${relative}`);
+  requireCondition(!/\.(?:tar(?:\.(?:gz|bz2|xz|zst))?|tgz|tbz2|txz|gz|bz2|xz|zst|zip|7z|rar|dmg|pkg|a|o|so|dylib|dll|exe|wasm|bin|herdrchar)(?:\.sha256)?$/i.test(relative) && !/(^|\/)[^/]*rig(?:[-_.][^/]*)?\.json$/i.test(relative), `Native archive, binary, character or rig product is not integration source: ${relative}`);
+  requireCondition(!/(^|\/)(?:Info\.plist|RigLimits\.(?:rs|swift)|(?:desktop-pet|herdr-desktop-pet)(?:-update-coordinator)?|rig-decode-worker|libherdr_rig[^/]*)$/i.test(relative), `Native bundle/rig product member is not integration source: ${relative}`);
+}
+function ownedBytes(relative: string, bytes: Buffer): void {
+  // Check bytes as well as names: renaming a native image/archive cannot make
+  // it source. Installer/host-patch/OMP text and authentic release JSON remain valid.
+  const magic = bytes.subarray(0, 8).toString("hex");
+  const nativeOrArchive = /^(?:feedface|cefaedfe|feedfacf|cffaedfe|cafebabe|bebafeca|cafebabf|bfbafeca|7f454c46|4d5a|504b0304|504b0506|504b0708|1f8b|425a68|fd377a585a00|377abcaf271c|52617221|213c617263683e0a|78617221|28b52ffd)/.test(magic) || bytes.subarray(257, 262).toString("ascii") === "ustar" || bytes.subarray(-512, -508).toString("ascii") === "koly";
+  requireCondition(!nativeOrArchive && !bytes.includes(0), `Native/binary/archive bytes are not integration source: ${relative}`);
+  const text = bytes.toString("utf8");
+  if (text.trimStart().startsWith("{")) {
+    let record: unknown;
+    try { record = JSON.parse(text); } catch { /* Non-JSON source is checked by path/bytes. */ }
+    requireCondition(!(typeof record === "object" && record !== null && ("deployed_sha256" in record || ("paths_relative_to" in record && record.paths_relative_to === "Contents" && ("dylib" in record || "generated_limits" in record)))), `Packaged native/rig manifest is not integration source: ${relative}`);
+  }
+}
+function workingOwnership(): void {
+  function visit(directory: string): void {
+    for (const entry of readdirSync(path.join(root, directory), { withFileTypes: true })) {
+      const relative = directory ? `${directory}/${entry.name}` : entry.name;
+      // Local dependency/build storage is not overlaid. The index/tree checks
+      // below never skip it, including files force-added despite .gitignore.
+      if (relative === ".git" || entry.name === ".DS_Store" || relative === "node_modules" || relative === "native-adapter/target") continue;
+      ownedPath(relative);
+      if (entry.isDirectory()) visit(relative);
+      else if (entry.isFile()) ownedBytes(relative, readFileSync(path.join(root, relative)));
+      else requireCondition(false, `Integration filesystem source must be a regular file/directory, not a symlink or special entry: ${relative}`);
+    }
+  }
+  visit("");
+}
+function trackedOwnership(ref?: string): void {
+  const entries = run("git", ref ? ["ls-tree", "-r", "-z", "--full-tree", ref] : ["ls-files", "--stage", "-z"]).split("\0").filter(Boolean);
+  for (const entry of entries) {
+    const match = /^([0-9]{6}) ([^ ]+) ([^ \t]+)\t(.+)$/.exec(entry);
+    requireCondition(match, "Malformed tracked integration tree entry");
+    const [, mode, second, third, relative] = match;
+    requireCondition(relative !== undefined, "Missing tracked integration path");
+    ownedPath(relative);
+    requireCondition((mode === "100644" || mode === "100755") && (ref ? second === "blob" : third === "0"), `Tracked integration source must be a regular resolved blob, not a symlink/submodule/conflict: ${relative}`);
+    const blob = ref ? third : second;
+    requireCondition(blob && /^[0-9a-f]{40}$/.test(blob), `Invalid integration blob: ${relative}`);
+    const result = spawnSync("git", ["cat-file", "blob", blob], { cwd: root });
+    requireCondition(!result.error && result.status === 0, `Cannot read tracked integration blob: ${relative}`);
+    ownedBytes(relative, result.stdout);
+  }
+}
 function source(): string {
+  workingOwnership();
+  trackedOwnership();
   const manifest = object(Bun.TOML.parse(file("herdr-plugin.toml")), "Herdr manifest");
   requireCondition(manifest.id === "desktop-pet" && manifest.min_herdr_version === "0.9.3", "Herdr plugin identity/host prerequisite changed");
-  requireCondition(typeof manifest.version === "string" && /^0\.(?:[4-9]|[1-9][0-9]+)\.[0-9]+$/.test(manifest.version), "Integration version must be a stable post-cutover 0.4+ version, never a bridge/beta tag");
+  requireCondition(manifest.version === "0.4.1", "Corrected integration source must be version 0.4.1, independently of Core 0.4.2");
   requireCondition(isDeepStrictEqual(records(manifest.build, "build hooks").map((entry) => entry.command), [["bash", "scripts/install.sh"]]), "Build hook must be the core consumer bootstrap");
   requireCondition(isDeepStrictEqual(records(manifest.startup, "startup hooks").map((entry) => entry.command), [["bash", "scripts/run-native.sh", "ensure"]]), "Startup hook must preserve ensure");
   const events = records(manifest.events, "event hooks");
@@ -55,7 +108,6 @@ function source(): string {
   const pkg = object(JSON.parse(file("package.json")), "integration package");
   const scripts = object(pkg.scripts, "integration package scripts");
   requireCondition(pkg.private === true && pkg.version === undefined && scripts.check === "tsc --noEmit", "Root package must be integration tooling, not a native release version authority");
-  for (const obsolete of ["native", "web", "assets", "tools", ".agents/skills/character-creator", ".agents/skills/create-pet-character", "scripts/package-native.ts", "scripts/build-rig-native.mjs", "scripts/release-docs.ts", "scripts/release-docs.test.ts", "scripts/wiki-docs.ts", "scripts/wiki-docs.test.ts", "scripts/publish-wiki.sh", ".github/workflows/wiki.yml"]) requireCondition(!existsSync(path.join(root, obsolete)), `Obsolete common product owner remains: ${obsolete}`);
   for (const command of ["build:native", "test:native", "package:native", "install:local"]) requireCondition(!(command in scripts), `Obsolete root command remains: ${command}`);
   return manifest.version;
 }
@@ -66,28 +118,32 @@ async function release(mode: string, tag: string | undefined, ref: string | unde
   const metadataText = file("core-release.json");
   const metadata = object(JSON.parse(metadataText), "reviewed core release metadata");
   const version = source();
+  requireCondition(metadata.tag === "v0.4.2" && metadata.app_version === "0.4.2", "Publish real Core v0.4.2 and materialize/review its actual metadata and evidence first; retained Core v0.4.1 evidence is historical, never rewritten or accepted as v0.4.2");
   requireCondition(tag === `v${version}`, "Tag must match only herdr-plugin.toml integration version");
   requireCondition(ref && /^[0-9a-f]{40}$/.test(ref), "Supply the reviewed full immutable Herdr commit SHA");
   requireCondition(run("git", ["rev-parse", "HEAD"]) === ref, "Checked-out Herdr HEAD differs from reviewed integration ref");
   requireCondition(run("git", ["status", "--porcelain", "--untracked-files=normal"]) === "", "Integration publication requires a clean, materialized tracked tree");
+  trackedOwnership(ref);
   const refs = run("git", ["ls-remote", `https://github.com/${repository}.git`, `refs/tags/${tag}`, `refs/tags/${tag}^{}`]).split("\n").filter(Boolean).map((line) => line.split(/\s+/));
   const publicCommit = refs.find((entry) => entry[1] === `refs/tags/${tag}^{}`) ?? refs.find((entry) => entry[1] === `refs/tags/${tag}`);
   requireCondition(publicCommit?.[0] === ref, "Public integration tag is absent or resolves to a different reviewed commit; this publisher never creates/moves tags");
   if (process.env.GITHUB_REPOSITORY) requireCondition(process.env.GITHUB_REPOSITORY === repository, "Wrong publication repository");
   const notes = file(`docs/releases/${tag}.md`);
   requireCondition(notes.split(/\r?\n/)[0] === `# Desktop Pet — Herdr integration ${tag} release notes` && notes.trim().length > 200, "Missing reviewed integration-only release note/header");
-  requireCondition(notes.includes("integration_api") && notes.includes("https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.1"), "Notes must describe the independent integration_api contract and actual approved core release authority");
+  requireCondition(notes.includes("integration_api") && notes.includes("https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.2"), "Notes must describe the independent integration_api contract and actual approved core release authority");
   for (const match of notes.matchAll(/!?\[[^\]]*\]\(([^\s)]+)(?:\s+[^)]*)?\)/g)) requireCondition(/^(https:\/\/|#)/.test(match[1]!), "Reviewed release notes must use absolute HTTPS or in-page links, not repository-relative Release-body links");
   const evidence = "release-evidence";
   const record = file(`${evidence}/release.json`);
   requireCondition(typeof metadata === "object" && metadata !== null && "release_record_sha256" in metadata && metadata.release_record_sha256 === createHash("sha256").update(record).digest("hex"), "Reviewed core metadata does not match retained real release evidence");
-  file(`${evidence}/desktop-pet-install-v0.4.1.sh`);
-  file(`${evidence}/desktop-pet-install-v0.4.1.sh.sha256`);
-  const scratch = mkdtempSync(path.join(tmpdir(), "herdr-integration-release-"));
+  file(`${evidence}/desktop-pet-install-v0.4.2.sh`);
+  file(`${evidence}/desktop-pet-install-v0.4.2.sh.sha256`);
+  // Darwin TMPDIR can be a logical /var path. Pass the physical directory to
+  // the materializer; its strict absolute/physical-parent checks stay unchanged.
+  const scratch = realpathSync(mkdtempSync(path.join(tmpdir(), "herdr-integration-release-")));
   try {
     // Reuse the existing anonymous fixed-authority verifier, including all six
     // actual assets, installer/checksum bytes, release ID and resolved core ref.
-    run("bash", ["scripts/materialize-release.sh", path.join(root, evidence, "desktop-pet-install-v0.4.1.sh"), path.join(root, evidence, "desktop-pet-install-v0.4.1.sh.sha256"), path.join(root, evidence, "release.json"), path.join(scratch, "materialized")]);
+    run("bash", ["scripts/materialize-release.sh", path.join(root, evidence, "desktop-pet-install-v0.4.2.sh"), path.join(root, evidence, "desktop-pet-install-v0.4.2.sh.sha256"), path.join(root, evidence, "release.json"), path.join(scratch, "materialized")]);
     const currentMetadata = object(JSON.parse(readFileSync(path.join(scratch, "materialized/core-release.json"), "utf8")), "authenticated core release metadata");
     // The frozen evidence hash is checked above. Fresh API bytes can differ in
     // download counts/timestamps; compare every materialized authority field,
@@ -117,8 +173,11 @@ try {
   requireCondition(extra.length === 0, "Unexpected release arguments");
   if (mode === "source" && !tag && !ref && !output) {
     console.log(`Integration source contract ${source()} validated without release metadata or publication.`);
+  } else if (mode === "tree" && tag && !ref && !output) {
+    trackedOwnership(tag);
+    console.log(`Archived integration tree ${tag} contains only integration source. Nothing published.`);
   } else {
-    requireCondition(mode === "check" || mode === "publish", "Usage: bun scripts/integration-release.ts source | {check|publish} TAG REVIEWED_HERDR_SHA [NEW_NOTES_OUTPUT]");
+    requireCondition(mode === "check" || mode === "publish", "Usage: bun scripts/integration-release.ts source | tree REF | {check|publish} TAG REVIEWED_HERDR_SHA [NEW_NOTES_OUTPUT]");
     await release(mode, tag, ref, output);
   }
 } catch (error) {

@@ -1,6 +1,6 @@
 id = "desktop-pet"
 name = "Desktop Pet — Herdr integration"
-version = "0.4.0"
+version = "0.4.1"
 # Herdr v0.9.3 requires integrations/herdr/client-attached.patch, or an explicitly hook-capable host.
 min_herdr_version = "0.9.3"
 description = "Connect Herdr to the independently installed Desktop Pet"

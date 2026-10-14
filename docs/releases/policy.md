@@ -4,7 +4,7 @@
 
 Current app versioning, protocol-4 updates, integration API and the generated app Wiki are [core policy](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/policy.md), not this integration's release authority. The Herdr consumer uses `integration_api: 1` compatibility; plugin and app versions are independent. An integration-only release has no native archive and never changes `.herdrchar`, pack v5, `default@0`, rig ABI or artwork licensing.
 
-[Consumer publication](publishing.md) · [integration v0.4.0 notes](v0.4.0.md) · [exact host/actions/lifecycle/OMP contract](../../integrations/herdr/README.md) · [legacy A → B migration](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md). A commit/tag is not proof of publication or real Tern/OMP acceptance.
+[Consumer publication](publishing.md) · [corrected integration v0.4.1 candidate](v0.4.1.md) · [exact host/actions/lifecycle/OMP contract](../../integrations/herdr/README.md) · [legacy A → B migration](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md). Published Herdr v0.4.0 has a historical generated-native source-closure fault and remains immutable; corrected source is published under a new tag. Core v0.4.2 is not yet public in this record; retained actual Core v0.4.1 evidence is historical. A commit/tag is not proof of publication or a completed current migration/Tern/OMP matrix.
 
 현재 앱·업데이터·Wiki 정책은 core, Herdr 호스트·action·실행 정책·훅·패치·OMP는 이 연동 소유입니다. 앱/플러그인 버전은 독립이며 기존 stable/beta 태그·자산·본문을 변경하지 않습니다.
 

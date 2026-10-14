@@ -2,7 +2,7 @@
 
 [English](readme.md) · [한국어](readme.ko.md) · [日本語](readme.ja.md) · [简体中文](readme.zh-Hans.md)
 
-**Publication boundary:** legacy [Herdr v0.3.6](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) is shipped with protocol 3 / observation capability 1. Independent Desktop Pet v0.4.0 (protocol 4 / observation capability 2 / integration API 1) and the legacy bridge v0.3.7 are reviewed candidates, not verified public installations. Commands below describe the neutral cutover; do not treat notes, a source version or a tag as publication proof.
+**Publication boundary:** [Core v0.4.1](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.1) is valid and immutable; its retained metadata and verified Brew readiness are historical evidence. Published Herdr v0.4.0 erroneously retained a generated native `dist` source closure; its public tag/body/assets remain unchanged. The [corrected Herdr v0.4.1 candidate](docs/releases/v0.4.1.md) requires real Core v0.4.2 (protocol 4 / observation capability 2 / integration API 1), not yet public in this record. Bridge stays v0.3.7 with exact new Core/corrected Herdr pins; Tern v0.2.0 stays unchanged. No completed current installation/migration matrix is asserted, and old evidence is not rewritten as future release metadata.
 
 Install only the integrations you want. Herdr is a thin consumer; Tern does not download, build, install or auto-start the native app. Plugin updates/removal affect integrations only, never the shared app, profile or characters. Native updates do not reinstall Herdr plugins.
 
@@ -40,7 +40,7 @@ Common [usage](https://github.com/hanbong5938/desktop-pet/blob/main/docs/usage.m
 
 ## Ownership
 
-This repository owns `native-adapter`, `herdr-plugin.toml`, thin install/run wrappers, `integrations/herdr` and `integrations/omp`, integration validation, and frozen historical releases. App/UI/rig/artwork/packaging/source instructions belong to [desktop-pet](https://github.com/hanbong5938/desktop-pet). `.herdrchar`, pack v5, `default@0`, rig ABI and [herdr-characters](https://github.com/hanbong5938/herdr-characters) catalog/gallery authority are unchanged. Historical [v0.3.6](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.6) and older release bodies/tags/assets remain immutable; an integration-only v0.4.0 does not carry a native archive.
+This repository owns `native-adapter`, `herdr-plugin.toml`, thin install/run wrappers, `integrations/herdr` and `integrations/omp`, integration validation, and frozen historical releases. App/UI/rig/artwork/packaging/source instructions belong to [desktop-pet](https://github.com/hanbong5938/desktop-pet). `.herdrchar`, pack v5, `default@0`, rig ABI and [herdr-characters](https://github.com/hanbong5938/herdr-characters) catalog/gallery authority are unchanged. All published release bodies/tags/assets remain immutable. Corrected v0.4.1 source must pass whole working/index and archived-tree ownership gates and carries no native bundle, archive or rig product.
 
 ## Artwork and licensing
 

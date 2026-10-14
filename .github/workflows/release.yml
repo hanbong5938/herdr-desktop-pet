@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing public integration tag (v0.4.0 or later; never bridge/beta)
+        description: Existing corrected public integration tag v0.4.1 (never faulty v0.4.0, bridge or beta)
         required: true
         type: string
       reviewed_ref:

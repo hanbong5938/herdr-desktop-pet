@@ -1,5 +1,6 @@
 node_modules/
 native-adapter/target/
+/dist/
 .DS_Store
 .env
 .env.*

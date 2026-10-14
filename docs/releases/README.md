@@ -2,7 +2,7 @@
 
 **English** · [한국어](README.ko.md)
 
-Current app releases, installation, usage, development, four-locale Pages and the app Wiki belong to [Desktop Pet core](https://github.com/hanbong5938/desktop-pet). This repository now releases only the Herdr integration; [integration v0.4.0 notes](v0.4.0.md), [consumer publication](publishing.md), and [Herdr actions / hook / patch / link / OMP](../../integrations/herdr/README.md) describe that boundary.
+Current app releases, installation, usage, development, four-locale Pages and the app Wiki belong to [Desktop Pet core](https://github.com/hanbong5938/desktop-pet). This repository releases only the Herdr integration; [corrected integration v0.4.1 candidate](v0.4.1.md), [consumer publication](publishing.md), and [Herdr actions / hook / patch / link / OMP](../../integrations/herdr/README.md) describe that boundary. Published [v0.4.0](v0.4.0.md) retains a historical generated-native source-closure fault; its public tag/body/assets remain immutable. Core v0.4.2 is not yet public in this record, and retained Core v0.4.1 metadata/evidence are historical rather than a completed new-release matrix.
 
 The app installation command after actual publication is `brew install hanbong5938/tap/desktop-pet`; optional integration commands are `herdr plugin install hanbong5938/herdr-desktop-pet` and `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`. [Legacy migration](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md) preserves both existing profile paths and requires separate A → B consent.
 

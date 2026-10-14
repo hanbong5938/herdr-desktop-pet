@@ -2,7 +2,7 @@
 
 [English](README.md) · **한국어**
 
-현재 공통 앱 릴리스·설치·사용법·개발·4개 언어 Pages·앱 Wiki는 독립 [Desktop Pet core](https://github.com/hanbong5938/desktop-pet) 소유입니다. 이 저장소는 Herdr 연동만 출시합니다. [연동 v0.4.0 노트](v0.4.0.md)·[소비자 게시 절차](publishing.md)·[Herdr action / 훅 / 패치 / link / OMP](../../integrations/herdr/README.md)를 확인하세요.
+현재 공통 앱 릴리스·설치·사용법·개발·4개 언어 Pages·앱 Wiki는 독립 [Desktop Pet core](https://github.com/hanbong5938/desktop-pet) 소유입니다. 이 저장소는 Herdr 연동만 출시합니다. [수정 연동 v0.4.1 후보](v0.4.1.md)·[소비자 게시 절차](publishing.md)·[Herdr action / 훅 / 패치 / link / OMP](../../integrations/herdr/README.md)를 확인하세요. 공개 [v0.4.0](v0.4.0.md) 소스에 남은 생성 네이티브 `dist`는 과거 closure 오류이며 공개 태그·본문·자산은 그대로 보존합니다. Core v0.4.2는 이 기록에서 아직 공개되지 않았고 보존된 Core v0.4.1 메타데이터·증거는 과거 기록이지 새 릴리스 검증 완료 증거가 아닙니다.
 
 실제 게시 후 앱 명령은 `brew install hanbong5938/tap/desktop-pet`, 선택형 연동은 `herdr plugin install hanbong5938/herdr-desktop-pet`와 `tern plugin install https://github.com/hanbong5938/tern-desktop-pet`입니다. [기존 A → B 이전](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md)은 기존 두 프로필 경로를 보존하고 각각 동의를 요구합니다.
 

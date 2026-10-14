@@ -10,23 +10,23 @@ absolute output "$output"
 for input in "$installer" "$checksum" "$reviewed_record"; do
   [[ -f "$input" && ! -L "$input" && "$(/usr/bin/stat -f '%l' "$input")" == 1 ]] || fail "missing actual regular release input: $input"
 done
-[[ "${installer##*/}" == desktop-pet-install-v0.4.1.sh && "${checksum##*/}" == desktop-pet-install-v0.4.1.sh.sha256 ]] || fail 'inputs must be the actual approved v0.4.1 core installer/checksum assets'
+[[ "${installer##*/}" == desktop-pet-install-v0.4.2.sh && "${checksum##*/}" == desktop-pet-install-v0.4.2.sh.sha256 ]] || fail 'inputs must be the actual approved v0.4.2 core installer/checksum assets'
 parent="${output%/*}"; [[ -n "$parent" ]] || parent=/
 [[ -d "$parent" && ! -L "$parent" && "$(cd -- "$parent" && pwd -P)" == "$parent" ]] || fail 'output parent must be a physical existing directory'
 stage="$(/usr/bin/mktemp -d "$parent/.herdr-consumer-materialize.XXXXXX")" || fail 'cannot reserve materialization directory'
 trap '[[ -z "$stage" ]] || rm -rf -- "$stage"' EXIT
 mkdir "$stage/downloads"
 api='https://api.github.com/repos/hanbong5938/desktop-pet'
-base='https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.1'
+base='https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.2'
 fetch() {
   # Ignore curl config/netrc/proxy credentials and explicitly omit authorization.
   /usr/bin/curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --header 'Authorization:' --header 'Accept: application/vnd.github+json' "$1" -o "$2" || fail "anonymous release download failed: $1"
 }
 fresh="$stage/downloads/release.json"
-fetch "$api/releases/tags/v0.4.1" "$fresh"
+fetch "$api/releases/tags/v0.4.2" "$fresh"
 for record in "$reviewed_record" "$fresh"; do
-  require_value "$record" tag_name v0.4.1
-  require_value "$record" html_url https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.1
+  require_value "$record" tag_name v0.4.2
+  require_value "$record" html_url https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.2
   require_value "$record" url "$api/releases/$(json_value "$record" id)"
   require_value "$record" draft false
   require_value "$record" prerelease false
@@ -48,7 +48,7 @@ asset_index() {
   [[ -n "$found" ]] || fail "missing real release asset: $wanted"
   printf '%s' "$found"
 }
-for name in DesktopPet-v0.4.1-macos-arm64.tar.gz DesktopPet-v0.4.1-macos-arm64.tar.gz.sha256 SHA256SUMS DesktopPet-v0.4.1-rig-native.json desktop-pet-install-v0.4.1.sh desktop-pet-install-v0.4.1.sh.sha256; do
+for name in DesktopPet-v0.4.2-macos-arm64.tar.gz DesktopPet-v0.4.2-macos-arm64.tar.gz.sha256 SHA256SUMS DesktopPet-v0.4.2-rig-native.json desktop-pet-install-v0.4.2.sh desktop-pet-install-v0.4.2.sh.sha256; do
   current="$(asset_index "$fresh" "$name")"
   reviewed="$(asset_index "$reviewed_record" "$name")"
   for record_index in "$fresh:$current" "$reviewed_record:$reviewed"; do
@@ -69,27 +69,27 @@ for record in "$fresh" "$reviewed_record"; do
 done
 # A supplied record is not self-authenticating: anonymously retrieve actual bytes
 # again, and compare both local artifact inputs with the fixed release authority.
-fetch "$base/desktop-pet-install-v0.4.1.sh" "$stage/downloads/desktop-pet-install-v0.4.1.sh"
-fetch "$base/desktop-pet-install-v0.4.1.sh.sha256" "$stage/downloads/desktop-pet-install-v0.4.1.sh.sha256"
+fetch "$base/desktop-pet-install-v0.4.2.sh" "$stage/downloads/desktop-pet-install-v0.4.2.sh"
+fetch "$base/desktop-pet-install-v0.4.2.sh.sha256" "$stage/downloads/desktop-pet-install-v0.4.2.sh.sha256"
 fetch "$base/SHA256SUMS" "$stage/downloads/SHA256SUMS"
 digest="$(sha256_file "$installer")"
 checksum_digest="$(sha256_file "$checksum")"
-[[ "$digest" == "$(sha256_file "$stage/downloads/desktop-pet-install-v0.4.1.sh")" && "$checksum_digest" == "$(sha256_file "$stage/downloads/desktop-pet-install-v0.4.1.sh.sha256")" ]] || fail 'supplied bytes are not the actual anonymously downloaded fixed-authority release'
+[[ "$digest" == "$(sha256_file "$stage/downloads/desktop-pet-install-v0.4.2.sh")" && "$checksum_digest" == "$(sha256_file "$stage/downloads/desktop-pet-install-v0.4.2.sh.sha256")" ]] || fail 'supplied bytes are not the actual anonymously downloaded fixed-authority release'
 lines=0
 while IFS= read -r line || [[ -n "$line" ]]; do
   ((lines += 1))
-  [[ "$line" == "$digest  desktop-pet-install-v0.4.1.sh" ]] || fail 'installer checksum content mismatch'
+  [[ "$line" == "$digest  desktop-pet-install-v0.4.2.sh" ]] || fail 'installer checksum content mismatch'
 done < "$checksum"
 [[ "$lines" == 1 ]] || fail 'installer checksum must contain exactly one authentic asset entry'
 found=0
 while IFS= read -r line || [[ -n "$line" ]]; do
-  if [[ "$line" == *' desktop-pet-install-v0.4.1.sh' ]]; then
+  if [[ "$line" == *' desktop-pet-install-v0.4.2.sh' ]]; then
     ((found += 1))
-    [[ "$line" == "$digest  desktop-pet-install-v0.4.1.sh" ]] || fail 'release SHA256SUMS disagrees with installer'
+    [[ "$line" == "$digest  desktop-pet-install-v0.4.2.sh" ]] || fail 'release SHA256SUMS disagrees with installer'
   fi
 done < "$stage/downloads/SHA256SUMS"
 [[ "$found" == 1 ]] || fail 'release SHA256SUMS must authenticate exactly one installer'
-for name in desktop-pet-install-v0.4.1.sh desktop-pet-install-v0.4.1.sh.sha256; do
+for name in desktop-pet-install-v0.4.2.sh desktop-pet-install-v0.4.2.sh.sha256; do
   current="$(asset_index "$fresh" "$name")"
   actual_size="$(/usr/bin/stat -f '%z' "$stage/downloads/$name")"
   require_value "$fresh" "assets.$current.size" "$actual_size"
@@ -99,8 +99,8 @@ for name in desktop-pet-install-v0.4.1.sh desktop-pet-install-v0.4.1.sh.sha256; 
 done
 # Resolve the real published tag, including annotated tags, never plugin version,
 # Herdr origin, local HEAD, or a mutable branch as the packaged core revision.
-fetch "$api/git/ref/tags/v0.4.1" "$stage/downloads/tag.json"
-require_value "$stage/downloads/tag.json" ref refs/tags/v0.4.1
+fetch "$api/git/ref/tags/v0.4.2" "$stage/downloads/tag.json"
+require_value "$stage/downloads/tag.json" ref refs/tags/v0.4.2
 object="$stage/downloads/tag.json" hops=0
 while [[ "$(json_value "$object" object.type)" == tag ]]; do
   revision="$(json_value "$object" object.sha)"
@@ -123,7 +123,7 @@ for script in consumer.sh install.sh run-native.sh materialize-release.sh; do
   chmod 755 "$stage/scripts/$script"
 done
 record_digest="$(sha256_file "$fresh")"
-printf '{\n  "version": 1,\n  "repository": "hanbong5938/desktop-pet",\n  "tag": "v0.4.1",\n  "app_version": "0.4.1",\n  "core_revision": "%s",\n  "release_id": %s,\n  "protocol": 4,\n  "observation_mode": 2,\n  "integration_api": 1,\n  "installer_url": "%s/desktop-pet-install-v0.4.1.sh",\n  "checksum_url": "%s/desktop-pet-install-v0.4.1.sh.sha256",\n  "installer_sha256": "%s",\n  "checksum_sha256": "%s",\n  "release_record_sha256": "%s"\n}\n' "$revision" "$release_id" "$base" "$base" "$digest" "$checksum_digest" "$record_digest" > "$stage/core-release.json"
+printf '{\n  "version": 1,\n  "repository": "hanbong5938/desktop-pet",\n  "tag": "v0.4.2",\n  "app_version": "0.4.2",\n  "core_revision": "%s",\n  "release_id": %s,\n  "protocol": 4,\n  "observation_mode": 2,\n  "integration_api": 1,\n  "installer_url": "%s/desktop-pet-install-v0.4.2.sh",\n  "checksum_url": "%s/desktop-pet-install-v0.4.2.sh.sha256",\n  "installer_sha256": "%s",\n  "checksum_sha256": "%s",\n  "release_record_sha256": "%s"\n}\n' "$revision" "$release_id" "$base" "$base" "$digest" "$checksum_digest" "$record_digest" > "$stage/core-release.json"
 chmod 600 "$stage/core-release.json"
 # Retain anonymous release evidence for review, but never install it as app bytes.
 mv "$stage/downloads" "$stage/release-evidence"
