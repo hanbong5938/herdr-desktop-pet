@@ -1,9 +1,0 @@
-node_modules/
-native-adapter/target/
-/dist/
-.DS_Store
-.env
-.env.*
-.claude/
-.agents/skills/open-code-review/
-skills-lock.json
