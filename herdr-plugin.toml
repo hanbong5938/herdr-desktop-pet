@@ -1,9 +1,9 @@
 id = "desktop-pet"
-name = "Desktop Pet — Herdr integration"
-version = "0.4.1"
-# Herdr v0.9.3 requires integrations/herdr/client-attached.patch, or an explicitly hook-capable host.
+name = "Herdr Desktop Pet"
+version = "0.3.8"
+# client.attached needs the existing patched Herdr 0.9.3 host or advertised hook support.
 min_herdr_version = "0.9.3"
-description = "Connect Herdr to the independently installed Desktop Pet"
+description = "Legacy Desktop Pet migration bridge for Herdr"
 platforms = ["macos"]
 
 [[build]]
