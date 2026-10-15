@@ -2,9 +2,9 @@
 
 [English](readme.md) · [한국어](readme.ko.md) · [日本語](readme.ja.md) · [简体中文](readme.zh-Hans.md)
 
-**現在の公開配布:** [Core v0.4.7](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.7)、Release `413584934`、`2026-10-15T08:39:17Z`、共通ソース `52514da5115f09aac22de5429c08f7acdd993258`、neutral protocol4/observation2/API1。本物の [bridge v0.3.11](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.11)、Release `413623057`、`2026-10-15T09:25:08Z`、metadata-only ingress `fa56caa32ea06d86932c5b4cc3eb230010c6dd9c`、annotated tag object `a907424e89c10d484f8646f41d5f020fa93ba8bc` は同じ Core から genuine legacy3/1/API1 を構築します。bridge の11-file source closure・匿名公開5資産・厳密署名・配備68ファイルと Core の6資産/closure を検証済みです。公開 tap `6693cd9db26e6dba9a257bbe76acaf78cb502c2f` は stable Core4.7/legacy3.11、beta は不変。Herdr **v0.4.1** `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8` / assetless Release `412252863` は Herdr-managed source 専用の凍結 retirement authority。Tern0.2.0/互換 pin も不変で、新連携タグやこの consumer 内の native build はありません。
+**現在の公開配布:** [Core v0.4.8](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.8)、Release `413822006`、公開日時 `2026-10-15T13:06:02Z`、正確な不変 source `2936b2c600235ec8d15d1248ef3380e0a8dca8c0`、neutral protocol4/observation2/API1。本物の [bridge v0.3.12](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.12)、Release `413831645`、公開日時 `2026-10-15T13:15:47Z`、ingress `f05a95a46dee042acf613c8d126d25be597fc824`、annotated tag object `eb7656fa6465148110b021b2d28efc3dcaa428a5` は同じ Core から genuine legacy3/1/API1 を構築します。Core の匿名公開6資産・arm64 system/helper closure・strict deep 署名・配備68リソースを独立検証済み。bridge の匿名5資産は CI bytes と完全一致し、公開11ファイル Core producer closure・strict deep 署名・68リソース・paired3/1/API1 も通過しました。公開 [tap `ef95ec0be315f3601f18849dce67a11bd706af26`](https://github.com/hanbong5938/homebrew-tap/commit/ef95ec0be315f3601f18849dce67a11bd706af26) は stable Core4.8/legacy3.12、beta は不変。Herdr **v0.4.1** `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8` / assetless Release `412252863` は Herdr-managed source 専用の凍結 retirement authority。Tern0.2.0/互換 pin も不変で、新連携タグやこの consumer 内の native build はありません。
 
-## 歴史的な実行証拠 — Core4.7/bridge3.11 の受け入れではない
+## 歴史的な実行証拠 — Core4.8/bridge3.12 の受け入れではない
 
 以下の4.5/3.10以前の結果は元の版・identity・証拠を保持します。以下の「現在」「新しい」は当時の実行だけを指し、現在の公開版や実ユーザー Mac の状態ではありません。
 
@@ -18,9 +18,11 @@
 
 ## 現在の経路と受け入れ境界
 
-公開 Brew3.10 はまず通常の **A′で genuine3.11** に更新し、元の helper の terminal/quiescent settlement を確認します。その後に別の Move preview・Source Review・独立した最終 native 同意 **Bで Core4.7**、readiness/Commit、所有 manager の retirement です。Brew は承認済み stable legacy formula だけを削除し、凍結連携4.1は Herdr-managed 専用。凍結3.6互換経路と beta→元の凍結3.6 matched pair は別です。Unknown の replay/reset や helper/journal の置換は禁止です。
+**歴史的 Core4.7 VM 経路:** 公開 Brew3.10 は通常の **A′で genuine3.11** に更新し、元の helper の terminal/quiescent settlement を確認しました。その後に別の Move preview・Source Review・独立した最終 native 同意 **Bで Core4.7**、readiness/Commit、所有 manager の retirement でした。Brew は承認済み stable legacy formula だけを削除し、凍結連携4.1は Herdr-managed 専用。凍結3.6互換経路と beta→元の凍結3.6 matched pair は別です。Unknown の replay/reset や helper/journal の置換は禁止です。
 
-[Core4.7 正本 ledger](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md) は実公開 Brew3.10→通常3.11 A′・元 helper 確定→独立同意の公開 B4.7→readiness/Commit・実所有 Brew retirement と、元バイト・import 済みキャラクター/台詞/履歴・無関係な profile の保持を記録します。現 consumer 再利用・最終 native Check と Cancel/rollback/Stop/Unknown/確定失敗/native Resume も実検証済みです。利用者 Mac native 承認は別途で、H1/T0 は本物 Tern-account/両順序の証明ではありません。
+[歴史的 Core4.7 ledger](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md) は実公開 Brew3.10→通常3.11 A′・元 helper 確定→独立同意の公開 B4.7→readiness/Commit・実所有 Brew retirement と、元バイト・import 済みキャラクター/台詞/履歴・無関係な profile の保持を記録します。当時の consumer 再利用・最終 native Check と Cancel/rollback/Stop/Unknown/確定失敗/native Resume も実検証済みです。Core4.8/bridge3.12 の受け入れ証拠には変更しません。
+
+[現在の Core4.8 正本 ledger](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.8.md) は修正済み公開 bytes・現行 consumer metadata と実 host 受け入れを区別します。利用者 Mac は実所有 Brew で bridge3.11→3.12 更新を exit0/`NO_CLEANUP` で完了しました。導入 app/helper の strict deep 署名と正確な source `2936b2c600235ec8d15d1248ef3380e0a8dca8c0` / legacy3.12 / 3/1/API1 identity は通過。元 profile pair を Start し、実 instance `3edfc569f4d793c7d2f2cb1d71cd4487` は HerdrH1T0/UI/control ready、Settings も開きました。以前3.11の未対応 v2 history blocked 画面は歴史的再現であり、新3.12も blocked または解除済みという証拠ではありません。新 native Check/解除は **人による TCC 承認待ちで未観測**、独立した最終 B・Core4.8 installed 受け入れ・retirement・最終 native Check も未観測です。歴史的 terminal plan/profile の read-only 検証は元 bytes を保持し、現行 execution/recovery は旧 v2 history を引き続き拒否します。実 profile throwaway smoke は通過しました。ready3.12 や公開資産/metadata 検証は native 同意・新 B 受け入れの代用ではありません。H1/T0 は Tern 未設定であり、本物 Tern-account/両順序/provider の証明ではありません。
 
 必要な連携だけを導入します。Herdr は薄い consumer です。Tern はネイティブアプリを取得・構築・インストール・自動起動しません。プラグインの更新・削除は共有アプリ、プロファイル、キャラクターを削除しません。通常のアプリ更新で Herdr プラグインを再導入しません。
 
@@ -28,9 +30,9 @@
 
 [Core アプリサイト](https://hanbong5938.github.io/desktop-pet/ja/) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki) · [Herdr 連携サイト](https://hanbong5938.github.io/herdr-desktop-pet/ja/)。旧サイトはアプリ UI・アートを複製しない連携・移行の入口です。
 
-Core CI38706583599・genuine bridge CI38707461727 と実 logical-`/tmp` native・生成 app Git admission が通過しました。Wiki job116329481248 は専用 `WIKI_PUBLISH_TOKEN`・初期 Home が必要で、広範 credential 代替・binary 再実行はしません。実 default branch・4言語 Pages 配信観測は正本 ledger を参照してください。
+Core release workflow `38739112250`・binary job `116435899893` と genuine bridge CI `38740106737`・job `116439269337` は green。Wiki job `116438922256` は専用 `WIKI_PUBLISH_TOKEN` 不在のみで blocked であり、広範 credential 代替・binary 再実行はしません。今回の main/default branch・4言語 Pages 更新はまだ配信されていません。公開 release の存在は Pages 配信証拠ではありません。
 
-公開 formula は Core4.7 を選びます ([tap6693cd9](https://github.com/hanbong5938/homebrew-tap/commit/6693cd9db26e6dba9a257bbe76acaf78cb502c2f))。共有 app と必要な連携のみ、review 済み default branch から導入してください:
+公開 formula は Core4.8 を選びます ([tap `ef95ec0`](https://github.com/hanbong5938/homebrew-tap/commit/ef95ec0be315f3601f18849dce67a11bd706af26))。以前の [tap `6693cd9`](https://github.com/hanbong5938/homebrew-tap/commit/6693cd9db26e6dba9a257bbe76acaf78cb502c2f) は歴史的 Core4.7/legacy3.11 証拠です。共有 app と必要な連携のみ、review 済み default branch から導入してください:
 
 ```sh
 brew install hanbong5938/tap/desktop-pet
@@ -40,11 +42,13 @@ herdr plugin action invoke start --plugin desktop-pet
 
 Apple Silicon Mac、macOS 13 以降。ソース構築には Rust/Cargo、Bun、Node.js/npm、Xcode Command Line Tools が必要ですが、プリビルドには不要です。ad-hoc 署名で、公証されていません。Herdr スナップショットは互換ローカルサーバー（0.9.0+）、返信は別途 `agent.prompt` が必要です。任意の client-attach 自動起動には公式 Herdr 0.9.3 に[連携所有のパッチとホスト手順](https://github.com/hanbong5938/herdr-desktop-pet/blob/main/integrations/herdr/README.md)を適用するか、実際にフック対応のホストが必要です。標準 0.9.0/0.9.3 にはフックがなく、プラグイン導入はホストをパッチしません。
 
-プリビルド・ソース導入は Herdr 連携ではなく **core** チェックアウトで実行します。既定はプリビルドのみで、取得・検証失敗からソースビルドへ黙って切り替えません。`--source` は現在の core だけを構築し、その `dist/DesktopPet.app` を使用します。
+プリビルド・ソース導入は Herdr 連携ではなく公開 Core4.8 source `2936b2c600235ec8d15d1248ef3380e0a8dca8c0` に固定した **core** チェックアウトで実行します。既定はプリビルドのみで、取得・検証失敗からソースビルドへ黙って切り替えません。`--source` はその core だけを構築し、その `dist/DesktopPet.app` を使用します。
 
 ## Herdr consumer の契約
 
-この repository は `DesktopPet.app`・native package・character asset を構築/コピーしない薄い consumer です。現行 metadata/evidence8ファイルは匿名公開 Core4.7 Release `413584934`、source `52514da5115f09aac22de5429c08f7acdd993258` から実 materialize 済み。installer SHA-256 `f64a27593058a68c5a5e112f448be644c6abfbb760be109acf992e2f415f5829`、checksum asset `2619293634c27cfc6cbb7db11c9dd8407ac719b3e2c4321d6a6dc5cf21937d5e`、release record `0643094bc94adad0ad3a18120a3a69c2688900889ee9f34befe8f94e31186923`。adapter104テスト成功、実 `install.sh` / `run-native.sh status` は同じ Standalone4.7 PID1446 / instance `d10dcb4df0f131506f0b38a0a9f7aedd`・明示 profile・Herdr1/Tern0を install/start/Herdr再導入なしで再利用しました。[現在の台帳](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md)は凍結連携4.1と歴史的 Core4.2最小 pin を変更/再公開しません。
+この repository は `DesktopPet.app`・native package・character asset を構築/コピーしない薄い consumer です。現行 metadata/evidence8ファイルは匿名公開 Core4.8 Release `413822006`、source `2936b2c600235ec8d15d1248ef3380e0a8dca8c0` から実 materialize 済み。現在の `core-release.json` の installer SHA-256 は `bf329d3b7a1571129d48bb809f967cc6ad503738cb601a1e592666b9ca3737d8`、checksum asset は `428d81f39a5d78b9da46af519afbc1e7a2a1ca7274c25fab16418cff08574fbf`、release API record は `be089c3c9bf5d7d5ff8735efa131b8d1f8da62ef47cfe16b29b6a0b22868a7f0`。実ファイルに対して既存 materializer・adapter104テスト・TypeScript/shell gate が通過しました。materialize 証拠であり、新 Core4.8 導入や native 承認ではありません。manifest 連携4.1/API1・managed retirement `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8`・歴史的 Core4.2最小 pin は不変で、新連携タグはありません。
+
+**歴史的 Core4.7 consumer 証拠:** metadata/evidence8ファイルは匿名公開 Release `413584934`、source `52514da5115f09aac22de5429c08f7acdd993258` から実 materialize 済み。installer SHA-256 `f64a27593058a68c5a5e112f448be644c6abfbb760be109acf992e2f415f5829`、checksum asset `2619293634c27cfc6cbb7db11c9dd8407ac719b3e2c4321d6a6dc5cf21937d5e`、release record `0643094bc94adad0ad3a18120a3a69c2688900889ee9f34befe8f94e31186923`。adapter104テスト成功、実 `install.sh` / `run-native.sh status` は同じ Standalone4.7 PID1446 / instance `d10dcb4df0f131506f0b38a0a9f7aedd`・明示 profile・Herdr1/Tern0を install/start/Herdr再導入なしで再利用しました。[歴史的台帳](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md)は凍結連携4.1と歴史的 Core4.2最小 pin を変更/再公開しません。
 
 互換性のある共有アプリを正確に探索する順序は、明示的な絶対実行パス → 検証済みの実アカウントホームの共有 locator → PATH のネイティブ `desktop-pet` → 実際の Brew prefix → 実アカウントホームの `Applications/DesktopPet.app` です。不正な明示パスや locator は別のインストールにフォールバックしません。アプリが存在しない場合だけ固定・digest 検証済みの **core** installer で bootstrap します。非互換なインストールは明示的なネイティブ更新・修復が必要で、ここでは製品ビルドや暗黙の fallback を行いません。
 
@@ -54,7 +58,7 @@ Herdr プロファイルの優先順位は注入された `HERDR_PLUGIN_CONFIG_D
 
 ## ソース / link
 
-先に **desktop-pet Core** checkout で `bash scripts/install.sh --source` により app を導入/構築し、**この連携 checkout** を link します。`plugin link` は構築しません。現行 local consumer は実 Core4.7 と同一 instance 再利用を記録し、新連携タグ/native build はありません。歴史的連携4.1/Core4.2同時 bootstrap/wrapper と Core4.5 Hide→ensure 証拠は当時の範囲です。[独立 checkout 手順](integrations/herdr/README.md#build-in-separate-checkouts)を参照。plugin 導入は Herdr を patch しません。
+先に **desktop-pet Core** checkout で `git checkout --detach 2936b2c600235ec8d15d1248ef3380e0a8dca8c0 && bash scripts/install.sh --source` により app を導入/構築し、**この連携 checkout** を link します。`plugin link` は構築しません。現行 local consumer metadata は実公開 Core4.8 に固定します。上記 Core4.7 同一 instance 再利用は歴史的証拠で、新版 runtime 受け入れではありません。新連携タグ/この consumer の native build はありません。歴史的連携4.1/Core4.2同時 bootstrap/wrapper と Core4.5 Hide→ensure 証拠は当時の範囲です。[独立 checkout 手順](integrations/herdr/README.md#build-in-separate-checkouts)を参照。plugin 導入は Herdr を patch しません。
 
 共通の[使い方](https://github.com/hanbong5938/desktop-pet/blob/main/docs/usage.ja.md)、[CLI](https://github.com/hanbong5938/desktop-pet/blob/main/docs/cli.md)、[開発](https://github.com/hanbong5938/desktop-pet/blob/main/docs/development.md)、ネイティブ機能・provider 詳細は独立 core が所有します。
 

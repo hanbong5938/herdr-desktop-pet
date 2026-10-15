@@ -29,11 +29,11 @@ trap 'rm -rf -- "$scratch"' EXIT
 metadata="$ROOT_DIR/core-release.json"
 url="$(json_value "$metadata" installer_url)"
 digest="$(json_value "$metadata" installer_sha256)"
-/usr/bin/curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --header 'Authorization:' "$url" -o "$scratch/desktop-pet-install-v0.4.7.sh" || fail 'core installer download failed; no source/plugin-local fallback'
-[[ "$(sha256_file "$scratch/desktop-pet-install-v0.4.7.sh")" == "$digest" ]] || fail 'core installer digest differs from reviewed release metadata'
+/usr/bin/curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 120 --header 'Authorization:' "$url" -o "$scratch/desktop-pet-install-v0.4.8.sh" || fail 'core installer download failed; no source/plugin-local fallback'
+[[ "$(sha256_file "$scratch/desktop-pet-install-v0.4.8.sh")" == "$digest" ]] || fail 'core installer digest differs from reviewed release metadata'
 # Explicit prebuilt mode prevents inherited source-build selection. The pinned core
 # installer admits the shared public app atomically; this integration never owns it.
-/usr/bin/env DESKTOP_PET_INSTALL_MODE=prebuilt DESKTOP_PET_DISTRIBUTION=neutral DESKTOP_PET_VERSION=0.4.7 DESKTOP_PET_REPOSITORY=hanbong5938/desktop-pet /bin/bash "$scratch/desktop-pet-install-v0.4.7.sh" --prebuilt || fail 'core installer refused admission; use explicit native upgrade/repair'
+/usr/bin/env DESKTOP_PET_INSTALL_MODE=prebuilt DESKTOP_PET_DISTRIBUTION=neutral DESKTOP_PET_VERSION=0.4.8 DESKTOP_PET_REPOSITORY=hanbong5938/desktop-pet /bin/bash "$scratch/desktop-pet-install-v0.4.8.sh" --prebuilt || fail 'core installer refused admission; use explicit native upgrade/repair'
 discover_native ''
 [[ -n "$SELECTED_EXECUTABLE" ]] || fail 'core installer returned without a discoverable verified installation'
 printf 'Using verified shared Desktop Pet: %s\n' "$SELECTED_EXECUTABLE"

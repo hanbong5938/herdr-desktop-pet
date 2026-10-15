@@ -4,7 +4,7 @@ umask 077
 
 # This file is also the self-contained, checksum-pinned release installer asset.
 # Prebuilt mode does not read a checkout, host manifest, HOME, or host environment.
-RELEASE_VERSION="0.4.7"
+RELEASE_VERSION="0.4.8"
 REPOSITORY="hanbong5938/desktop-pet"
 APP_NAME="DesktopPet.app"
 BUNDLE_ID="io.github.hanbong5938.desktop-pet"
@@ -18,7 +18,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage: bash scripts/install.sh [--prebuilt | --source [--stage-only ABS]]
 
-  (default), --prebuilt  Install the pinned Desktop Pet 0.4.7 release only.
+  (default), --prebuilt  Install the pinned Desktop Pet 0.4.8 release only.
                          A failed download never falls back to source.
   --source               Build this verified core checkout, then admit the
                          staged app at this checkout's dist/DesktopPet.app.

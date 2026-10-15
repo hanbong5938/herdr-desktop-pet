@@ -1,9 +1,9 @@
 {
-  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/413584934",
-  "assets_url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/413584934/assets",
-  "upload_url": "https://uploads.github.com/repos/hanbong5938/desktop-pet/releases/413584934/assets{?name,label}",
-  "html_url": "https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.7",
-  "id": 413584934,
+  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/413822006",
+  "assets_url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/413822006/assets",
+  "upload_url": "https://uploads.github.com/repos/hanbong5938/desktop-pet/releases/413822006/assets{?name,label}",
+  "html_url": "https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.8",
+  "id": 413822006,
   "author": {
     "login": "github-actions[bot]",
     "id": 41898282,
@@ -25,22 +25,22 @@
     "user_view_type": "public",
     "site_admin": false
   },
-  "node_id": "RE_kwDOVG1Ac84Yps4m",
-  "tag_name": "v0.4.7",
-  "target_commitish": "52514da5115f09aac22de5429c08f7acdd993258",
-  "name": "v0.4.7",
+  "node_id": "RE_kwDOVG1Ac84Yqmw2",
+  "tag_name": "v0.4.8",
+  "target_commitish": "2936b2c600235ec8d15d1248ef3380e0a8dca8c0",
+  "name": "v0.4.8",
   "draft": false,
   "immutable": false,
   "prerelease": false,
-  "created_at": "2026-10-15T08:33:59Z",
-  "updated_at": "2026-10-15T08:39:17Z",
-  "published_at": "2026-10-15T08:39:17Z",
+  "created_at": "2026-10-15T13:00:32Z",
+  "updated_at": "2026-10-15T13:06:02Z",
+  "published_at": "2026-10-15T13:06:02Z",
   "assets": [
     {
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643247865",
-      "id": 643247865,
-      "node_id": "RA_kwDOVG1Ac84mVy75",
-      "name": "desktop-pet-install-v0.4.7.sh",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643895767",
+      "id": 643895767,
+      "node_id": "RA_kwDOVG1Ac84mYRHX",
+      "name": "desktop-pet-install-v0.4.8.sh",
       "label": "",
       "uploader": {
         "login": "github-actions[bot]",
@@ -66,17 +66,17 @@
       "content_type": "application/x-sh",
       "state": "uploaded",
       "size": 15899,
-      "digest": "sha256:f64a27593058a68c5a5e112f448be644c6abfbb760be109acf992e2f415f5829",
+      "digest": "sha256:bf329d3b7a1571129d48bb809f967cc6ad503738cb601a1e592666b9ca3737d8",
       "download_count": 0,
-      "created_at": "2026-10-15T08:39:15Z",
-      "updated_at": "2026-10-15T08:39:15Z",
-      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.7/desktop-pet-install-v0.4.7.sh"
+      "created_at": "2026-10-15T13:06:00Z",
+      "updated_at": "2026-10-15T13:06:00Z",
+      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.8/desktop-pet-install-v0.4.8.sh"
     },
     {
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643247864",
-      "id": 643247864,
-      "node_id": "RA_kwDOVG1Ac84mVy74",
-      "name": "desktop-pet-install-v0.4.7.sh.sha256",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643895759",
+      "id": 643895759,
+      "node_id": "RA_kwDOVG1Ac84mYRHP",
+      "name": "desktop-pet-install-v0.4.8.sh.sha256",
       "label": "",
       "uploader": {
         "login": "github-actions[bot]",
@@ -102,17 +102,17 @@
       "content_type": "application/octet-stream",
       "state": "uploaded",
       "size": 96,
-      "digest": "sha256:2619293634c27cfc6cbb7db11c9dd8407ac719b3e2c4321d6a6dc5cf21937d5e",
+      "digest": "sha256:428d81f39a5d78b9da46af519afbc1e7a2a1ca7274c25fab16418cff08574fbf",
       "download_count": 0,
-      "created_at": "2026-10-15T08:39:15Z",
-      "updated_at": "2026-10-15T08:39:15Z",
-      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.7/desktop-pet-install-v0.4.7.sh.sha256"
+      "created_at": "2026-10-15T13:06:00Z",
+      "updated_at": "2026-10-15T13:06:00Z",
+      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.8/desktop-pet-install-v0.4.8.sh.sha256"
     },
     {
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643247861",
-      "id": 643247861,
-      "node_id": "RA_kwDOVG1Ac84mVy71",
-      "name": "DesktopPet-v0.4.7-macos-arm64.tar.gz",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643895771",
+      "id": 643895771,
+      "node_id": "RA_kwDOVG1Ac84mYRHb",
+      "name": "DesktopPet-v0.4.8-macos-arm64.tar.gz",
       "label": "",
       "uploader": {
         "login": "github-actions[bot]",
@@ -137,18 +137,18 @@
       },
       "content_type": "application/gzip",
       "state": "uploaded",
-      "size": 23838280,
-      "digest": "sha256:f89ea6c52197bd4c7fb70336846099f1e5eb553f2de9bb4cd43b14b1134da8fa",
+      "size": 23843531,
+      "digest": "sha256:baa2cb6b159051ab7cd600d0e251c58af948e5275258bccbab8e77dc49936923",
       "download_count": 0,
-      "created_at": "2026-10-15T08:39:15Z",
-      "updated_at": "2026-10-15T08:39:16Z",
-      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.7/DesktopPet-v0.4.7-macos-arm64.tar.gz"
+      "created_at": "2026-10-15T13:06:00Z",
+      "updated_at": "2026-10-15T13:06:02Z",
+      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.8/DesktopPet-v0.4.8-macos-arm64.tar.gz"
     },
     {
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643247858",
-      "id": 643247858,
-      "node_id": "RA_kwDOVG1Ac84mVy7y",
-      "name": "DesktopPet-v0.4.7-macos-arm64.tar.gz.sha256",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643895757",
+      "id": 643895757,
+      "node_id": "RA_kwDOVG1Ac84mYRHN",
+      "name": "DesktopPet-v0.4.8-macos-arm64.tar.gz.sha256",
       "label": "",
       "uploader": {
         "login": "github-actions[bot]",
@@ -174,17 +174,17 @@
       "content_type": "application/octet-stream",
       "state": "uploaded",
       "size": 103,
-      "digest": "sha256:a7e482807f0b61281d40ab4d9baba17bd38b3368fa34c297570014ef4fe1e718",
+      "digest": "sha256:8d6a55f122866641ffe3bfaee0eae8c1344b42cd697d526b68d1d56c029bce64",
       "download_count": 0,
-      "created_at": "2026-10-15T08:39:15Z",
-      "updated_at": "2026-10-15T08:39:15Z",
-      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.7/DesktopPet-v0.4.7-macos-arm64.tar.gz.sha256"
+      "created_at": "2026-10-15T13:06:00Z",
+      "updated_at": "2026-10-15T13:06:00Z",
+      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.8/DesktopPet-v0.4.8-macos-arm64.tar.gz.sha256"
     },
     {
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643247863",
-      "id": 643247863,
-      "node_id": "RA_kwDOVG1Ac84mVy73",
-      "name": "DesktopPet-v0.4.7-rig-native.json",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643895763",
+      "id": 643895763,
+      "node_id": "RA_kwDOVG1Ac84mYRHT",
+      "name": "DesktopPet-v0.4.8-rig-native.json",
       "label": "",
       "uploader": {
         "login": "github-actions[bot]",
@@ -210,16 +210,16 @@
       "content_type": "application/json",
       "state": "uploaded",
       "size": 8727,
-      "digest": "sha256:2d28f7be1a5f83e6d0d1cc8bfc96727c0ca7c38546423ca7bb526d434a6b794b",
+      "digest": "sha256:339cb84c4c4548a2723f161fbac619cc64e409349f89225ebb6adefec9538613",
       "download_count": 0,
-      "created_at": "2026-10-15T08:39:15Z",
-      "updated_at": "2026-10-15T08:39:15Z",
-      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.7/DesktopPet-v0.4.7-rig-native.json"
+      "created_at": "2026-10-15T13:06:00Z",
+      "updated_at": "2026-10-15T13:06:00Z",
+      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.8/DesktopPet-v0.4.8-rig-native.json"
     },
     {
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643247859",
-      "id": 643247859,
-      "node_id": "RA_kwDOVG1Ac84mVy7z",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/releases/assets/643895764",
+      "id": 643895764,
+      "node_id": "RA_kwDOVG1Ac84mYRHU",
       "name": "SHA256SUMS",
       "label": "",
       "uploader": {
@@ -246,14 +246,14 @@
       "content_type": "application/octet-stream",
       "state": "uploaded",
       "size": 299,
-      "digest": "sha256:a6fccb6bfd204c5d0d5cd455b2a4f7dd44f8dd7499db84f8cde805a045011a4d",
+      "digest": "sha256:020ff20f6cdf72008ed4eb302eee206c81a14f95764cce2c2f50030559ee8ca0",
       "download_count": 0,
-      "created_at": "2026-10-15T08:39:15Z",
-      "updated_at": "2026-10-15T08:39:15Z",
-      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.7/SHA256SUMS"
+      "created_at": "2026-10-15T13:06:00Z",
+      "updated_at": "2026-10-15T13:06:00Z",
+      "browser_download_url": "https://github.com/hanbong5938/desktop-pet/releases/download/v0.4.8/SHA256SUMS"
     }
   ],
-  "tarball_url": "https://api.github.com/repos/hanbong5938/desktop-pet/tarball/v0.4.7",
-  "zipball_url": "https://api.github.com/repos/hanbong5938/desktop-pet/zipball/v0.4.7",
-  "body": "# Desktop Pet v0.4.7 release notes\n\n## Working corrective boundary, pending qualification\n\nCore **v0.4.7** is the fresh corrective target. Genuine legacy bridge **v0.3.11** remains unpublished and retains `DESKTOP_PET_DISTRIBUTION=legacy-0.3.11`; it is not renumbered. These selectors and this note do not establish a qualified build, public release, installed migration acceptance or deployment authorization.\n\nPublic Core **v0.4.6**, source **`1906d4d5ad6305fada18a8b3bfbfa2d414f2f538`**, immutable release **`413541921`**, remains historical published authority. Its tag, release body and assets must not be replaced to carry this post-publication correction. Earlier source-suite results remain evidence for that exact source, not qualification of v0.4.7. The earlier [v0.4.6 ledger](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.6.md) is retained unchanged with its original recording scope.\n\n## Observed final-confirmation cancellation failure\n\nA genuine same-source v0.3.11 candidate first passed source-review Cancel with the original config/state bytes unchanged and the same running source instance. On a subsequent source-review approval, the independently staged public v0.4.6 neutral helper displayed its native final-confirmation dialog. The operator physically clicked **Cancel**.\n\nThe helper closed the panel and exited without a terminal acknowledgement. The source's `read_final_visible_ack` received EOF and displayed **Operation outcome unknown**, retaining the cancelled operation ID and disabling **Move to Desktop Pet**. This was a false Unknown in the source migration UI after final cancellation, **not an observed Unknown manager operation**. The original config/state bytes and running source instance remained unchanged; only actual staging and migration-consent evidence were added. No migration record or manager intent was created.\n\nThis observation invalidates final-Cancel acceptance for the published v0.4.6 helper even though its exact-source suites had passed. The preserved guest, operation and evidence must not be reset, cleared or replayed to turn this failed run into success.\n\n## Corrective implementation boundary\n\nThe helper's first stdout frame distinguishes typed **VisibleApproved** and **Cancelled** final-consent outcomes, each bound to the exact operation, immutable plan SHA and source/target images and profiles. Native final-dialog Cancel emits and flushes **Cancelled** before entering the migration engine, then exits successfully; it is not a visible-approved ACK. The source accepts cancellation only from the exact owned, paired helper with no trailing output and a successful child reap. The approved frame remains conditional on actual helper progress and source visibility. A refusal must not grant migration authority, create a manager intent or proceed to commit/retirement. EOF, invalid or foreign frames, a nonzero exit and incoherent output remain Unknown; missing journals, preserved source bytes and exit status alone are not cancellation authority. This correction does not add Unknown recovery, retries or synthetic acknowledgements.\n\n## Exact successor envelopes and publication authority\n\n| Candidate | Native app / executable / paired helper | Bundle ID | Protocol / observation / integration API |\n| --- | --- | --- | --- |\n| Neutral v0.4.7 | `DesktopPet.app` / `desktop-pet` / `desktop-pet-update-coordinator` | `io.github.hanbong5938.desktop-pet` | **4 / 2 / 1** |\n| Genuine bridge v0.3.11 | `HerdrDesktopPet.app` / `herdr-desktop-pet` / `herdr-update-coordinator` | `dev.herdr.desktop-pet` | **3 / 1 / 1** |\n\nFresh neutral target authority is **0.4.7**. Historical v0.4.6 evidence does not authorize a fresh v0.4.7 plan or establish that an installed v0.4.6 app has transitioned. The bridge workflow requires the actual published **v0.4.7** tag's exact commit to match the requested source and the published neutral provenance record/checksum to bind that same source and envelope. Public v0.4.6 is not authority for rebuilding this updated bridge. No unobserved v0.4.7 source SHA, release ID, asset hash or CI result is asserted here.\n\nRetirement remains frozen to the integration-only Herdr **v0.4.1** authority **`6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8`**. No new Herdr/Tern integration release, frozen older ingress change or replacement of any published release is authorized.\n\n## Observed working-source qualification before immutable freeze\n\nThe orchestrator ran both full Rust workspaces concurrently with normal test threading after the correction and one formatting pass:\n\n| Distribution | Reported passed | Ignored |\n| --- | ---: | ---: |\n| Neutral v0.4.7 | 768 | 1 |\n| Genuine legacy v0.3.11 | 788 | 1 |\n\nTypeScript checking, **59 Bun tests / 511 expectations**, Rust formatting, native/consumer shell syntax, public-verifier syntax and `release-docs check v0.4.7` passed. Both arm64 release builds/packages passed independent exact 68-file deployed-hash closure, paired compiled identity/capability, strict/deep ad-hoc signature and system-only helper-dependency checks.\n\nBoth actual candidate apps ran in the genuine logged-in disposable macOS session with the real Herdr 0.9.3 server: bridge PID 1088 / instance `a28ffc42ad169a3319313ac0aaf7d9ed`, neutral PID 1089 / instance `9a8f59cfa70c86458bd84257963961aa`, each UI/control ready with H1/T0. Native Rubelia rendering was captured; status observation preserved existing profile bytes. The independent neutral smoke was explicitly stopped afterward, not installed as a normal owner.\n\nThese are working-source candidate artifacts stamped with the then-current pre-freeze HEAD `1906d4d5ad6305fada18a8b3bfbfa2d414f2f538`, not public v0.4.7 authority or byte identity. Immutable-source packaging, public availability and corrected final-Cancel/B/fault acceptance remain separate gates. No v0.4.6 failure evidence was cleared.\n\n## Required qualification remains pending\n\nWorking-source gates and packages above passed. Native source-review Cancel and independently displayed final-helper Cancel must still be exercised against the actual corrected, authenticated paired bytes, preserving the original profile and source instance and verifying the terminal outcome without migration side effects. The exact published target is a preparation prerequisite; no fake release or authentication bypass substitutes for that run. The failed v0.4.6 run remains failed evidence.\n\nThe remaining deployment route still requires authentic installed public Brew v0.3.10 to genuine v0.3.11 ordinary update A′ with original-helper terminal settlement, followed by independently consented B to exact neutral v0.4.7, original-profile native readiness, durable commit and retirement, and the required fault/Stop/recovery matrix. Actual immutable public authorities, anonymous asset/checksum validation, signature/resource closure and installed acceptance against those public bytes remain separate gates. Current four-locale documentation must not claim that proof before it exists.\n"
+  "tarball_url": "https://api.github.com/repos/hanbong5938/desktop-pet/tarball/v0.4.8",
+  "zipball_url": "https://api.github.com/repos/hanbong5938/desktop-pet/zipball/v0.4.8",
+  "body": "# Desktop Pet v0.4.8 release notes\n\nStatus: unpublished successor; parent-observed source/candidate qualification is recorded below, while immutable publication and installed public acceptance remain pending. Published Core v0.4.7 (source `52514da5115f09aac22de5429c08f7acdd993258`) and genuine legacy bridge v0.3.11 remain immutable. Existing consumer metadata/evidence continue to identify authentic public4.7 assets until new public assets are available and authenticated.\n\nThe successor addresses the retained protocol-2 completed-journal defect: a genuine legacy app can remain blocked by historical completed update records even after its original matching signed helper confirms terminal `completed` / `manager_exited` with installation and application complete. Qualification must establish narrowly scoped historical read compatibility without weakening fresh execution, reservation, native consent or Unknown-manager gates. User journals, pointers and retained helpers must not be rewritten, cleared or replayed.\n\nProducer identities are neutral Core v0.4.8 (protocol 4 / observation 2 / integration API 1) and genuine legacy v0.3.12 (protocol 3 / observation 1 / integration API 1), built from the same approved Core source. The legacy envelope retains its original app, executable and helper names; it is not a renamed neutral binary. Managed Herdr integration remains v0.4.1 at `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8`; beta is unchanged.\n\nNo public successor asset digest, tag, release, tap update, consumer materialization or installed public acceptance is claimed by this note. Source gates and actual-profile read-only smoke are recorded below, separately from publication and native migration.\n\n## Actual-profile reproduction before correction\n\nThe actual user Mac's preserved protocol-2 record was verified terminal by its original strictly signed helper: `completed`, `manager_exited`, `installed:true`, `applied:true`. An explicitly approved real Homebrew compatibility upgrade changed the installed source from0.3.6 to genuine0.3.11 without cleanup or history deletion. The new app reached original-profile Herdr/UI/control readiness, but its native Check and migration action remained disabled with **unsupported operation journal protocol**.\n\nThe consumer-visible regression `app_update::tests::historical_completed_journal_allows_fresh_check_without_recovery` was executed before the production correction in the genuine legacy0.3.12 build. One test ran and failed at `service.begin_check().is_some()` (exit101); this reproduces the current checker obstruction, not an installation or manager failure. This does not establish a passing successor or authorize replay of any historical operation.\n\n## Parent-observed successor qualification\n\nThe same legacy consumer regression passed after correction. Full neutral **769 passed / 1 ignored** and genuine legacy **789 passed / 1 ignored** workspace suites passed. Current TypeScript, **62 Bun tests / 746 expectations**, release-note validation, Rust formatting and installer/ingress shell syntax passed. Both real arm64 candidate packages built, passed strict/deep ad-hoc signature verification, and their actual app/helper pairs advertised neutral4/2/API1 and legacy3/1/API1 respectively.\n\nA throwaway executable linked against the corrected legacy coordinator read the **actual preserved user profile**, not a fabricated journal: latest protocol2 Completed/ManagerExited/installed+applied, immutable historical plan bound to the original config/state, null planned Brew candidate and absent old source image. Historical discovery succeeded while strict current operation and plan reads remained rejected. Original latest-pointer, result and plan bytes were unchanged. No actual-profile startup, recovery, reservation or manager execution was performed by this smoke.\n\nThese observations qualify the corrected source and candidate packages only. Immutable release publication, anonymous public-byte qualification, consumer/tap cutover and independently consented actual native migration remain pending.\n"
 }
