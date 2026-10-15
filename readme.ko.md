@@ -2,7 +2,11 @@
 
 [English](readme.md) · [한국어](readme.ko.md) · [日本語](readme.ja.md) · [简体中文](readme.zh-Hans.md)
 
-**현재 공개 배포:** [Core v0.4.5](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.5), Release `412667385`, `2026-10-14T12:01:32Z`, 정확한 공용 소스 `51dcf22415b1ff0faf07651cb83c1c696c980f43`, protocol4/observation2/API1입니다. 현재 consumer는 실제 공개 installer 바이트를 인증합니다. 의도적인 legacy ingress는 진짜 [bridge v0.3.10](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.10), Release `412684474`, `2026-10-14T12:20:45Z`, metadata 소스 `67eb44b53bda6ba96eaf68671b67a94cab7b304d`를 선택합니다. 같은 Core 소스로 빌드한 실제 legacy3/1/API1이며 Git에는 regular UTF-8 metadata 11개와 정확한 생성 앱 ignore만 있습니다. 두 공개 자산 집합·엄격 서명·68파일 closure를 검증했습니다. 구 stable formula `7bf1fd7f1b89bd77e68179fcee95cacf044927dc`는 v0.3.10입니다. Herdr **v0.4.1**의 불변 `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8`·assetless Release `412252863` 및 Tern v0.2.0·호환 Core pin은 그대로입니다. 새 연동 태그·Tern 네이티브 설치/자동 시작·이전 태그/본문/자산/beta 교체는 없습니다.
+**현재 공개 배포:** [Core v0.4.7](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.7), Release `413584934`, `2026-10-15T08:39:17Z`, 정확한 공용 소스 `52514da5115f09aac22de5429c08f7acdd993258`, neutral protocol4/observation2/API1입니다. 진짜 [bridge v0.3.11](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.11), Release `413623057`, `2026-10-15T09:25:08Z`, metadata-only ingress `fa56caa32ea06d86932c5b4cc3eb230010c6dd9c`, annotated tag object `a907424e89c10d484f8646f41d5f020fa93ba8bc`는 같은 Core 소스로 genuine legacy3/1/API1을 빌드합니다. bridge의 11파일 소스 closure·익명 공개 자산5개·엄격 서명·배포68파일, Core의 자산6개와 closure를 검증했습니다. 공개 tap `6693cd9db26e6dba9a257bbe76acaf78cb502c2f`는 stable Core4.7/legacy3.11을 선택하며 beta는 불변입니다. Herdr **v0.4.1** `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8` / assetless Release `412252863`는 Herdr-managed 소스만의 동결 retirement 권위입니다. Tern0.2.0·호환 pin도 불변이며 새 연동 태그·이 저장소의 native 빌드는 없습니다.
+
+## 과거 런타임 증거 — Core4.7/bridge3.11 인수가 아님
+
+아래4.5/3.10 및 이전 결과의 버전·신원·증거는 그대로 보존합니다. 아래 문단의 “현재”·“새”는 당시 실행만 뜻하며 오늘의 배포나 사용자 Mac 상태를 뜻하지 않습니다.
 
 **현재 Core의 실제 런타임:** fresh public Brew v0.4.5 설치·read-only 검사는 별도 standalone 앱·데몬·중립 프로필을 만들지 않았습니다. 명시적 Start 뒤 실제 GUI는 Desktop Pet / Auto / Herdr Waiting0 / Tern Waiting0이었고 PID `1971` / instance `27752246b4da5c6f3964a74dd22881a2`는 명시적 Hide 후에도 같은 인스턴스로 실행 중입니다. 별도 기존 프로필의 실제 v0.4.4→v0.4.5 일반 갱신 `a6991e69233377c32b150186c62888fd`는 진짜 Brew PID=PGID `9853`, exit0/drained true로 완료됐습니다. 기존 기본 프로필은 공유 owner 교체 전에 명시적으로 Stop했으며 몰래 재시작·병합하지 않았습니다. 새 PID `10377` / instance `37953e017fc9208bfcc785a4ff138494`는 같은 구 프로필·Herdr1/Tern0·UI/control ready였고 다음 실제 Check도 초록색 정상 결과였습니다. 기존 증거와 프로필은 daemon log 외에 불변이며 Herdr 재설치는 없었습니다. 막힌 v0.4.3은 서명된 원본 백업·명시적 Stop·실제 고정 installer·명시적 Start로 같은 owner만 복구했고 실제 v0.4.5 Check도 정상 통과했습니다. 구 checker의 자동 갱신은 아닙니다. 이전 공개 v0.3.9/v0.4.4 A/B·87개 증거·무관한 기본 프로필 보존은 [당시 원장](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.4.md)에 별도 유지하며 새 조합의 성공으로 바꾸지 않습니다.
 
@@ -12,15 +16,21 @@
 
 **별도 검증과 한계:** 실제 public3.9 beta 경로는 live 교체·protocol2 직접 bridge를 거절하고 원래 동결3.6 matched pair를 자동 시작 없이 설치했습니다. 같은 beta config/state의 명시적 Start·실제 ready와 원래 서명 helper·사용자 소스/프로필 보존을 검증한 뒤 소유3.6만 Stop했습니다. 새3.10 beta 실행 주장은 아닙니다. f7edf5e의 확정 retirement 실패·새 동의 동일 plan resume은 과거 별도 증거입니다. Pages와 실제 SDK 양쪽 순서/prompt/transcript/reconnect는 독립 검증이며 Tern 정상 keychain과 OMP provider SignIn/NoModel이 없어 완료를 주장하지 않습니다. 계정·ACK·transcript를 꾸미지 않습니다.
 
+## 현재 경로와 인수 범위
+
+공개 Brew3.10은 먼저 일반 **A′로 genuine3.11**에 갱신하고 원래 helper의 terminal·quiescent 정착을 확인해야 합니다. 그 뒤 별도 Move preview·Source Review·독립 최종 native 동의 **B로 Core4.7**, readiness/Commit, 소유 manager retirement 순서입니다. Brew는 승인된 stable legacy formula만 제거하며 동결 연동4.1은 Herdr-managed 전용입니다. 동결3.6 호환 경로·beta→원래 동결3.6 matched pair는 별도입니다. Unknown을 replay/reset하거나 helper/journal을 교체하지 않습니다.
+
+[Core4.7 정본 원장](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md)은 실제 공개 Brew3.10→일반3.11 A′·원래 helper 정착→독립 동의 공개 B4.7→readiness/Commit·실제 소유 Brew retirement와 원래 바이트·가져온 캐릭터·대사·이력·무관 프로필 보존을 기록합니다. 현재 consumer 재사용·최종 native Check와 취소/rollback/Stop/Unknown/확정 실패/native Resume도 실제 검증했습니다. 사용자 Mac native 승인은 별도이며 H1/T0는 실제 Tern-account/양쪽 순서 증거가 아닙니다.
+
 필요한 연동만 설치하세요. Herdr는 얇은 consumer이며 Tern은 네이티브 앱을 다운로드·빌드·설치·자동 시작하지 않습니다. 플러그인 갱신·제거는 연동만 바꾸고 공용 앱·프로필·캐릭터는 남깁니다. 일반 앱 업데이트는 Herdr 플러그인을 재설치하지 않습니다.
 
 [Desktop Pet / core app](https://github.com/hanbong5938/desktop-pet/blob/main/readme.ko.md) · [Herdr host / patch / OMP / link](integrations/herdr/README.md) · [Legacy A → B migration](https://github.com/hanbong5938/desktop-pet/blob/main/docs/migrations/desktop-pet.md)
 
 [Core 앱 사이트](https://hanbong5938.github.io/desktop-pet/) · [Core Wiki](https://github.com/hanbong5938/desktop-pet/wiki) · [Herdr 연동 사이트](https://hanbong5938.github.io/herdr-desktop-pet/). 이전 사이트는 앱 UI·그림을 복제하지 않는 연동·이전 입구입니다.
 
-Core v0.4.5 CI `38560075408`의 release job `115838673595`와 진짜 bridge CI `38561115955` job `115842136732`는 통과했습니다. 실제 native 논리 `/tmp`·생성 앱 Git 보호도 통과했습니다. 뒤따른 Wiki job `115840956329`는 렌더 후 전용 `WIKI_PUBLISH_TOKEN` 부재로 게시에 실패했습니다. 소유자 Home 초기화·전용 자격 증명이 필요하며 broad `gh`/`GITHUB_TOKEN` fallback은 없습니다. 현재 Core/Herdr Pages는 소스·링크만으로 배포 완료를 주장하지 않습니다.
+Core CI38706583599·genuine bridge CI38707461727과 실제 logical-`/tmp` native·생성 앱 Git admission이 통과했습니다. Wiki job116329481248은 전용 `WIKI_PUBLISH_TOKEN`·초기 Home이 필요하며 broad credential 대체·binary 재실행은 없습니다. 실제 default branch·네 언어 Pages 배포 관측은 정본 원장을 따릅니다.
 
-공개 중립 formula는 Core v0.4.5를 선택합니다 ([tap `d66411383141644f01f1ca839086b6d505a997ac`](https://github.com/hanbong5938/homebrew-tap/commit/d66411383141644f01f1ca839086b6d505a997ac)). 공용 앱과 필요한 main 연동만 설치하세요:
+공개 formula는 Core4.7을 선택합니다 ([tap6693cd9](https://github.com/hanbong5938/homebrew-tap/commit/6693cd9db26e6dba9a257bbe76acaf78cb502c2f)). 공용 앱과 필요한 연동만 검토된 default branch에서 설치하세요:
 
 ```sh
 brew install hanbong5938/tap/desktop-pet
@@ -34,7 +44,7 @@ Apple Silicon Mac, macOS 13 이상. 소스 빌드는 Rust/Cargo·Bun·Node.js/np
 
 ## Herdr consumer 계약
 
-이 저장소는 `DesktopPet.app`, 네이티브 패키지나 캐릭터 자산을 빌드·복사하지 않습니다. 연동 manifest·wrapper·adapter는 이 체크아웃, 네이티브 소스·그림·도구는 Core 소유입니다. 현재 `core-release.json` / `release-evidence/`는 실제 공개 Core v0.4.5 Release `412667385`, 정확한 `51dcf22415b1ff0faf07651cb83c1c696c980f43`에서 materialize했습니다. installer SHA-256은 `fdcd9d80f8672b54ceca967bfea6f72223d2e5caed97f845140a68b9e7414a16`, checksum 자산 SHA-256은 `8c9c8ab020bc4561c4a2c17f4c6d20b3e8a18672b84f508426e68ed259598c5e`입니다. [실제 권위와 런타임 증거](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.5.md)는 불변 v0.4.1 연동 태그의 당시 Core v0.4.2 최소 pin을 바꾸거나 재게시하지 않습니다.
+이 저장소는 `DesktopPet.app`·native package·character asset을 빌드·복사하지 않는 얇은 consumer입니다. 현재 metadata/evidence8파일은 익명 공개 Core4.7 Release `413584934`, 소스 `52514da5115f09aac22de5429c08f7acdd993258`에서 실제 materialize했습니다. installer SHA-256 `f64a27593058a68c5a5e112f448be644c6abfbb760be109acf992e2f415f5829`, checksum asset `2619293634c27cfc6cbb7db11c9dd8407ac719b3e2c4321d6a6dc5cf21937d5e`, release record `0643094bc94adad0ad3a18120a3a69c2688900889ee9f34befe8f94e31186923`입니다. adapter104테스트를 통과했고 실제 `install.sh`와 `run-native.sh status`는 같은 Standalone4.7 PID1446 / instance `d10dcb4df0f131506f0b38a0a9f7aedd`·명시 profile·Herdr1/Tern0를 설치/시작/Herdr 재설치 없이 재사용했습니다. [현재 원장](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md)은 동결 연동4.1·당시 Core4.2 최소 pin을 재게시·변경하지 않습니다.
 
 정확히 호환되는 공용 앱의 탐색 순서는 명시적 절대 실행 파일 → 검증된 실제 계정 홈의 공용 locator → PATH의 네이티브 `desktop-pet` → 실제 Brew prefix → 실제 계정 홈의 `Applications/DesktopPet.app`입니다. 잘못된 명시 경로나 locator는 다른 설치로 우회하지 않습니다. 앱이 없을 때만 고정·digest 검증된 **core** installer로 bootstrap하며, 비호환 설치는 명시적으로 네이티브 갱신·복구해야 합니다. 여기서 제품 빌드나 조용한 fallback을 하지 않습니다.
 
@@ -44,7 +54,7 @@ Herdr 프로필 우선순위는 주입된 `HERDR_PLUGIN_CONFIG_DIR` / `HERDR_PLU
 
 ## 소스 / link
 
-먼저 **desktop-pet Core** 체크아웃에서 `bash scripts/install.sh --source`로 앱을 설치·빌드한 다음 Core가 아닌 **이 연동 체크아웃**을 link합니다. `plugin link`는 빌드하지 않습니다. 현재 consumer는 실제 Core v0.4.5를 고정하고 실제 같은 4.5 인스턴스의 Hide→ensure 보존을 검증했습니다. 과거 태그 v0.4.1 / Core v0.4.2의 동시 fresh 공개 bootstrap·동시 wrapper 증거는 별도 기록이며 새 연동 태그를 만들지 않습니다. [분리된 체크아웃](integrations/herdr/README.md#build-in-separate-checkouts)을 참조하세요. 플러그인 설치는 Herdr를 패치하지 않습니다.
+먼저 **desktop-pet Core** 체크아웃에서 `bash scripts/install.sh --source`로 앱을 설치·빌드한 다음 **이 연동 체크아웃**을 link합니다. `plugin link`는 빌드하지 않습니다. 현재 로컬 consumer는 실제 Core4.7과 동일 인스턴스 재사용을 기록하며 새 연동 태그·native 빌드는 없습니다. 과거 연동4.1/Core4.2 동시 bootstrap/wrapper와 Core4.5 Hide→ensure 증거는 당시 범위로 남깁니다. [분리된 체크아웃](integrations/herdr/README.md#build-in-separate-checkouts)을 참조하세요. 플러그인 설치는 Herdr를 patch하지 않습니다.
 
 공통 [사용법](https://github.com/hanbong5938/desktop-pet/blob/main/docs/usage.ko.md), [CLI](https://github.com/hanbong5938/desktop-pet/blob/main/docs/cli.md), [개발](https://github.com/hanbong5938/desktop-pet/blob/main/docs/development.ko.md) 및 네이티브 기능·provider 상세는 독립 core 소유입니다.
 

@@ -4,6 +4,20 @@
 
 Current app versioning, protocol-4 updates, integration API and the generated app Wiki are [core policy](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/policy.md), not this integration's release authority. The Herdr consumer uses `integration_api: 1` compatibility; plugin and app versions are independent. An integration-only release has no native archive and never changes `.herdrchar`, pack v5, `default@0`, rig ABI or artwork licensing.
 
+## Current consumer policy — 2026-10-15
+
+Actual [Core v0.4.7](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.7), exact source `52514da5115f09aac22de5429c08f7acdd993258`/Release `413584934`, is neutral4/2/API1. Genuine [bridge v0.3.11](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.11), metadata source `fa56caa32ea06d86932c5b4cc3eb230010c6dd9c`/Release `413623057`, builds the same exact Core source as legacy3/1/API1, not a native-source fork. Both actual public asset/signature/68-file closures and the bridge's eleven-file source closure/native logical-`/tmp`/real-Git gates passed. Stable tap `6693cd9db26e6dba9a257bbe76acaf78cb502c2f` serves4.7/3.11, beta unchanged. Exact tag/source and public asset hashes, not advisory `target_commitish`, govern [actual current materialization and installer/hash authority](publishing.md#current-consumer-record--2026-10-15).
+
+Integration manifest/native adapter remain4.1/API1; assetless Herdr4.1 `6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8` is Herdr-managed-only retirement authority. Brew uses only its reviewed actual stable legacy formula. No new integration tag/native build/Herdr reinstall or historical release/beta rewrite. Actual materialized install/status reused the same migrated public Core4.7 app/profile without install/start.
+
+Authentic public Brew3.10→ordinary3.11 A′ settled through its original signed helper, followed by independently consented public B4.7 readiness/Commit and real owning-Brew retirement. Original bytes, imported character/dialogue/history and unrelated profiles survived. Four-locale cancellation and rollback/Stop/Unknown/definitive-failure/native-Resume observations passed. User-Mac approvals and main/Pages observations are separate in the [canonical ledger](https://github.com/hanbong5938/desktop-pet/blob/main/docs/releases/v0.4.7.md). Frozen3.6/beta routes and historical Unknown/helper/journal evidence remain unchanged.
+
+Publication, runtime acceptance, Pages and Wiki are distinct. Wiki job116329481248 rendered then failed for missing dedicated `WIKI_PUBLISH_TOKEN`; no broad fallback or binary rerun. Record actual deployed source/workflow/browser proof in the ledger. H1/T0 is not genuine Tern-provider/account/two-order acceptance; configured Tern requires genuine Save/Connect/SDK/window proof on the same pair.
+
+## Historical policy evidence
+
+The v0.4.5/v0.3.10 and older records below retain their original version/source/observations. Their “current” labels mean those earlier snapshots, not today's consumer or pending public Brew4.7 acceptance.
+
 **Current actual distribution:** [Core v0.4.5](https://github.com/hanbong5938/desktop-pet/releases/tag/v0.4.5), exact `51dcf22415b1ff0faf07651cb83c1c696c980f43`, release412667385, is neutral4/2/API1 and supplies actual current consumer evidence. Intentional genuine [legacy v0.3.10](https://github.com/hanbong5938/herdr-desktop-pet/releases/tag/v0.3.10), metadata source `67eb44b53bda6ba96eaf68671b67a94cab7b304d`, release412684474, is that same common source compiled as legacy3/1/API1, eleven regular UTF-8 metadata files, not a native-source fork. Both actual public byte/signature/68-file closures and neutral4.5/old-stable3.10 formulas passed. Integration/retirement stays immutable Herdr4.1 `6d2ac04`, assetless412252863. No new integration tag, Tern0.2.0 change, old tag/body/asset rewrite or beta change. [Consumer publication](publishing.md) · [actions/hook/OMP](../../integrations/herdr/README.md).
 
 현재 앱·업데이터·Wiki 정책은 core, Herdr 호스트·action·실행 정책·훅·패치·OMP는 이 연동 소유입니다. 앱/플러그인 버전은 독립이며 기존 stable/beta 태그·자산·본문을 변경하지 않습니다.

@@ -1,28 +1,28 @@
 {
-  "sha": "51dcf22415b1ff0faf07651cb83c1c696c980f43",
-  "node_id": "C_kwDOVG1Ac9oAKDUxZGNmMjI0MTViMWZmMGZhZjA3NjUxY2I4M2MxYzY5NmM5ODBmNDM",
-  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/51dcf22415b1ff0faf07651cb83c1c696c980f43",
-  "html_url": "https://github.com/hanbong5938/desktop-pet/commit/51dcf22415b1ff0faf07651cb83c1c696c980f43",
+  "sha": "52514da5115f09aac22de5429c08f7acdd993258",
+  "node_id": "C_kwDOVG1Ac9oAKDUyNTE0ZGE1MTE1ZjA5YWFjMjJkZTU0MjljMDhmN2FjZGQ5OTMyNTg",
+  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/52514da5115f09aac22de5429c08f7acdd993258",
+  "html_url": "https://github.com/hanbong5938/desktop-pet/commit/52514da5115f09aac22de5429c08f7acdd993258",
   "author": {
     "name": "배한봉",
     "email": "han@baehanbong-ui-MacStudio.local",
-    "date": "2026-10-14T11:51:05Z"
+    "date": "2026-10-15T08:30:49Z"
   },
   "committer": {
     "name": "배한봉",
     "email": "han@baehanbong-ui-MacStudio.local",
-    "date": "2026-10-14T11:51:05Z"
+    "date": "2026-10-15T08:30:49Z"
   },
   "tree": {
-    "sha": "73c9813da918f0d8c8d5e35e9999070a9777b1c5",
-    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/trees/73c9813da918f0d8c8d5e35e9999070a9777b1c5"
+    "sha": "7520b9e523d24f1f656f458c08d7f9acd4a025b6",
+    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/trees/7520b9e523d24f1f656f458c08d7f9acd4a025b6"
   },
-  "message": "Fix retained migration history and promote Core 0.4.5 / bridge 0.3.10",
+  "message": "fix: authenticate final migration cancellation in Core 0.4.7",
   "parents": [
     {
-      "sha": "b7ab7261aa239441273065e1df6ba7402c750454",
-      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/b7ab7261aa239441273065e1df6ba7402c750454",
-      "html_url": "https://github.com/hanbong5938/desktop-pet/commit/b7ab7261aa239441273065e1df6ba7402c750454"
+      "sha": "1906d4d5ad6305fada18a8b3bfbfa2d414f2f538",
+      "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/1906d4d5ad6305fada18a8b3bfbfa2d414f2f538",
+      "html_url": "https://github.com/hanbong5938/desktop-pet/commit/1906d4d5ad6305fada18a8b3bfbfa2d414f2f538"
     }
   ],
   "verification": {

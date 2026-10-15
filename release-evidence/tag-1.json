@@ -1,19 +1,19 @@
 {
-  "node_id": "TA_kwDOVG1Ac9oAKGY5MWE2ZGZhMTJhNmRmMTUwYWNlMWJmYjgwMWNlN2NmNmZlM2JiMDk",
-  "sha": "f91a6dfa12a6df150ace1bfb801ce7cf6fe3bb09",
-  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/tags/f91a6dfa12a6df150ace1bfb801ce7cf6fe3bb09",
+  "node_id": "TA_kwDOVG1Ac9oAKDFhZTUzNjQ4YmUwZjdlNDA1NDAwNmYyZjU2NjExMmRmMjFkYmMzNGE",
+  "sha": "1ae53648be0f7e4054006f2f566112df21dbc34a",
+  "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/tags/1ae53648be0f7e4054006f2f566112df21dbc34a",
   "tagger": {
     "name": "배한봉",
     "email": "han@baehanbong-ui-MacStudio.local",
-    "date": "2026-10-14T11:55:51Z"
+    "date": "2026-10-15T08:33:59Z"
   },
   "object": {
-    "sha": "51dcf22415b1ff0faf07651cb83c1c696c980f43",
+    "sha": "52514da5115f09aac22de5429c08f7acdd993258",
     "type": "commit",
-    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/51dcf22415b1ff0faf07651cb83c1c696c980f43"
+    "url": "https://api.github.com/repos/hanbong5938/desktop-pet/git/commits/52514da5115f09aac22de5429c08f7acdd993258"
   },
-  "tag": "v0.4.5",
-  "message": "Desktop Pet v0.4.5: immutable historical-plan validation correction\n",
+  "tag": "v0.4.7",
+  "message": "Desktop Pet 0.4.7: authenticated independent final-consent cancellation\n",
   "verification": {
     "verified": false,
     "reason": "unsigned",
