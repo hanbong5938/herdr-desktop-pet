@@ -1,0 +1,167 @@
+id = "desktop-pet"
+name = "Herdr Desktop Pet"
+version = "0.3.11"
+# client.attached needs the existing patched Herdr 0.9.3 host or advertised hook support.
+min_herdr_version = "0.9.3"
+description = "Legacy Desktop Pet migration bridge for Herdr"
+platforms = ["macos"]
+
+[[build]]
+command = ["bash", "scripts/install.sh"]
+platforms = ["macos"]
+
+[[startup]]
+command = ["bash", "scripts/run-native.sh", "ensure"]
+platforms = ["macos"]
+
+[[events]]
+on = "client.attached"
+command = ["bash", "scripts/run-native.sh", "ensure"]
+platforms = ["macos"]
+
+[[actions]]
+id = "settings"
+title = "Open desktop pet lifecycle settings"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "settings"]
+platforms = ["macos"]
+
+[[actions]]
+id = "start"
+title = "Start desktop pet"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "start"]
+platforms = ["macos"]
+
+[[actions]]
+id = "ensure"
+title = "Ensure desktop pet is running"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "ensure"]
+platforms = ["macos"]
+
+[[actions]]
+id = "stop"
+title = "Stop desktop pet"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "stop"]
+platforms = ["macos"]
+
+[[actions]]
+id = "status"
+title = "Show desktop pet status"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "status"]
+platforms = ["macos"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle character visibility; keep the bubble if enabled"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "toggle"]
+platforms = ["macos"]
+
+[[actions]]
+id = "show"
+title = "Show character and reattach the visible bubble"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "show"]
+platforms = ["macos"]
+
+[[actions]]
+id = "hide"
+title = "Hide character; keep the visible bubble standalone"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "hide"]
+platforms = ["macos"]
+
+[[actions]]
+id = "passthrough"
+title = "Toggle click passthrough for character and bubble"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "passthrough"]
+platforms = ["macos"]
+
+[[actions]]
+id = "alpha_passthrough"
+title = "Toggle alpha click passthrough for character only"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "alpha_passthrough"]
+platforms = ["macos"]
+
+[[actions]]
+id = "show_bubble"
+title = "Show status bubble, even without the character"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "show_bubble"]
+platforms = ["macos"]
+
+[[actions]]
+id = "hide_bubble"
+title = "Hide status bubble without hiding the character"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "hide_bubble"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_above"
+title = "Place bubble above pet when attached"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "bubble_above"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_below"
+title = "Place bubble below pet when attached"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "bubble_below"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_left"
+title = "Place bubble left of pet when attached"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "bubble_left"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_right"
+title = "Place bubble right of pet when attached"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "bubble_right"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bubble_auto"
+title = "Place bubble automatically when attached"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "bubble_auto"]
+platforms = ["macos"]
+
+[[actions]]
+id = "reset"
+title = "Reset pet and standalone bubble positions; keep visibility"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "reset"]
+platforms = ["macos"]
+
+[[actions]]
+id = "bigger"
+title = "Make desktop pet bigger"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "bigger"]
+platforms = ["macos"]
+
+[[actions]]
+id = "smaller"
+title = "Make desktop pet smaller"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "smaller"]
+platforms = ["macos"]
+
+[[actions]]
+id = "restart"
+title = "Restart desktop pet"
+contexts = ["global"]
+command = ["bash", "scripts/run-native.sh", "restart"]
+platforms = ["macos"]
