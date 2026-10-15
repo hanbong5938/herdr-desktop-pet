@@ -8,11 +8,11 @@ source "$ROOT_DIR/scripts/validate.sh"
 [[ -d "$ROOT_DIR/dist/HerdrDesktopPet.app" && ! -L "$ROOT_DIR/dist" && ! -L "$ROOT_DIR/dist/HerdrDesktopPet.app" ]] || fail "installed bridge must be a physical app bundle"
 binary="$ROOT_DIR/dist/HerdrDesktopPet.app/Contents/MacOS/herdr-desktop-pet"
 [[ -x "$binary" && -f "$binary" && ! -L "$binary" ]] || fail "missing genuine legacy daemon: $binary"
-[[ "$("$binary" --version 2>/dev/null)" == 'herdr-desktop-pet 0.3.11' ]] || fail "this bridge wrapper requires the installed 0.3.11 image"
+[[ "$("$binary" --version 2>/dev/null)" == 'herdr-desktop-pet 0.3.12' ]] || fail "this bridge wrapper requires the installed 0.3.12 image"
 metadata="$ROOT_DIR/release.json"
 [[ -f "$metadata" && ! -L "$metadata" ]] || fail "missing materialized bridge release metadata"
-require_value "$metadata" distribution legacy-0.3.11
-require_value "$metadata" app_version 0.3.11
+require_value "$metadata" distribution legacy-0.3.12
+require_value "$metadata" app_version 0.3.12
 require_value "$metadata" protocol 3
 require_value "$metadata" observation_mode 1
 require_value "$metadata" integration_api 1

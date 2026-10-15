@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "source_core_revision": "52514da5115f09aac22de5429c08f7acdd993258",
+  "source_core_revision": "2936b2c600235ec8d15d1248ef3380e0a8dca8c0",
   "herdr_migration_revision": "6d2ac0446f6ecb84f179e21fac3c5b02e07dc8e8",
-  "distribution": "legacy-0.3.11",
-  "app_version": "0.3.11",
+  "distribution": "legacy-0.3.12",
+  "app_version": "0.3.12",
   "protocol": 3,
   "observation_mode": 1,
   "integration_api": 1,
-  "archive": "HerdrDesktopPet-v0.3.11-macos-arm64.tar.gz",
-  "archive_sha256": "2075baefbf212f5cbfbdc0163ce0e6887fa6d05f20e2a24c47ae24012649ab60",
-  "provenance": "HerdrDesktopPet-v0.3.11-rig-native.json"
+  "archive": "HerdrDesktopPet-v0.3.12-macos-arm64.tar.gz",
+  "archive_sha256": "c4cecaaf5f5c8dfba26f4c2f384db5c626d3d0d8486bcbc132cbeabae576778d",
+  "provenance": "HerdrDesktopPet-v0.3.12-rig-native.json"
 }

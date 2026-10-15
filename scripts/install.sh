@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$ROOT_DIR/scripts/validate.sh"
-version=0.3.11
+version=0.3.12
 manual_stopped=0
 while (($#)); do
   case "$1" in
@@ -53,8 +53,8 @@ else
   require_value "$metadata" version 1
   require_value "$metadata" repository "$repository"
   require_value "$metadata" source_core_repository hanbong5938/desktop-pet
-  require_value "$metadata" distribution legacy-0.3.11
-  require_value "$metadata" app_version 0.3.11
+  require_value "$metadata" distribution legacy-0.3.12
+  require_value "$metadata" app_version 0.3.12
   require_value "$metadata" protocol 3
   require_value "$metadata" observation_mode 1
   require_value "$metadata" integration_api 1
@@ -75,20 +75,20 @@ else
   require_value "$provenance" version 1
   require_value "$provenance" core_revision "$revision"
   require_value "$provenance" distribution_identity.core_revision "$revision"
-  require_value "$provenance" distribution_identity.distribution legacy-0.3.11
-  require_value "$provenance" distribution_identity.app_version 0.3.11
+  require_value "$provenance" distribution_identity.distribution legacy-0.3.12
+  require_value "$provenance" distribution_identity.app_version 0.3.12
   require_value "$provenance" distribution_identity.herdr_migration_revision "$retirement_revision"
   require_value "$record" version 1
   require_value "$record" source_core_revision "$revision"
   require_value "$record" herdr_migration_revision "$retirement_revision"
-  require_value "$record" distribution legacy-0.3.11
-  require_value "$record" app_version 0.3.11
+  require_value "$record" distribution legacy-0.3.12
+  require_value "$record" app_version 0.3.12
   require_value "$record" protocol 3
   require_value "$record" observation_mode 1
   require_value "$record" integration_api 1
   require_value "$record" archive "$asset"
   require_value "$record" archive_sha256 "$expected"
-  require_value "$record" provenance HerdrDesktopPet-v0.3.11-rig-native.json
+  require_value "$record" provenance HerdrDesktopPet-v0.3.12-rig-native.json
   if [[ "${HERDR_PET_SHA256+x}" == x ]]; then
     [[ "$HERDR_PET_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || fail "invalid helper-approved SHA256"
     approved="$(printf '%s' "$HERDR_PET_SHA256" | tr '[:upper:]' '[:lower:]')"
@@ -119,7 +119,7 @@ cleanup() {
   rmdir "$lock" 2>/dev/null || true
 }
 trap cleanup EXIT
-if [[ "$version" == 0.3.11 && -e "$APP_ROOT" ]]; then
+if [[ "$version" == 0.3.12 && -e "$APP_ROOT" ]]; then
   installed_binary="$APP_ROOT/Contents/MacOS/herdr-desktop-pet"
   [[ -f "$installed_binary" && -x "$installed_binary" && ! -L "$installed_binary" ]] || fail "invalid existing legacy image"
   codesign --verify --deep --strict "$APP_ROOT" >/dev/null 2>&1 || fail "existing legacy image signature is invalid; no replacement authorized"
@@ -131,7 +131,7 @@ archive="$temp/$asset"
 curl --fail --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 300 --silent --show-error "$url" --output "$archive" || fail "cannot download pinned legacy archive"
 [[ "$(sha256_file "$archive")" == "$expected" ]] || fail "downloaded bytes do not match the approved archive SHA256"
 # Respect the helper checksum selection as well as its approved SHA proof.
-if [[ "${HERDR_PET_SHA256+x}" != x && "$version" == 0.3.11 ]]; then
+if [[ "${HERDR_PET_SHA256+x}" != x && "$version" == 0.3.12 ]]; then
   curl --fail --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 300 --silent --show-error "$checksum_url" --output "$temp/checksum" || fail "cannot download pinned checksum"
   found=0
   while IFS= read -r line || [[ -n "$line" ]]; do

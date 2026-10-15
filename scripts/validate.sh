@@ -27,8 +27,8 @@ validate_compiled_bridge() {
   caps="$("$executable" distribution-identity 2>/dev/null)" || fail "missing compiled bridge identity"
   for field in distribution app_version app_name executable helper bundle_id core_revision herdr_migration_revision protocol observation_mode integration_api; do
     case "$field" in
-      distribution) expected=legacy-0.3.11 ;;
-      app_version) expected=0.3.11 ;;
+      distribution) expected=legacy-0.3.12 ;;
+      app_version) expected=0.3.12 ;;
       app_name) expected=HerdrDesktopPet.app ;;
       executable) expected=herdr-desktop-pet ;;
       helper) expected=herdr-update-coordinator ;;
@@ -80,7 +80,7 @@ validate_app() {
     caps="$("$executable" update-capabilities 2>/dev/null)" || fail "cannot read updater capabilities"
     [[ "$(plutil -extract protocol raw -expect integer -o - - <<< "$caps" 2>/dev/null)" == 3 ]] || fail "protocol-3 matched pair required; protocol-2 cannot directly update to this bridge"
     [[ "$(plutil -extract observation_mode raw -expect integer -o - - <<< "$caps" 2>/dev/null)" == 1 ]] || fail "observation capability 1 required"
-    if [[ "$version" == 0.3.11 ]]; then
+    if [[ "$version" == 0.3.12 ]]; then
       [[ "$(plutil -extract integration_api raw -expect integer -o - - <<< "$caps" 2>/dev/null)" == 1 ]] || fail "bridge integration API 1 required"
       validate_compiled_bridge "$executable"
     fi

@@ -1,6 +1,6 @@
 id = "desktop-pet"
 name = "Herdr Desktop Pet"
-version = "0.3.11"
+version = "0.3.12"
 # client.attached needs the existing patched Herdr 0.9.3 host or advertised hook support.
 min_herdr_version = "0.9.3"
 description = "Legacy Desktop Pet migration bridge for Herdr"
